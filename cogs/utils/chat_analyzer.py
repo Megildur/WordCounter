@@ -32,7 +32,6 @@ def analyze_chat_history(content, start_date=None, end_date=None):
             
             is_bot = bool(msg.xpath('.//span[@class="chatlog__author-tag" and text()="BOT"]'))
             
-            # Skip bot messages
             if is_bot:
                 continue
 
