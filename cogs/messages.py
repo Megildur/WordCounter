@@ -76,7 +76,7 @@ class Messages(commands.Cog):
     async def message_leaderboard(self, interaction: discord.Interaction, channel: discord.TextChannel = None) -> None:
         if channel is None:
             async with aiosqlite.connect('message_user.db') as db:
-                async with db.execute('SELECT user_id, messages FROM message_user ORDER BY messages DESC') as cursor:
+                async with db.execute('SELECT user_id, messages FROM message_user WHERE guild_id = ? ORDER BY messages DESC', (interaction.guild_id,)) as cursor:
                     rows = await cursor.fetchall()
                     if not rows:
                         embed = discord.Embed(title='Message Leaderboard', description='No messages have been sent yet!', color=discord.Color.red())
