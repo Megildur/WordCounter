@@ -85,7 +85,61 @@ class Counter(commands.Cog):
                 embed.set_footer(text=f'{interaction.guild.name}', icon_url=interaction.guild.icon.url)
 
                 await interaction.response.send_message(embed=embed)
-        
+
+    stats = app_commands.Group(name='stats', description='User statistics commands')
+
+    @stats.command(name='user', description='Show detailed statistics for a user')
+    @app_commands.describe(user='The user to show statistics for')
+    async def user_stats_slash(self, interaction: discord.Interaction, user: discord.Member) -> None:
+        async with aiosqlite.connect('channels.db') as db:
+            cursor = await db.execute('SELECT * FROM channels WHERE guild_id = ?', (interaction.guild_id,))
+            result = await cursor.fetchone()
+            if not result:
+                embed = discord.Embed(title='Error', description='Word count is not being recorded for this server!', color=discord.Color.red())
+                await interaction.response.send_message(embed=embed)
+                return
+        if user.bot:
+            embed = discord.Embed(title='Error', description='Bots cannot have word counts!', color=discord.Color.red())
+            await interaction.response.send_message(embed=embed)
+            return
+        async with aiosqlite.connect('server.db') as db:
+            async with db.execute('SELECT count FROM server WHERE user_id = ? and guild_id = ?', (user.id, interaction.guild_id)) as cursor:
+                wresult = await cursor.fetchone()
+                if wresult is None:
+                    await db.execute('INSERT INTO server (user_id, guild_id, count) VALUES (?, ?, ?)', (user.id, interaction.guild_id, 0))
+                    await db.commit()
+        async with aiosqlite.connect('attachments_users.db') as db:
+            async with db.execute('SELECT count FROM attachments_users WHERE user_id = ? and guild_id = ?', (user.id, interaction.guild_id)) as cursor:
+                aresult = await cursor.fetchone()
+                if aresult is None:
+                    await db.execute('INSERT INTO attachments_users (user_id, guild_id, count) VALUES (?, ?, ?)', (user.id, interaction.guild_id, 0))
+                    await db.commit()
+        async with aiosqlite.connect('message_user.db') as db:
+            async with db.execute('SELECT messages FROM message_user WHERE user_id = ? and guild_id = ?', (user.id, interaction.guild_id)) as cursor:
+                mresult = await cursor.fetchone()
+                if mresult is None:
+                    await db.execute('INSERT INTO message_user (user_id, guild_id, messages) VALUES (?, ?, ?)', (user.id, interaction.guild_id, 0))
+                    await db.commit()
+        async with aiosqlite.connect('keyword_user.db') as db:
+            async with db.execute('SELECT keyword, count FROM keyword_user WHERE user_id = ? and guild_id = ?', (user.id, interaction.guild_id)) as cursor:
+                kresult = await cursor.fetchall()
+                if not kresult and not wresult and not aresult and not mresult:
+                    embed = discord.Embed(title='Error', description='This user has not said any words in this server!', color=discord.Color.red())
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                if wresult:
+                    embed = discord.Embed(title='User Stats', description=f'{user.mention} has said {wresult[0]} words in this server!', color=discord.Color.from_str('#af2202'))
+                if mresult:
+                    embed.add_field(name='Total Message Count', value=f'{mresult[0]}', inline=False)
+                if aresult:
+                    embed.add_field(name='Total Attachment Count', value=f'{aresult[0]}', inline=False)
+                if kresult:
+                    for keyword in kresult:
+                        embed.add_field(name=f'Keyword: {keyword[0]}', value=f'Said {keyword[1]} times.', inline=False)
+                embed.set_thumbnail(url=user.avatar.url)
+                embed.set_footer(text=f'{interaction.guild.name}', icon_url=interaction.guild.icon.url)
+                await interaction.response.send_message(embed=embed)
+
     async def cog_load(self) -> None:
         async with aiosqlite.connect('counter.db') as db:
             await db.execute('''CREATE TABLE IF NOT EXISTS counters (
@@ -106,7 +160,7 @@ class Counter(commands.Cog):
                 )'''
             )
             await db.commit()
-        
+
         async with aiosqlite.connect('server.db') as db:
             await db.execute('''CREATE TABLE IF NOT EXISTS server (
                 guild_id INTEGER NOT NULL,
@@ -125,7 +179,7 @@ class Counter(commands.Cog):
                 )'''
             )
             await db.commit()
-    
+
     @commands.Cog.listener()
     async def on_message(self, message) -> None:
         if message.author.bot:
