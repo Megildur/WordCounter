@@ -2,8 +2,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import aiosqlite
-from typing import Optional
 import itertools
+from paginator import ButtonPaginator
 
 class Keyword(commands.Cog):
     def __init__(self, bot) -> None:
@@ -41,7 +41,7 @@ class Keyword(commands.Cog):
               )'''
           )
           await db.commit()
-            
+
     async def keyword_message(self, message, result) -> None:
             async with aiosqlite.connect('keyword.db') as db:
                 async with db.execute('SELECT keyword FROM keyword WHERE guild_id = ?', (message.guild.id,)) as cursor:
@@ -210,34 +210,88 @@ class Keyword(commands.Cog):
 
     @keyword.command(name='leaderboard', description='View the keyword leaderboard')
     async def keyword_leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
-        if channel != None:
-            async with aiosqlite.connect('keyword_channel.db') as db:
-                async with db.execute('SELECT keyword, count, user_id FROM keyword_channel WHERE guild_id = ? AND channel_id = ?', (interaction.guild_id, channel.id)) as cursor:
-                    result = await cursor.fetchall()
-            if result:
-                embed = discord.Embed(title='Keyword Leaderboard', color=discord.Color.green(), description=f'The keyword leaderboard for {channel.mention}')
-                grouped_results = itertools.groupby(sorted(result, key=lambda x: x[0]), lambda x: x[0])
-                for keyword, group in grouped_results:
-                    users = sorted([(user_id, count) for _, count, user_id in group], key=lambda x: x[1], reverse=True)
-                    embed.add_field(name=f'Keyword: {keyword}', value=f'{", ".join([f"<@{user_id}>: {count}" for user_id, count in users])}')
-                await interaction.response.send_message(embed=embed)
-            else:
-                embed = discord.Embed(title='Error', description='No keywords have been added to the server', color=discord.Color.red())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+        if interaction.guild_id is None:
+            embed = discord.Embed(title='Error', description='This command can only be used in a server!', color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        async with aiosqlite.connect('keyword_channel.db') as db:
+            async with db.execute('SELECT keyword, count, user_id FROM keyword_channel WHERE guild_id = ?', (interaction.guild_id,)) as cursor:
+                result = await cursor.fetchall()
+
+        if not result:
+            embed = discord.Embed(title='Error', description='No keywords have been added to the server', color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Group and sort results
+        grouped_results = itertools.groupby(sorted(result, key=lambda x: x[0]), lambda x: x[0])
+        keyword_data = []
+
+        for keyword, group in grouped_results:
+            users = sorted([(user_id, count) for _, count, user_id in group], key=lambda x: x[1], reverse=True)
+            # Filter out users who are no longer in the guild
+            valid_users = []
+            for user_id, count in users:
+                user = interaction.guild.get_member(user_id)
+                if user:
+                    valid_users.append((user, count))
+
+            if valid_users:
+                keyword_data.append((keyword, valid_users))
+
+        if not keyword_data:
+            embed = discord.Embed(title='Error', description='No active users found with keywords', color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Create paginated embeds
+        embeds = []
+        keywords_per_page = 5
+        total_pages = (len(keyword_data) + keywords_per_page - 1) // keywords_per_page
+
+        for page_num in range(total_pages):
+            start_idx = page_num * keywords_per_page
+            end_idx = min(start_idx + keywords_per_page, len(keyword_data))
+            page_data = keyword_data[start_idx:end_idx]
+
+            embed = discord.Embed(
+                title='🔤 Keyword Leaderboard',
+                description='Top keyword usage by users in the server',
+                color=discord.Color.from_str('#af2202')
+            )
+
+            for keyword, users in page_data:
+                user_list = []
+                for i, (user, count) in enumerate(users[:10]):  # Limit to top 10 users per keyword
+                    if i == 0:
+                        user_list.append(f"🥇 **{user.display_name}**: {count:,}")
+                    elif i == 1:
+                        user_list.append(f"🥈 **{user.display_name}**: {count:,}")
+                    elif i == 2:
+                        user_list.append(f"🥉 **{user.display_name}**: {count:,}")
+                    else:
+                        user_list.append(f"**{user.display_name}**: {count:,}")
+
+                embed.add_field(
+                    name=f'🔑 Keyword: "{keyword}"',
+                    value='\n'.join(user_list) if user_list else 'No users found',
+                    inline=False
+                )
+
+            embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total keywords: {len(keyword_data)}")
+            embeds.append(embed)
+
+        # Handle single page vs multiple pages
+        if len(embeds) == 1:
+            await interaction.response.send_message(embed=embeds[0])
         else:
-            async with aiosqlite.connect('keyword_channel.db') as db:
-                async with db.execute('SELECT keyword, count, user_id FROM keyword_channel WHERE guild_id = ?', (interaction.guild_id,)) as cursor:
-                    result = await cursor.fetchall()
-            if result:
-                embed = discord.Embed(title='Keyword Leaderboard', color=discord.Color.from_str('#af2202'), description='The keyword leaderboard for this server')
-                grouped_results = itertools.groupby(sorted(result, key=lambda x: x[0]), lambda x: x[0])
-                for keyword, group in grouped_results:
-                    users = sorted([(user_id, count) for _, count, user_id in group], key=lambda x: x[1], reverse=True)
-                    embed.add_field(name=f'Keyword: {keyword}', value=f'{", ".join([f"<@{user_id}>: {count}" for user_id, count in users])}')
-                await interaction.response.send_message(embed=embed)
-            else:
-                embed = discord.Embed(title='Error', description='No keywords have been added to the server', color=discord.Color.red())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+            paginator = ButtonPaginator.create_standard_paginator(
+                embeds,
+                author_id=interaction.user.id,
+                timeout=180.0
+            )
+            await paginator.start(interaction)
 
     @keyword.command(name='list', description='View the keywords in the server')
     async def keyword_list(self, interaction: discord.Interaction) -> None:

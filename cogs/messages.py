@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import aiosqlite
+from paginator import ButtonPaginator
 import itertools
 
 class Messages(commands.Cog):
@@ -82,13 +83,66 @@ class Messages(commands.Cog):
                         embed = discord.Embed(title='Message Leaderboard', description='No messages have been sent yet!', color=discord.Color.red())
                         await interaction.response.send_message(embed=embed)
                         return
-                    embed = discord.Embed(title='Message Leaderboard', color=discord.Color.from_str('#af2202'))
-                    for i, row in enumerate(rows):
-                        user = interaction.guild.get_member(row[0])
+                    
+                    # Filter and prepare user data
+                    valid_results = []
+                    for user_id, messages in rows:
+                        user = interaction.guild.get_member(user_id)
                         if user is None:
-                            user = await self.bot.fetch_user(row[0])
-                        embed.add_field(name=f'{i+1}. {user.name}', value=f'{row[1]} messages', inline=False)
-                    await interaction.response.send_message(embed=embed)
+                            try:
+                                user = await self.bot.fetch_user(user_id)
+                            except:
+                                continue
+                        if user:
+                            valid_results.append((user, messages))
+                    
+                    if not valid_results:
+                        embed = discord.Embed(title='Message Leaderboard', description='No active users found!', color=discord.Color.red())
+                        await interaction.response.send_message(embed=embed)
+                        return
+                    
+                    # Create paginated embeds
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(valid_results))
+                        page_data = valid_results[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='💬 Message Leaderboard',
+                            description='Top message contributors in the server',
+                            color=discord.Color.from_str('#af2202')
+                        )
+                        
+                        description = ""
+                        for index, (user, messages) in enumerate(page_data, start=start_idx + 1):
+                            display_name = user.display_name if hasattr(user, 'display_name') else user.name
+                            if index == 1:
+                                description += f"🥇 **{display_name}** - {messages:,} messages\n"
+                            elif index == 2:
+                                description += f"🥈 **{display_name}** - {messages:,} messages\n"
+                            elif index == 3:
+                                description += f"🥉 **{display_name}** - {messages:,} messages\n"
+                            else:
+                                description += f"**{index}.** {display_name} - {messages:,} messages\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
         else:
             async with aiosqlite.connect('message_channels.db') as db:
                 async with db.execute('SELECT user_id, messages FROM message_channels WHERE guild_id = ? AND channel_id = ? ORDER BY messages DESC', (interaction.guild_id, channel.id)) as cursor:
@@ -97,13 +151,66 @@ class Messages(commands.Cog):
                         embed = discord.Embed(title='Message Leaderboard', description='No messages have been sent yet!', color=discord.Color.red())
                         await interaction.response.send_message(embed=embed)
                         return
-                    embed = discord.Embed(title='Message Leaderboard', color=discord.Color.from_str('#af2202'))
-                    for i, row in enumerate(rows):
-                        user = interaction.guild.get_member(row[0])
+                    
+                    # Filter and prepare user data
+                    valid_results = []
+                    for user_id, messages in rows:
+                        user = interaction.guild.get_member(user_id)
                         if user is None:
-                            user = await self.bot.fetch_user(row[0])
-                        embed.add_field(name=f'{i+1}. {user.name}', value=f'{row[1]} messages', inline=False)
-                    await interaction.response.send_message(embed=embed)
+                            try:
+                                user = await self.bot.fetch_user(user_id)
+                            except:
+                                continue
+                        if user:
+                            valid_results.append((user, messages))
+                    
+                    if not valid_results:
+                        embed = discord.Embed(title='Message Leaderboard', description='No active users found!', color=discord.Color.red())
+                        await interaction.response.send_message(embed=embed)
+                        return
+                    
+                    # Create paginated embeds for channel-specific leaderboard
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(valid_results))
+                        page_data = valid_results[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='💬 Message Leaderboard',
+                            description=f'Top message contributors in {channel.mention}',
+                            color=discord.Color.from_str('#af2202')
+                        )
+                        
+                        description = ""
+                        for index, (user, messages) in enumerate(page_data, start=start_idx + 1):
+                            display_name = user.display_name if hasattr(user, 'display_name') else user.name
+                            if index == 1:
+                                description += f"🥇 **{display_name}** - {messages:,} messages\n"
+                            elif index == 2:
+                                description += f"🥈 **{display_name}** - {messages:,} messages\n"
+                            elif index == 3:
+                                description += f"🥉 **{display_name}** - {messages:,} messages\n"
+                            else:
+                                description += f"**{index}.** {display_name} - {messages:,} messages\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
 
 async def setup(bot) -> None:
     await bot.add_cog(Messages(bot))

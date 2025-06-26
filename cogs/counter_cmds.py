@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import aiosqlite
 from typing import Literal, Optional
+from paginator import ButtonPaginator
 
 class Counter_Cmds(commands.Cog):
     def __init__(self, bot) -> None:
@@ -111,6 +112,7 @@ class Counter_Cmds(commands.Cog):
                     embed = discord.Embed(title='Error', description='Word count is not enabled on this server', color=discord.Color.red())
                     await interaction.response.send_message(embed=embed, ephemeral=True)
                     return
+        
         if channel is None:
             async with aiosqlite.connect('server.db') as db:
                 async with db.execute('SELECT user_id, count FROM server WHERE guild_id = ? ORDER BY count DESC', (interaction.guild_id,)) as cursor:
@@ -119,14 +121,60 @@ class Counter_Cmds(commands.Cog):
                         embed = discord.Embed(title='Error', description='No one has said any words in this server yet.', color=discord.Color.red())
                         await interaction.response.send_message(embed=embed, ephemeral=True)
                         return
-                    embed = discord.Embed(title='Word Count Leaderboard', description='The word count leaderboard for the whole server', color=discord.Color.from_str('#af2202'))
-                    for i, row in enumerate(result):
-                        user = interaction.guild.get_member(row[0])
+                    
+                    # Filter out users who are no longer in the guild
+                    valid_results = []
+                    for user_id, count in result:
+                        user = interaction.guild.get_member(user_id)
                         if user is not None:
-                            embed.add_field(name=f'{i+1}. {user.mention}', value=f'{row[1]} words', inline=False)
-                        else:
-                            continue
-                    await interaction.response.send_message(embed=embed)
+                            valid_results.append((user, count))
+                    
+                    if not valid_results:
+                        embed = discord.Embed(title='Error', description='No active users found in this server.', color=discord.Color.red())
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+                    
+                    # Create paginated embeds
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(valid_results))
+                        page_data = valid_results[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='📝 Word Count Leaderboard',
+                            description='Top word contributors in the server',
+                            color=discord.Color.from_str('#af2202')
+                        )
+                        
+                        description = ""
+                        for index, (user, count) in enumerate(page_data, start=start_idx + 1):
+                            if index == 1:
+                                description += f"🥇 **{user.display_name}** - {count:,} words\n"
+                            elif index == 2:
+                                description += f"🥈 **{user.display_name}** - {count:,} words\n"
+                            elif index == 3:
+                                description += f"🥉 **{user.display_name}** - {count:,} words\n"
+                            else:
+                                description += f"**{index}.** {user.display_name} - {count:,} words\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
         else:
             async with aiosqlite.connect('counter.db') as db:
                 async with db.execute('SELECT user_id, count FROM counters WHERE guild_id = ? AND channel_id = ? ORDER BY count DESC', (interaction.guild_id, channel.id)) as cursor:
@@ -135,14 +183,60 @@ class Counter_Cmds(commands.Cog):
                         embed = discord.Embed(title='Error', description='No one has said any words in this channel yet.', color=discord.Color.red())
                         await interaction.response.send_message(embed=embed, ephemeral=True)
                         return
-                    embed = discord.Embed(title='Word Count Leaderboard', description=f'The word count leaderboard for the channel {channel.mention}', color=discord.Color.from_str('#af2202'))
-                    for i, row in enumerate(result):
-                        user = interaction.guild.get_member(row[0])
+                    
+                    # Filter out users who are no longer in the guild
+                    valid_results = []
+                    for user_id, count in result:
+                        user = interaction.guild.get_member(user_id)
                         if user is not None:
-                            embed.add_field(name=f'{i+1}. {user.mention}', value=f'{row[1]} words', inline=False)
-                        else:
-                            continue
-                    await interaction.response.send_message(embed=embed)
+                            valid_results.append((user, count))
+                    
+                    if not valid_results:
+                        embed = discord.Embed(title='Error', description='No active users found in this channel.', color=discord.Color.red())
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+                    
+                    # Create paginated embeds for channel-specific leaderboard
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(valid_results))
+                        page_data = valid_results[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='📝 Word Count Leaderboard',
+                            description=f'Top word contributors in {channel.mention}',
+                            color=discord.Color.from_str('#af2202')
+                        )
+                        
+                        description = ""
+                        for index, (user, count) in enumerate(page_data, start=start_idx + 1):
+                            if index == 1:
+                                description += f"🥇 **{user.display_name}** - {count:,} words\n"
+                            elif index == 2:
+                                description += f"🥈 **{user.display_name}** - {count:,} words\n"
+                            elif index == 3:
+                                description += f"🥉 **{user.display_name}** - {count:,} words\n"
+                            else:
+                                description += f"**{index}.** {user.display_name} - {count:,} words\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
 
     @count.command(name='reset', description='Resets the word count of a user(for a single chanel or every channel) or for whole server')
     @app_commands.describe(user='The user to reset the word count of', channel='The channel to reset the word count of user in')

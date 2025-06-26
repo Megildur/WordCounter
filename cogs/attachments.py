@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import aiosqlite
 import itertools
+from paginator import ButtonPaginator
 
 class Attachments(commands.Cog):
     def __init__(self, bot) -> None:
@@ -125,32 +126,108 @@ class Attachments(commands.Cog):
     async def attachment_leaderboard(self, interaction: discord.Interaction, channel: discord.TextChannel = None) -> None:
         if channel is None:
             async with aiosqlite.connect('attachments_users.db') as db:
-                async with db.execute('SELECT user_id, count FROM attachments_users ORDER BY count DESC LIMIT 10') as cursor:
+                async with db.execute('SELECT user_id, count FROM attachments_users WHERE guild_id = ? ORDER BY count DESC', (interaction.guild.id,)) as cursor:
                     result = await cursor.fetchall()
-                    if result:
-                        embed = discord.Embed(title='Attachment Leaderboard', color=discord.Color.blue())
-                        for index, (user_id, count) in enumerate(result, start=1):
-                            user = interaction.guild.get_member(user_id)
-                            if user:
-                                embed.add_field(name=f'{index}. {user.display_name}', value=f'{count} attachments', inline=False)
-                        await interaction.response.send_message(embed=embed)
-                    else:
+                    if not result:
                         embed = discord.Embed(title='Attachment Leaderboard', description='No users found.', color=discord.Color.from_str('#af2202'))
                         await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+                    
+                    # Create paginated embeds
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(result) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(result))
+                        page_data = result[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='🏆 Attachment Leaderboard',
+                            description='Top attachment contributors in the server',
+                            color=discord.Color.blue()
+                        )
+                        
+                        description = ""
+                        for index, (user_id, count) in enumerate(page_data, start=start_idx + 1):
+                            user = interaction.guild.get_member(user_id)
+                            if user:
+                                if index == 1:
+                                    description += f"🥇 **{user.display_name}** - {count:,} attachments\n"
+                                elif index == 2:
+                                    description += f"🥈 **{user.display_name}** - {count:,} attachments\n"
+                                elif index == 3:
+                                    description += f"🥉 **{user.display_name}** - {count:,} attachments\n"
+                                else:
+                                    description += f"**{index}.** {user.display_name} - {count:,} attachments\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(result)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
         else:
             async with aiosqlite.connect('attachments_channels.db') as db:
-                async with db.execute('SELECT user_id, count FROM attachments_channels WHERE guild_id = ? AND channel_id = ? ORDER BY count DESC LIMIT 10', (interaction.guild.id, channel.id)) as cursor:
+                async with db.execute('SELECT user_id, count FROM attachments_channels WHERE guild_id = ? AND channel_id = ? ORDER BY count DESC', (interaction.guild.id, channel.id)) as cursor:
                     result = await cursor.fetchall()
-                    if result:
-                        embed = discord.Embed(title='Attachment Leaderboard', color=discord.Color.blue())
-                        for index, (user_id, count) in enumerate(result, start=1):
-                            user = interaction.guild.get_member(user_id)
-                            if user:
-                                embed.add_field(name=f'{index}. {user.display_name}', value=f'{count} attachments', inline=False)
-                        await interaction.response.send_message(embed=embed)
-                    else:
+                    if not result:
                         embed = discord.Embed(title='Attachment Leaderboard', description='No users found.', color=discord.Color.from_str('#af2202'))
                         await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+                    
+                    # Create paginated embeds for channel-specific leaderboard
+                    embeds = []
+                    users_per_page = 10
+                    total_pages = (len(result) + users_per_page - 1) // users_per_page
+                    
+                    for page_num in range(total_pages):
+                        start_idx = page_num * users_per_page
+                        end_idx = min(start_idx + users_per_page, len(result))
+                        page_data = result[start_idx:end_idx]
+                        
+                        embed = discord.Embed(
+                            title='🏆 Attachment Leaderboard',
+                            description=f'Top attachment contributors in {channel.mention}',
+                            color=discord.Color.blue()
+                        )
+                        
+                        description = ""
+                        for index, (user_id, count) in enumerate(page_data, start=start_idx + 1):
+                            user = interaction.guild.get_member(user_id)
+                            if user:
+                                if index == 1:
+                                    description += f"🥇 **{user.display_name}** - {count:,} attachments\n"
+                                elif index == 2:
+                                    description += f"🥈 **{user.display_name}** - {count:,} attachments\n"
+                                elif index == 3:
+                                    description += f"🥉 **{user.display_name}** - {count:,} attachments\n"
+                                else:
+                                    description += f"**{index}.** {user.display_name} - {count:,} attachments\n"
+                        
+                        embed.description = f"{embed.description}\n\n{description}"
+                        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} • Total users: {len(result)}")
+                        embeds.append(embed)
+                    
+                    # Handle single page vs multiple pages
+                    if len(embeds) == 1:
+                        await interaction.response.send_message(embed=embeds[0])
+                    else:
+                        paginator = ButtonPaginator.create_standard_paginator(
+                            embeds,
+                            author_id=interaction.user.id,
+                            timeout=180.0
+                        )
+                        await paginator.start(interaction)
         
 async def setup(bot) -> None:
     await bot.add_cog(Attachments(bot))
