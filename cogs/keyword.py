@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import aiosqlite
 import itertools
+from typing import Optional
 from paginator import ButtonPaginator
 
 class Keyword(commands.Cog):
