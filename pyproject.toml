@@ -5,12 +5,12 @@ description = ""
 authors = ["Your Name <you@example.com>"]
 
 [tool.poetry.dependencies]
-python = ">=3.10.0,<3.12"
-discord-py = "^2.4.0"
+python = ">=3.10.0,<3.15"
+discord-py = ">=2.6.0"
 python-dotenv = "^1.0.1"
-aiosqlite = "^0.20.0"
+aiosqlite = ">=0.20.0"
 beautifulsoup4 = "^4.12.3"
-aiohttp = "^3.10.10"
+aiohttp = ">=3.10.10"
 lxml = "^5.3.0"
 humanize = "^4.11.0"
 

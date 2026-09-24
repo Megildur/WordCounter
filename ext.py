@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 from typing import Literal
 import os
+from cogs.utils.components import error_view, success_view, create_v2_view, BRAND_COLOR
+
 
 class Extensions(commands.Cog):
     def __init__(self, bot) -> None:
@@ -14,31 +16,31 @@ class Extensions(commands.Cog):
             try:
                 await self.bot.load_extension(extension)
             except commands.ExtensionAlreadyLoaded:
-                await ctx.send(f"Extension {extension} is already loaded.")
+                await ctx.send(view=error_view(f"Extension `{extension}` is already loaded."))
             except commands.ExtensionNotFound:
-                await ctx.send("Extension not found.")
-            except commands.ExtensionFailed:
-                await ctx.send("Extension failed to load.")
+                await ctx.send(view=error_view("Extension not found."))
+            except commands.ExtensionFailed as e:
+                await ctx.send(view=error_view(f"Extension failed to load: `{e}`"))
             else:
-                await ctx.send(f'Loaded extension "{extension}".')
+                await ctx.send(view=success_view(f'Loaded extension `{extension}`.'))
         elif action == "unload":
             try:
                 await self.bot.unload_extension(extension)
             except commands.ExtensionNotLoaded:
-                await ctx.send(f"Extension {extension} is not loaded.")
+                await ctx.send(view=error_view(f"Extension `{extension}` is not loaded."))
             else:
-                await ctx.send(f'Unloaded extension "{extension}".')
+                await ctx.send(view=success_view(f'Unloaded extension `{extension}`.'))
         elif action == "reload":
             try:
                 await self.bot.reload_extension(extension)
             except commands.ExtensionNotLoaded:
-                await ctx.send(f"Extension {extension} is not loaded.")
+                await ctx.send(view=error_view(f"Extension `{extension}` is not loaded."))
             except commands.ExtensionNotFound:
-                await ctx.send("Extension not found.")
-            except commands.ExtensionFailed:
-                await ctx.send("Extension failed to load.")
+                await ctx.send(view=error_view("Extension not found."))
+            except commands.ExtensionFailed as e:
+                await ctx.send(view=error_view(f"Extension failed to load: `{e}`"))
             else:
-                await ctx.send(f'Reloaded extension "{extension}".')
+                await ctx.send(view=success_view(f'Reloaded extension `{extension}`.'))
 
     @commands.command(name="cogs", description="Reloads and loads all cogs", hidden=True)
     @commands.is_owner()
@@ -49,28 +51,38 @@ class Extensions(commands.Cog):
         failed = []
         for filename in os.listdir('cogs'):
             if filename.endswith('.py'):
-                cog_name = filename[:-3]  # Remove the .py extension
+                cog_name = filename[:-3]
                 try:
                     await self.bot.reload_extension(f'cogs.{cog_name}')
-                    reloaded_cogs.append(f'{cog_name}')
+                    reloaded_cogs.append(f'`{cog_name}`')
                 except commands.ExtensionNotLoaded:
                     await self.bot.load_extension(f'cogs.{cog_name}')
-                    loaded.append(f'{cog_name}')
+                    loaded.append(f'`{cog_name}`')
                 except commands.ExtensionNotFound:
-                    await ctx.send(f"Extension not found: {cog_name}")
-                    not_found.append(f'{cog_name}')
+                    not_found.append(f'`{cog_name}`')
                 except commands.ExtensionFailed:
-                    await ctx.send(f"Extension failed to load: {cog_name}")
-                    failed.append(f'{cog_name}')
+                    failed.append(f'`{cog_name}`')
+
+        fields = []
         if reloaded_cogs:
-            await ctx.send(f'Reloaded cogs: {", ".join(reloaded_cogs)}')
+            fields.append(('🔄 Reloaded Cogs', ', '.join(reloaded_cogs)))
         if loaded:
-            await ctx.send(f'Loaded cogs: {", ".join(loaded)}')
+            fields.append(('✅ Loaded Cogs', ', '.join(loaded)))
         if not_found:
-            await ctx.send(f'Not found cogs: {", ".join(not_found)}')
+            fields.append(('❓ Not Found Cogs', ', '.join(not_found)))
         if failed:
-            await ctx.send(f'Failed to load cogs: {", ".join(failed)}')
+            fields.append(('❌ Failed Cogs', ', '.join(failed)))
+
+        await ctx.send(
+            view=create_v2_view(
+                title='⚙️ Cog Manager Summary',
+                description='Completed reloading and loading cogs.',
+                fields=fields,
+                color=BRAND_COLOR,
+            )
+        )
+
 
 async def setup(bot) -> None:
     await bot.add_cog(Extensions(bot))
-    print(f'Extensions cog loaded')
+    print('Extensions cog loaded')

@@ -1,0 +1,184 @@
+from __future__ import annotations
+from typing import Optional, Sequence, Tuple, List, Set, Union
+import discord
+
+BRAND_COLOR = discord.Colour.from_str('#af2202')
+SUCCESS_COLOR = discord.Colour.from_rgb(0, 255, 136)
+ERROR_COLOR = discord.Colour.from_rgb(255, 68, 68)
+WARNING_COLOR = discord.Colour.from_rgb(255, 170, 0)
+INFO_COLOR = discord.Colour.blue()
+
+
+def create_v2_container(
+    title: str,
+    description: str = "",
+    *,
+    fields: Optional[Sequence[Tuple[str, str]]] = None,
+    footer: Optional[str] = None,
+    thumbnail_url: Optional[str] = None,
+    color: Optional[Union[discord.Colour, int]] = BRAND_COLOR,
+    action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
+) -> discord.ui.Container:
+    """Builds a Discord Components V2 Container replacing standard embeds."""
+    container = discord.ui.Container(accent_colour=color)
+
+    header_text = f"### {title}"
+    if description:
+        header_text += f"\n{description}"
+
+    if thumbnail_url:
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay(header_text),
+                accessory=discord.ui.Thumbnail(thumbnail_url),
+            )
+        )
+    else:
+        container.add_item(discord.ui.TextDisplay(header_text))
+
+    if fields:
+        container.add_item(discord.ui.Separator())
+        field_chunks: List[str] = []
+        current_chunk = ""
+        for name, value in fields:
+            entry = f"**{name}**\n{value}\n\n"
+            if len(current_chunk) + len(entry) > 3500:
+                if current_chunk:
+                    field_chunks.append(current_chunk.strip())
+                current_chunk = entry
+            else:
+                current_chunk += entry
+        if current_chunk.strip():
+            field_chunks.append(current_chunk.strip())
+
+        for idx, chunk in enumerate(field_chunks):
+            if idx > 0:
+                container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(chunk))
+
+    if footer:
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(f"-# {footer}"))
+
+    if action_rows:
+        container.add_item(discord.ui.Separator())
+        for row in action_rows:
+            container.add_item(row)
+
+    return container
+
+
+def create_v2_view(
+    title: str,
+    description: str = "",
+    *,
+    fields: Optional[Sequence[Tuple[str, str]]] = None,
+    footer: Optional[str] = None,
+    thumbnail_url: Optional[str] = None,
+    color: Optional[Union[discord.Colour, int]] = BRAND_COLOR,
+    action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
+    timeout: Optional[float] = 180.0,
+) -> discord.ui.LayoutView:
+    """Creates a LayoutView wrapping a single Components V2 Container."""
+    view = discord.ui.LayoutView(timeout=timeout)
+    container = create_v2_container(
+        title=title,
+        description=description,
+        fields=fields,
+        footer=footer,
+        thumbnail_url=thumbnail_url,
+        color=color,
+        action_rows=action_rows,
+    )
+    view.add_item(container)
+    if not action_rows:
+        view.stop()
+    return view
+
+
+def error_view(description: str, title: str = "❌ Error", footer: Optional[str] = None) -> discord.ui.LayoutView:
+    return create_v2_view(title=title, description=description, footer=footer, color=ERROR_COLOR)
+
+
+def success_view(description: str, title: str = "✅ Success", footer: Optional[str] = None) -> discord.ui.LayoutView:
+    return create_v2_view(title=title, description=description, footer=footer, color=SUCCESS_COLOR)
+
+
+def warning_view(description: str, title: str = "⚠️ Warning", footer: Optional[str] = None) -> discord.ui.LayoutView:
+    return create_v2_view(title=title, description=description, footer=footer, color=WARNING_COLOR)
+
+
+def check_channel_with_config(
+    guild: discord.Guild,
+    channel_or_id: Union[discord.abc.GuildChannel, discord.Thread, int],
+    watched_ids: Set[int],
+    ignored_ids: Set[int],
+) -> Tuple[bool, int]:
+    """
+    Checks whether a channel or thread is watched based on (watched_ids, ignored_ids).
+    Supports watching/ignoring individual channels as well as entire categories!
+    Returns (is_watched, effective_channel_id_for_stats).
+    """
+    if isinstance(channel_or_id, int):
+        channel_id = channel_or_id
+        channel_obj = guild.get_channel_or_thread(channel_id)
+    else:
+        channel_obj = channel_or_id
+        channel_id = channel_obj.id
+
+    parent_id: Optional[int] = None
+    category_id: Optional[int] = None
+    effective_channel_id: int = channel_id
+
+    if channel_obj is not None:
+        if isinstance(channel_obj, discord.Thread) or getattr(channel_obj, 'type', None) in (
+            discord.ChannelType.public_thread,
+            discord.ChannelType.private_thread,
+            discord.ChannelType.news_thread,
+        ):
+            parent_id = getattr(channel_obj, 'parent_id', None)
+            if parent_id:
+                effective_channel_id = parent_id
+            parent_chan = getattr(channel_obj, 'parent', None) or (guild.get_channel(parent_id) if parent_id else None)
+            category_id = getattr(parent_chan, 'category_id', None) if parent_chan else None
+        else:
+            category_id = getattr(channel_obj, 'category_id', None)
+
+    if not watched_ids:
+        return False, effective_channel_id
+
+    # Check ignored channels or categories first
+    if (
+        channel_id in ignored_ids
+        or effective_channel_id in ignored_ids
+        or (parent_id and parent_id in ignored_ids)
+        or (category_id and category_id in ignored_ids)
+    ):
+        return False, effective_channel_id
+
+    # Whole server mode
+    if 1 in watched_ids:
+        return True, effective_channel_id
+
+    # Specific channels and/or categories mode
+    if (
+        channel_id in watched_ids
+        or effective_channel_id in watched_ids
+        or (parent_id and parent_id in watched_ids)
+        or (category_id and category_id in watched_ids)
+    ):
+        return True, effective_channel_id
+
+    return False, effective_channel_id
+
+
+def format_channel_or_category(guild: discord.Guild, target_id: int) -> str:
+    """Formats a channel or category ID nicely for display in V2 containers."""
+    if target_id == 1:
+        return "🌐 **Entire Server**"
+    ch = guild.get_channel(target_id)
+    if isinstance(ch, discord.CategoryChannel):
+        return f"📁 **{ch.name}** *(Category)*"
+    elif ch is not None:
+        return f"{ch.mention}"
+    return f"<#{target_id}>"
