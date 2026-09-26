@@ -212,12 +212,23 @@ class SettingsMenuView(discord.ui.LayoutView):
                 f"-# Word Counter V2 Settings Dashboard • Active Tab: {self.active_tab.title()}"
             )
         )
+        bottom_buttons = []
+        if self.active_tab != "overview":
+            back_btn = discord.ui.Button(
+                label="⬅️ Back to Overview",
+                style=discord.ButtonStyle.primary,
+            )
+            back_btn.callback = self._on_back_to_overview
+            bottom_buttons.append(back_btn)
+
         close_btn = discord.ui.Button(
             label="✖️ Close Menu",
             style=discord.ButtonStyle.secondary,
         )
         close_btn.callback = self._on_close_menu
-        container.add_item(discord.ui.ActionRow(close_btn))
+        bottom_buttons.append(close_btn)
+
+        container.add_item(discord.ui.ActionRow(*bottom_buttons))
         self.add_item(container)
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
@@ -306,6 +317,12 @@ class SettingsMenuView(discord.ui.LayoutView):
         )
         btn_keywords.callback = self._btn_goto_keywords
 
+        btn_reset = discord.ui.Button(
+            label="🛠️ Data & Reset Tools",
+            style=discord.ButtonStyle.primary,
+        )
+        btn_reset.callback = self._btn_goto_reset
+
         btn_disable = discord.ui.Button(
             label="🔴 Disable Tracking",
             style=discord.ButtonStyle.danger,
@@ -313,7 +330,10 @@ class SettingsMenuView(discord.ui.LayoutView):
         )
         btn_disable.callback = self._btn_disable_tracking
 
-        container.add_item(discord.ui.ActionRow(btn_whole, btn_specific, btn_keywords, btn_disable))
+        row1 = discord.ui.ActionRow(btn_whole, btn_specific, btn_keywords)
+        row2 = discord.ui.ActionRow(btn_reset, btn_disable)
+        container.add_item(row1)
+        container.add_item(row2)
 
     def _populate_channels_tab(self, container: discord.ui.Container) -> None:
         if self.is_whole_server:
@@ -434,10 +454,10 @@ class SettingsMenuView(discord.ui.LayoutView):
             rem_kw_select.callback = self._on_keywords_removed
             container.add_item(discord.ui.ActionRow(rem_kw_select))
 
-        add_kw_btn = discord.ui.Button(label="➕ Add Keyword(s) (Modal)", style=discord.ButtonStyle.success)
+        add_kw_btn = discord.ui.Button(label="➕ Add Keyword(s)", style=discord.ButtonStyle.success)
         add_kw_btn.callback = self._open_add_keyword_modal
 
-        bulk_kw_btn = discord.ui.Button(label="✏️ Bulk Edit List (Modal)", style=discord.ButtonStyle.primary)
+        bulk_kw_btn = discord.ui.Button(label="✏️ Bulk Edit List", style=discord.ButtonStyle.primary)
         bulk_kw_btn.callback = self._open_bulk_keyword_modal
 
         clear_kw_btn = discord.ui.Button(
@@ -565,6 +585,11 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.status_banner = None
         await self.refresh_and_edit(interaction)
 
+    async def _btn_goto_reset(self, interaction: discord.Interaction) -> None:
+        self.active_tab = "reset"
+        self.status_banner = None
+        await self.refresh_and_edit(interaction)
+
     async def _on_channels_added(self, interaction: discord.Interaction) -> None:
         raw_values = interaction.data.get("values", [])  # type: ignore
         selected_ids = [int(v) for v in raw_values]
@@ -674,6 +699,12 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.load_state()
         self.build_ui()
         await interaction.response.edit_message(view=self)
+
+    async def _on_back_to_overview(self, interaction: discord.Interaction) -> None:
+        self.active_tab = "overview"
+        self.pending_confirmation = None
+        self.status_banner = None
+        await self.refresh_and_edit(interaction)
 
     async def _on_close_menu(self, interaction: discord.Interaction) -> None:
         self.stop()

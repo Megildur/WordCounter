@@ -39,6 +39,34 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}m {rem_sec}s"
 
 
+def compute_server_remaining_time(
+    elapsed: float,
+    idx: int,
+    page_num: int,
+    total_pages: int,
+    total_pending: int,
+) -> float:
+    """Calculates dynamically updating estimated remaining time for whole server analysis."""
+    if total_pending <= 0:
+        return 0.0
+
+    current_fraction = (page_num / max(1, total_pages)) if total_pages > 0 else 0.0
+    processed_count = (idx - 1) + current_fraction
+    remaining_members = total_pending - processed_count
+
+    if remaining_members <= 0:
+        return 0.0
+
+    if processed_count >= 1.0 and elapsed > 0:
+        avg_time_per_member = elapsed / processed_count
+        return max(0.0, avg_time_per_member * remaining_members)
+    else:
+        # Initial estimate before 1st member is fully processed
+        rem_current_pages = max(0, total_pages - page_num)
+        rem_other_members = max(0, total_pending - idx)
+        return float(rem_current_pages * 5.0 + rem_other_members * 6.0)
+
+
 async def _safe_edit_message(message: discord.Message | discord.WebhookMessage, **kwargs) -> None:
     """Safely edits a message, falling back to channel.fetch_message if webhook token expired."""
     try:
@@ -291,7 +319,7 @@ class AnalyzeChat(commands.Cog):
                 description=(
                     f"Found **{total_historical_messages:,}** historical messages for {target.mention} prior to the bot joining.\n"
                     f"Sweeping history with strict **5.0s** anti-ratelimit pacing...\n\n"
-                    f"**Estimated Time:** `{format_duration(estimated_time)}` ({total_pages} page(s))"
+                    f"**Estimated Remaining:** `{format_duration(estimated_time)}` ({total_pages} page(s))"
                 ),
                 thumbnail_url=avatar_url,
                 footer="Do not dismiss • Using Discord Guild Message Search API",
@@ -367,8 +395,8 @@ class AnalyzeChat(commands.Cog):
                 if offset >= total_historical_messages:
                     break
 
-                # Update progress every 2 pages
-                if page_num % 2 == 0:
+                # Update progress every 2 pages or for short sweeps
+                if page_num % 2 == 0 or total_pages <= 4:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
                     est_remaining = remaining_pages * 5.0
@@ -495,6 +523,13 @@ class AnalyzeChat(commands.Cog):
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
                 elapsed = asyncio.get_event_loop().time() - start_time
+                est_remaining = compute_server_remaining_time(
+                    elapsed=elapsed,
+                    idx=idx,
+                    page_num=0,
+                    total_pages=0,
+                    total_pending=len(pending_members),
+                )
 
                 # Update status message before sweeping each member
                 status_view = create_v2_view(
@@ -506,7 +541,7 @@ class AnalyzeChat(commands.Cog):
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
                         f"• 📝 Words: `{grand_total_words:,}`\n"
                         f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
-                        f"**Elapsed Time:** `{format_duration(elapsed)}`"
+                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
                     footer=f"Member {current_total_idx}/{total_eligible} • Pacing 5.0s per request",
@@ -599,9 +634,16 @@ class AnalyzeChat(commands.Cog):
                     if offset >= total_user_messages:
                         break
 
-                    # Update progress every 2 pages if member has multiple pages
-                    if page_num % 2 == 0:
+                    # Update progress every 2 pages if member has multiple pages or for short sweeps
+                    if page_num % 2 == 0 or total_pages <= 4:
                         elapsed = asyncio.get_event_loop().time() - start_time
+                        est_remaining = compute_server_remaining_time(
+                            elapsed=elapsed,
+                            idx=idx,
+                            page_num=page_num,
+                            total_pages=total_pages,
+                            total_pending=len(pending_members),
+                        )
                         prog_view = create_v2_view(
                             title="⏳ Whole Server Retroactive Deep-Sweep",
                             description=(
@@ -612,7 +654,7 @@ class AnalyzeChat(commands.Cog):
                                 f"• 💬 Messages: `{grand_total_messages + user_messages:,}`\n"
                                 f"• 📝 Words: `{grand_total_words + user_words:,}`\n"
                                 f"• 📎 Attachments: `{grand_total_attachments + user_attachments:,}`\n\n"
-                                f"**Elapsed Time:** `{format_duration(elapsed)}`"
+                                f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                             ),
                             thumbnail_url=target.display_avatar.url if target.display_avatar else None,
                             footer=f"Member {current_total_idx}/{total_eligible} • Pacing 5.0s per request",
@@ -651,6 +693,31 @@ class AnalyzeChat(commands.Cog):
                 grand_total_attachments += user_attachments
                 for kw, cnt in user_keywords.items():
                     grand_keywords[kw] += cnt
+
+                # Update progress after completing a member
+                elapsed = asyncio.get_event_loop().time() - start_time
+                est_remaining = compute_server_remaining_time(
+                    elapsed=elapsed,
+                    idx=idx + 1,
+                    page_num=0,
+                    total_pages=0,
+                    total_pending=len(pending_members),
+                )
+                prog_view = create_v2_view(
+                    title="⏳ Whole Server Retroactive Deep-Sweep",
+                    description=(
+                        f"**Completed Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
+                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped (Already Done):** `{skipped_already_count}`\n\n"
+                        f"**Server Totals Added:**\n"
+                        f"• 💬 Messages: `{grand_total_messages:,}`\n"
+                        f"• 📝 Words: `{grand_total_words:,}`\n"
+                        f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
+                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
+                    ),
+                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)",
+                    color=WARNING_COLOR,
+                )
+                await _safe_edit_message(status_msg, view=prog_view)
 
                 # 5.0s pacing delay between members
                 if idx < len(pending_members):
