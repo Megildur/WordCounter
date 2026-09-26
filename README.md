@@ -97,14 +97,23 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 
 3. **Install dependencies**:
    ```bash
-   pip install discord.py aiosqlite
+   pip install discord.py aiosqlite python-dotenv
    ```
 
 4. **Environment Variables**:
    Create a `.env` file (or set environment variables) in the root directory:
    ```env
-   DISCORD_TOKEN=your_bot_token_here
+   # Discord Bot Application Token
+   API_TOKEN=your_bot_token_here
+
+   # Support server invite link
    BOT_SERVER=https://discord.gg/Hr595Zk2tr
+
+   # Webhook URL for server join/leave logging
+   BOT_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+   # Comma-separated Discord guild IDs authorized for owner/admin commands
+   ALLOWED_GUILDS=123456789012345678,987654321098765432
    ```
 
 5. **Run the bot**:
