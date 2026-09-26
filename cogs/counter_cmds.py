@@ -80,7 +80,6 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Bulk Edit Tracked Keywords"
 
 
 class SettingsMenuView(discord.ui.LayoutView):
-    """Interactive Components V2 Settings Menu combining all server setup & management functions."""
 
     def __init__(self, bot: commands.Bot, guild: discord.Guild, author_id: int) -> None:
         super().__init__(timeout=300.0)
@@ -91,11 +90,9 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.pending_confirmation: Optional[str] = None  # whole_server | disable_server | wipe_server
         self.status_banner: Optional[Tuple[str, discord.Colour]] = None
 
-        # State for Reset tab
         self.selected_reset_user_id: Optional[int] = None
         self.selected_reset_channel_id: Optional[int] = None
 
-        # Cached DB state
         self.watched_ids: Set[int] = set()
         self.ignored_ids: Set[int] = set()
         self.keywords: List[str] = []
@@ -159,7 +156,7 @@ class SettingsMenuView(discord.ui.LayoutView):
         return discord.ui.ActionRow(select)
 
     async def _on_tab_select(self, interaction: discord.Interaction) -> None:
-        select: discord.ui.Select = interaction.data.get("values", ["overview"])  # type: ignore
+        select: discord.ui.Select = interaction.data.get("values", ["overview"])
         self.active_tab = select[0] if select else "overview"
         self.pending_confirmation = None
         self.status_banner = None
@@ -170,7 +167,6 @@ class SettingsMenuView(discord.ui.LayoutView):
         accent = self.status_banner[1] if self.status_banner else BRAND_COLOR
         container = discord.ui.Container(accent_colour=accent)
 
-        # Header Section
         icon_url = self.guild.icon.url if self.guild.icon else None
         header_md = (
             f"## ⚙️ Server Word Counter Settings\n"
@@ -186,17 +182,14 @@ class SettingsMenuView(discord.ui.LayoutView):
         else:
             container.add_item(discord.ui.TextDisplay(header_md))
 
-        # Status notification banner if present
         if self.status_banner:
             container.add_item(discord.ui.Separator())
             container.add_item(discord.ui.TextDisplay(self.status_banner[0]))
 
-        # Navigation Dropdown
         container.add_item(discord.ui.Separator())
         container.add_item(self._build_navigation_row())
         container.add_item(discord.ui.Separator())
 
-        # Render active tab content
         if self.active_tab == "overview":
             self._populate_overview_tab(container)
         elif self.active_tab == "channels":
@@ -364,7 +357,6 @@ class SettingsMenuView(discord.ui.LayoutView):
         )
         container.add_item(discord.ui.TextDisplay(f"{header}\n\n**{list_label} ({len(active_list)}):**\n{formatted_items}"))
 
-        # ChannelSelect to add channels and/or categories
         channel_select = discord.ui.ChannelSelect(
             placeholder=placeholder_add,
             channel_types=[
@@ -380,7 +372,6 @@ class SettingsMenuView(discord.ui.LayoutView):
         channel_select.callback = self._on_channels_added
         container.add_item(discord.ui.ActionRow(channel_select))
 
-        # Select dropdown to remove existing channels/categories if any exist
         if active_list:
             remove_options = []
             for cid in active_list[:25]:
@@ -402,7 +393,6 @@ class SettingsMenuView(discord.ui.LayoutView):
             rem_select.callback = self._on_channels_removed
             container.add_item(discord.ui.ActionRow(rem_select))
 
-        # Mode switch & clear buttons
         if self.is_whole_server:
             switch_btn = discord.ui.Button(
                 label="📋 Switch to Specific Channels/Categories Mode",
@@ -439,7 +429,6 @@ class SettingsMenuView(discord.ui.LayoutView):
             )
         )
 
-        # Dropdown to remove selected keywords
         if self.keywords:
             kw_options = [
                 discord.SelectOption(label=kw[:100], value=kw[:100], emoji="🔑")
@@ -540,8 +529,6 @@ class SettingsMenuView(discord.ui.LayoutView):
 
         container.add_item(discord.ui.ActionRow(btn_exec_reset, btn_unlock_analyze, btn_wipe_all))
 
-    # --- Callbacks ---
-
     async def _btn_enable_whole_server(self, interaction: discord.Interaction) -> None:
         specific_ids = [cid for cid in self.watched_ids if cid != 1]
         if specific_ids:
@@ -610,7 +597,7 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_removed(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])  # type: ignore
+        raw_values = interaction.data.get("values", [])
         selected_ids = [int(v) for v in raw_values]
 
         if self.is_whole_server:
@@ -652,13 +639,13 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.refresh_and_edit(interaction)
 
     async def _on_reset_user_selected(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])  # type: ignore
+        raw_values = interaction.data.get("values", [])
         self.selected_reset_user_id = int(raw_values[0]) if raw_values else None
         self.status_banner = None
         await self.refresh_and_edit(interaction)
 
     async def _on_reset_channel_selected(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])  # type: ignore
+        raw_values = interaction.data.get("values", [])
         self.selected_reset_channel_id = int(raw_values[0]) if raw_values else None
         self.status_banner = None
         await self.refresh_and_edit(interaction)
@@ -738,10 +725,6 @@ class SettingsMenuView(discord.ui.LayoutView):
 
 
 class UnifiedLeaderboardView(discord.ui.LayoutView):
-    """
-    Interactive leaderboard view supporting switching between Words, Messages, Attachments,
-    and Keywords leaderboards, with pagination controls.
-    """
 
     def __init__(
         self,
@@ -756,7 +739,7 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
         self.guild = guild
         self.author_id = author_id
         self.channel = channel
-        self.active_category: str = initial_category  # "words" | "messages" | "attachments" | "keywords"
+        self.active_category: str = initial_category
         self.current_page: int = 0
         self.total_pages: int = 1
 

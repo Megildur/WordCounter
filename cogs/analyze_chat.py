@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 def format_duration(seconds: float) -> str:
-    """Converts duration in seconds to a human-readable format.
-    Converts values >= 60 seconds into minutes (and hours if >= 3600).
-    """
     total_sec = int(round(seconds))
     if total_sec < 60:
         return f"{total_sec}s"
@@ -46,7 +43,6 @@ def compute_server_remaining_time(
     total_pages: int,
     total_pending: int,
 ) -> float:
-    """Calculates dynamically updating estimated remaining time for whole server analysis."""
     if total_pending <= 0:
         return 0.0
 
@@ -61,14 +57,12 @@ def compute_server_remaining_time(
         avg_time_per_member = elapsed / processed_count
         return max(0.0, avg_time_per_member * remaining_members)
     else:
-        # Initial estimate before 1st member is fully processed
         rem_current_pages = max(0, total_pages - page_num)
         rem_other_members = max(0, total_pending - idx)
         return float(rem_current_pages * 5.0 + rem_other_members * 6.0)
 
 
 async def _safe_edit_message(message: discord.Message | discord.WebhookMessage, **kwargs) -> None:
-    """Safely edits a message, falling back to channel.fetch_message if webhook token expired."""
     try:
         await message.edit(**kwargs)
     except discord.HTTPException:
@@ -85,13 +79,12 @@ async def _safe_edit_message(message: discord.Message | discord.WebhookMessage, 
 
 
 class AnalyzeConfirmView(discord.ui.LayoutView):
-    """Confirmation modal layout view warning the user that keywords must be set in /settings first."""
 
     def __init__(
         self,
         cog: "AnalyzeChat",
         author_id: int,
-        target: Optional[discord.Member] = None,  # None means whole server
+        target: Optional[discord.Member] = None,
         keywords: Optional[List[str]] = None,
         eligible_count: int = 1,
     ) -> None:
@@ -195,11 +188,6 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
 
 
 class AnalyzeChat(commands.Cog):
-    """
-    Retroactively sweeps historical messages before the bot joined the server
-    using Discord's Guild Message Search API (/guilds/{guild_id}/messages/search),
-    integrating directly with WordCounterDatabase and Components V2 UI.
-    """
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -214,10 +202,6 @@ class AnalyzeChat(commands.Cog):
     async def _fetch_search_page(
         self, guild_id: int, author_id: int, max_id: int, offset: int = 0
     ) -> Dict[str, Any]:
-        """
-        Paginates Discord's guild search API restricted to messages sent BEFORE the bot joined (max_id).
-        Routes through discord.py's internal HTTP client to leverage automatic 429 bucket handling.
-        """
         route = Route("GET", "/guilds/{guild_id}/messages/search", guild_id=guild_id)
         params = {
             "author_id": author_id,
@@ -229,7 +213,6 @@ class AnalyzeChat(commands.Cog):
             try:
                 data = await self.bot.http.request(route, params=params)
 
-                # Handle the 202 Indexing delay when a guild's search index is warming up
                 if not isinstance(data, dict) or "messages" not in data or data.get("message") == "Indexing":
                     retry_after = data.get("retry_after", 5) if isinstance(data, dict) else 5
                     logger.info(f"Search index building for guild {guild_id}. Waiting {retry_after}s...")
@@ -257,7 +240,6 @@ class AnalyzeChat(commands.Cog):
 
         self.running_guilds.add(guild.id)
         try:
-            # 1. Double check if user has already been analyzed in this guild
             if await self.bot.db.is_user_analyzed(guild.id, target.id):
                 await _safe_edit_message(
                     status_msg,
@@ -268,11 +250,9 @@ class AnalyzeChat(commands.Cog):
                 )
                 return
 
-            # 2. Load server tracking config & watched keywords from WordCounterDatabase
             watched_ids, ignored_ids = await self.bot.db.get_guild_tracking_config(guild.id)
             keyword_list: List[str] = await self.bot.db.get_keywords(guild.id)
 
-            # 3. Generate a Snowflake ID for when the bot joined to prevent double-counting
             bot_join_time = guild.me.joined_at if guild.me else None
             if bot_join_time is not None:
                 max_id_snowflake = discord.utils.time_snowflake(bot_join_time)
@@ -332,7 +312,6 @@ class AnalyzeChat(commands.Cog):
             counted_messages = 0
             keyword_counts: Dict[str, int] = {k: 0 for k in keyword_list}
 
-            # Per-channel accumulators so channel leaderboards also receive the retroactive data
             channel_words: Dict[int, int] = defaultdict(int)
             channel_messages: Dict[int, int] = defaultdict(int)
             channel_attachments: Dict[int, int] = defaultdict(int)
@@ -342,7 +321,6 @@ class AnalyzeChat(commands.Cog):
             page_num = 0
             start_time = asyncio.get_event_loop().time()
 
-            # 4. Sweep and Tally with 5.0s pacing cushion
             while True:
                 messages_array = data.get("messages", [])
                 if not messages_array:
@@ -365,14 +343,12 @@ class AnalyzeChat(commands.Cog):
                             counted_messages += 1
                             channel_messages[eff_channel_id] += 1
 
-                            # 1. Tally Words
                             if content:
                                 words = content.split()
                                 w_len = len(words)
                                 total_words += w_len
                                 channel_words[eff_channel_id] += w_len
 
-                                # 2. Tally Keywords
                                 content_lower = content.lower()
                                 for kw in keyword_list:
                                     matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
@@ -380,7 +356,6 @@ class AnalyzeChat(commands.Cog):
                                         keyword_counts[kw] += matches
                                         channel_keywords[(eff_channel_id, kw)] += matches
 
-                            # 3. Tally Attachments & Links
                             att_len = len(msg.get("attachments", []))
                             link_len = sum(
                                 1 for w in content.split() if w.startswith(("http://", "https://"))
@@ -395,7 +370,6 @@ class AnalyzeChat(commands.Cog):
                 if offset >= total_historical_messages:
                     break
 
-                # Update progress every 2 pages or for short sweeps
                 if page_num % 2 == 0 or total_pages <= 4:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
@@ -414,7 +388,6 @@ class AnalyzeChat(commands.Cog):
                     )
                     await _safe_edit_message(status_msg, view=prog_view)
 
-                # Strict 5.0s anti-ratelimit cushion
                 await asyncio.sleep(5.0)
 
                 try:
@@ -425,7 +398,6 @@ class AnalyzeChat(commands.Cog):
                     logger.error(f"Failed offset {offset} during retroactive sweep: {e}")
                     break
 
-            # 5. Save everything back to WordCounterDatabase under asyncio.Lock + WAL
             await self.bot.db.save_retroactive_analysis(
                 guild_id=guild.id,
                 user_id=target.id,
@@ -474,7 +446,6 @@ class AnalyzeChat(commands.Cog):
 
         self.running_guilds.add(guild.id)
         try:
-            # 1. Ensure guild members are fully cached
             if not guild.chunked:
                 try:
                     await guild.chunk()
@@ -498,14 +469,12 @@ class AnalyzeChat(commands.Cog):
                 )
                 return
 
-            # 2. Snowflake cutoff for bot join time
             bot_join_time = guild.me.joined_at if guild.me else None
             if bot_join_time is not None:
                 max_id_snowflake = discord.utils.time_snowflake(bot_join_time)
             else:
                 max_id_snowflake = discord.utils.time_snowflake(discord.utils.utcnow())
 
-            # 3. Server tracking config & watched keywords
             watched_ids, ignored_ids = await self.bot.db.get_guild_tracking_config(guild.id)
             keyword_list: List[str] = await self.bot.db.get_keywords(guild.id)
 
@@ -519,7 +488,6 @@ class AnalyzeChat(commands.Cog):
 
             start_time = asyncio.get_event_loop().time()
 
-            # 4. Process each pending member one by one
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -531,7 +499,6 @@ class AnalyzeChat(commands.Cog):
                     total_pending=len(pending_members),
                 )
 
-                # Update status message before sweeping each member
                 status_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep",
                     description=(
@@ -634,7 +601,6 @@ class AnalyzeChat(commands.Cog):
                     if offset >= total_user_messages:
                         break
 
-                    # Update progress every 2 pages if member has multiple pages or for short sweeps
                     if page_num % 2 == 0 or total_pages <= 4:
                         elapsed = asyncio.get_event_loop().time() - start_time
                         est_remaining = compute_server_remaining_time(
@@ -662,7 +628,6 @@ class AnalyzeChat(commands.Cog):
                         )
                         await _safe_edit_message(status_msg, view=prog_view)
 
-                    # 5.0s anti-ratelimit cushion
                     await asyncio.sleep(5.0)
 
                     try:
@@ -673,7 +638,6 @@ class AnalyzeChat(commands.Cog):
                         logger.error(f"Failed offset {offset} for member {target.id}: {e}")
                         break
 
-                # Save member's stats to DB
                 await self.bot.db.save_retroactive_analysis(
                     guild_id=guild.id,
                     user_id=target.id,
@@ -694,7 +658,6 @@ class AnalyzeChat(commands.Cog):
                 for kw, cnt in user_keywords.items():
                     grand_keywords[kw] += cnt
 
-                # Update progress after completing a member
                 elapsed = asyncio.get_event_loop().time() - start_time
                 est_remaining = compute_server_remaining_time(
                     elapsed=elapsed,
@@ -719,11 +682,9 @@ class AnalyzeChat(commands.Cog):
                 )
                 await _safe_edit_message(status_msg, view=prog_view)
 
-                # 5.0s pacing delay between members
                 if idx < len(pending_members):
                     await asyncio.sleep(5.0)
 
-            # 5. Analysis complete summary
             total_duration = asyncio.get_event_loop().time() - start_time
             fields = [
                 (

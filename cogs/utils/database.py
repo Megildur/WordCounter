@@ -134,7 +134,6 @@ class WordCounterDatabase:
             )
             await self.db.commit()
 
-            # Automatically migrate any existing legacy standalone .db files if present
             legacy_files = [
                 ("channels.db", "channels"),
                 ("ignore.db", "ignore"),
@@ -161,8 +160,6 @@ class WordCounterDatabase:
                             await self.db.execute("DETACH DATABASE legacy_db")
                         except Exception:
                             pass
-
-    # --- Server / Channel / Category Tracking Config ---
 
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
         await self.ensure_connected()
@@ -256,8 +253,6 @@ class WordCounterDatabase:
             await self.db.execute("DELETE FROM ignore WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
 
-    # --- Word Counts ---
-
     async def update_word_count(self, guild_id: int, user_id: int, channel_id: int, count: int) -> None:
         await self.ensure_connected()
         async with self.db_lock:
@@ -334,8 +329,6 @@ class WordCounterDatabase:
                     (guild_id, channel_id),
                 )
             return await cursor.fetchall()
-
-    # --- Message Counts ---
 
     async def add_message_count(self, guild_id: int, user_id: int, channel_id: int) -> None:
         await self.ensure_connected()
@@ -426,8 +419,6 @@ class WordCounterDatabase:
                 )
             return await cursor.fetchall()
 
-    # --- Attachment Counts ---
-
     async def add_attachment_count(self, guild_id: int, channel_id: int, user_id: int, count: int) -> None:
         await self.ensure_connected()
         async with self.db_lock:
@@ -504,8 +495,6 @@ class WordCounterDatabase:
                     (guild_id, channel_id),
                 )
             return await cursor.fetchall()
-
-    # --- Keywords ---
 
     async def get_keywords(self, guild_id: int) -> List[str]:
         await self.ensure_connected()
@@ -645,8 +634,6 @@ class WordCounterDatabase:
                 )
             return await cursor.fetchall()
 
-    # --- User Stats & Resets ---
-
     async def get_user_full_stats(
         self, guild_id: int, user_id: int
     ) -> Tuple[int, int, int, List[Tuple[str, int]]]:
@@ -749,41 +736,24 @@ class WordCounterDatabase:
             await self.db.commit()
 
     async def reset_entire_server(self, guild_id: int) -> None:
-        """
-        Performs a complete fresh restart for a guild:
-        - Deletes all recorded counts (words, messages, attachments, keywords)
-        - Deletes all chat analysis history (unlocks all members to be analyzed again)
-        - Deletes all tracking settings (watched channels, ignored channels/categories)
-        - Deletes all tracked keywords
-        """
         await self.ensure_connected()
         async with self.db_lock:
-            # Delete word counts
             await self.db.execute("DELETE FROM server WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM counters WHERE guild_id = ?", (guild_id,))
-            # Delete message counts
             await self.db.execute("DELETE FROM message_user WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM message_channels WHERE guild_id = ?", (guild_id,))
-            # Delete attachment counts
             await self.db.execute("DELETE FROM attachments_users WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM attachments_channels WHERE guild_id = ?", (guild_id,))
-            # Delete keyword counts
             await self.db.execute("DELETE FROM keyword_user WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM keyword_channel WHERE guild_id = ?", (guild_id,))
-            # Reset analyzed users history so /analyze_chat can scan all members again
             await self.db.execute("DELETE FROM analyzed_users WHERE guild_id = ?", (guild_id,))
-            # Reset server tracking configuration and ignored channels/categories
             await self.db.execute("DELETE FROM channels WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM ignore WHERE guild_id = ?", (guild_id,))
-            # Reset tracked keywords watchlist
             await self.db.execute("DELETE FROM keyword WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
 
     async def reset_entire_server_counts(self, guild_id: int) -> None:
-        """Alias for complete server reset for backward compatibility."""
         await self.reset_entire_server(guild_id)
-
-    # --- Retroactive Analysis ---
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()
@@ -848,7 +818,6 @@ class WordCounterDatabase:
     ) -> None:
         await self.ensure_connected()
         async with self.db_lock:
-            # 1. Server & Channel Words
             await self.db.execute(
                 """
                 INSERT INTO server (guild_id, user_id, count)
@@ -870,7 +839,6 @@ class WordCounterDatabase:
                         (guild_id, user_id, cid, w_cnt),
                     )
 
-            # 2. Server & Channel Messages
             await self.db.execute(
                 """
                 INSERT INTO message_user (guild_id, user_id, messages)
@@ -892,7 +860,6 @@ class WordCounterDatabase:
                         (guild_id, user_id, cid, m_cnt),
                     )
 
-            # 3. Server & Channel Attachments
             await self.db.execute(
                 """
                 INSERT INTO attachments_users (guild_id, user_id, count)
@@ -914,7 +881,6 @@ class WordCounterDatabase:
                         (guild_id, cid, user_id, a_cnt),
                     )
 
-            # 4. Server & Channel Keywords
             for kw, k_cnt in keyword_counts.items():
                 if k_cnt > 0:
                     await self.db.execute(
@@ -938,10 +904,8 @@ class WordCounterDatabase:
                         (guild_id, cid, kw, user_id, k_cnt),
                     )
 
-            # 5. Lock out future retroactive analysis for this user
             await self.db.execute(
                 "INSERT OR IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
                 (user_id, guild_id),
             )
             await self.db.commit()
-

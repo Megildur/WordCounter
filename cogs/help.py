@@ -15,13 +15,11 @@ load_dotenv()
 
 
 def get_support_server_url() -> str:
-    """Returns the support server invite URL loaded from the BOT_SERVER .env variable."""
     url = os.getenv("BOT_SERVER", "").strip()
     return url if url else "https://discord.gg"
 
 
 def get_bot_invite_url(bot: commands.Bot) -> str:
-    """Returns the OAuth2 bot invite URL."""
     client_id = bot.user.id if bot.user else None
     if client_id:
         return f"https://discord.com/oauth2/authorize?client_id={client_id}&permissions=277025507392&scope=bot+applications.commands"
@@ -29,9 +27,6 @@ def get_bot_invite_url(bot: commands.Bot) -> str:
 
 
 class HelpView(discord.ui.LayoutView):
-    """
-    Paginated Help Menu with navigation controls and link buttons.
-    """
 
     def __init__(self, bot: commands.Bot, author_id: int) -> None:
         super().__init__(timeout=180.0)
@@ -150,7 +145,6 @@ class HelpView(discord.ui.LayoutView):
             color=BRAND_COLOR,
         )
 
-        # Pagination Action Row
         btn_prev = discord.ui.Button(
             label="◀️ Previous",
             style=discord.ButtonStyle.secondary,
@@ -174,7 +168,6 @@ class HelpView(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(btn_prev, btn_ind, btn_next))
 
-        # Support Server Website & Bot Invite Link Buttons
         support_url = get_support_server_url()
         invite_url = get_bot_invite_url(self.bot)
 
@@ -210,10 +203,6 @@ class HelpView(discord.ui.LayoutView):
 
 
 class AdvertisementView(discord.ui.LayoutView):
-    """
-    Showcase card for WordCounter with support server website link button
-    and bot invite link button.
-    """
 
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__(timeout=None)
@@ -276,7 +265,6 @@ class AdvertisementView(discord.ui.LayoutView):
 
 
 class HelpCog(commands.Cog, name="Help"):
-    """Help and discovery commands for WordCounter."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot

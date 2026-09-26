@@ -19,7 +19,6 @@ def create_v2_container(
     color: Optional[Union[discord.Colour, int]] = BRAND_COLOR,
     action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
 ) -> discord.ui.Container:
-    """Builds a Discord Components V2 Container replacing standard embeds."""
     container = discord.ui.Container(accent_colour=color)
 
     header_text = f"### {title}"
@@ -79,7 +78,6 @@ def create_v2_view(
     action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
     timeout: Optional[float] = 180.0,
 ) -> discord.ui.LayoutView:
-    """Creates a LayoutView wrapping a single Components V2 Container."""
     view = discord.ui.LayoutView(timeout=timeout)
     container = create_v2_container(
         title=title,
@@ -114,11 +112,6 @@ def check_channel_with_config(
     watched_ids: Set[int],
     ignored_ids: Set[int],
 ) -> Tuple[bool, int]:
-    """
-    Checks whether a channel or thread is watched based on (watched_ids, ignored_ids).
-    Supports watching/ignoring individual channels as well as entire categories!
-    Returns (is_watched, effective_channel_id_for_stats).
-    """
     if isinstance(channel_or_id, int):
         channel_id = channel_or_id
         channel_obj = guild.get_channel_or_thread(channel_id)
@@ -147,7 +140,6 @@ def check_channel_with_config(
     if not watched_ids:
         return False, effective_channel_id
 
-    # Check ignored channels or categories first
     if (
         channel_id in ignored_ids
         or effective_channel_id in ignored_ids
@@ -156,11 +148,9 @@ def check_channel_with_config(
     ):
         return False, effective_channel_id
 
-    # Whole server mode
     if 1 in watched_ids:
         return True, effective_channel_id
 
-    # Specific channels and/or categories mode
     if (
         channel_id in watched_ids
         or effective_channel_id in watched_ids
@@ -173,7 +163,6 @@ def check_channel_with_config(
 
 
 def format_channel_or_category(guild: discord.Guild, target_id: int) -> str:
-    """Formats a channel or category ID nicely for display in V2 containers."""
     if target_id == 1:
         return "🌐 **Entire Server**"
     ch = guild.get_channel(target_id)
