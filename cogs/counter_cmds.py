@@ -478,7 +478,7 @@ class SettingsMenuView(discord.ui.LayoutView):
                 discord.ui.TextDisplay(
                     "⚠️ **DANGER: Confirm Full Server Fresh Restart**\n"
                     "This will completely reset **EVERYTHING** for this server:\n"
-                    "• **All Statistics**: Words, messages, attachments, and keywords reset to `0`\n"
+                    "• **All Statistics**: Words, messages, attachments, emojis, and keywords reset to `0`\n"
                     "• **Chat Analysis**: History cleared (all members can be retroactively analyzed again)\n"
                     "• **Settings**: Tracking mode, watched/ignored channels, and keywords reset\n\n"
                     "Are you sure you want to perform a fresh restart?"
@@ -690,7 +690,7 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.selected_reset_channel_id = None
         self.active_tab = "overview"
         self.status_banner = (
-            "✅ **Server Reset Complete!** All counts (words, messages, attachments, keywords), "
+            "✅ **Server Reset Complete!** All counts (words, messages, attachments, emojis, keywords), "
             "chat analysis history, channels, and keywords have been reset to a fresh restart.",
             SUCCESS_COLOR,
         )
@@ -782,6 +782,14 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
             results = await self.bot.db.get_attachment_leaderboard(self.guild.id, cid)
             await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
 
+        elif self.active_category == "emojis":
+            title = "😀 Emoji Leaderboard"
+            unit = "emojis"
+            subtitle = f"Top emoji contributors in {self.channel.mention}" if self.channel else "Top emoji contributors in the server"
+            empty_msg = f"No emojis recorded yet in {self.channel.mention}." if self.channel else "No emojis recorded yet in this server."
+            results = await self.bot.db.get_emoji_leaderboard(self.guild.id, cid)
+            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
+
         elif self.active_category == "keywords":
             await self._render_keywords_leaderboard(cid, medals)
 
@@ -826,8 +834,8 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
             monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
             if monthly_data:
                 m_lines = [
-                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments"
-                    for y, m, w, msg_cnt, att_cnt in monthly_data
+                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments • {emo_cnt:,} emojis"
+                    for y, m, w, msg_cnt, att_cnt, emo_cnt in monthly_data
                 ]
                 fields = [("📅 Monthly Channel History (Newest to Oldest)", "\n".join(m_lines))]
 
@@ -899,8 +907,8 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
             monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
             if monthly_data:
                 m_lines = [
-                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments"
-                    for y, m, w, msg_cnt, att_cnt in monthly_data
+                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments • {emo_cnt:,} emojis"
+                    for y, m, w, msg_cnt, att_cnt, emo_cnt in monthly_data
                 ]
                 if fields is None:
                     fields = []
@@ -947,6 +955,14 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
         )
         btn_attachments.callback = self._on_switch_attachments
 
+        btn_emojis = discord.ui.Button(
+            label="Emojis",
+            emoji="😀",
+            style=discord.ButtonStyle.primary if self.active_category == "emojis" else discord.ButtonStyle.secondary,
+            disabled=self.active_category == "emojis",
+        )
+        btn_emojis.callback = self._on_switch_emojis
+
         btn_keywords = discord.ui.Button(
             label="Keywords",
             emoji="🔑",
@@ -955,7 +971,7 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
         )
         btn_keywords.callback = self._on_switch_keywords
 
-        return discord.ui.ActionRow(btn_words, btn_messages, btn_attachments, btn_keywords)
+        return discord.ui.ActionRow(btn_words, btn_messages, btn_attachments, btn_emojis, btn_keywords)
 
     def _build_pagination_row(self) -> discord.ui.ActionRow:
         btn_prev = discord.ui.Button(
@@ -993,6 +1009,11 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
 
     async def _on_switch_attachments(self, interaction: discord.Interaction) -> None:
         self.active_category = "attachments"
+        self.current_page = 0
+        await self.refresh_and_edit(interaction)
+
+    async def _on_switch_emojis(self, interaction: discord.Interaction) -> None:
+        self.active_category = "emojis"
         self.current_page = 0
         await self.refresh_and_edit(interaction)
 
@@ -1056,7 +1077,7 @@ class Counter_Cmds(commands.Cog):
 
     @app_commands.command(
         name="leaderboard",
-        description="Shows server leaderboards for words, messages, attachments, and keywords",
+        description="Shows server leaderboards for words, messages, attachments, emojis, and keywords",
     )
     @app_commands.describe(channel="Optional channel to filter the leaderboard by")
     async def leaderboard(

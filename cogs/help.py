@@ -50,7 +50,7 @@ class HelpView(discord.ui.LayoutView):
             fields = [
                 (
                     "🏆 /leaderboard [channel]",
-                    "View rankings for **Words**, **Messages**, **Attachments**, or **Keywords**.\n"
+                    "View rankings for **Words**, **Messages**, **Attachments**, **Emojis**, or **Keywords**.\n"
                     "Filter by a channel to see top 10 contributors and a month-by-month history breakdown from newest to oldest.",
                 ),
                 (
@@ -118,11 +118,15 @@ class HelpView(discord.ui.LayoutView):
             fields = [
                 (
                     "📅 Monthly & Yearly Analytics",
-                    "All messages, words, attachments, and keywords are grouped by month, year, and channel for both live tracking and historical sweeps.",
+                    "All messages, words, attachments (including stickers), emojis, and keywords are grouped by month, year, and channel for both live tracking and historical sweeps.",
+                ),
+                (
+                    "🔮 Upcoming Feature: 💰 Swear Jar",
+                    "Stay tuned! A **Swear Jar** feature will be added in an upcoming update to track foul language and see who owes the server jar the most!",
                 ),
                 (
                     "📢 /advertisement",
-                    "Post a feature summary card with invite links.",
+                    "Post an attractive feature summary card with invite links.",
                 ),
                 (
                     "🔗 Quick Links",
@@ -213,27 +217,47 @@ class AdvertisementView(discord.ui.LayoutView):
         avatar_url = bot_user.display_avatar.url if bot_user and bot_user.display_avatar else None
 
         desc = (
-            "Track words, messages, attachments, and custom keywords across your server with real-time leaderboards, monthly historical analytics, and deep chat analysis."
+            "🚀 **Supercharge your Discord server with WordCounter!**\n\n"
+            "The all-in-one chat analytics & activity tracking powerhouse. Count words, messages, attachments, Discord stickers, Unicode & custom emojis, and custom keywords with pinpoint accuracy, retroactive past-message deep sweeps, and gorgeous interactive leaderboards!"
         )
 
         fields = [
             (
-                "⚡ Features",
-                "• **Live Tracking**: Counts words, messages, attachments, media links, and custom keywords.\n"
-                "• **Monthly & Yearly Analytics**: Stats grouped by month, year, and channel from newest to oldest.\n"
-                "• **Interactive Leaderboard**: Words, Messages, Attachments, and Keywords with channel monthly breakdowns.\n"
-                "• **Historical Chat Sweep**: Scan messages sent before the bot joined (per-user or whole server).\n"
-                "• **Channel & Category Control**: Whole-server mode with ignore lists, or specific channel/category tracking.\n"
-                "• **Keyword Watchlist**: Track custom phrases and see who says them most.",
+                "⚡ Real-Time Tracking Engine",
+                "• 📝 **Words & Messages**: Instant counting with seamless edit and deletion handling.\n"
+                "• 📎 **Attachments & Stickers**: Counts image/file uploads and Discord stickers as attachments.\n"
+                "• 😀 **Emoji Tracking**: Counts both native Unicode emojis and custom Discord emojis.\n"
+                "• 🔑 **Keyword Watchlist**: Custom regex tracking for phrases and catchphrases.",
+            ),
+            (
+                "📅 Chronological Monthly Analytics",
+                "• 🗓️ **Month & Year Grouping**: View activity timelines from newest to oldest.\n"
+                "• 📺 **Channel-by-Channel Breakdown**: See exactly where members chat the most.\n"
+                "• 👤 **Interactive User Stats**: `/stats user` with dropdown timeline navigation.",
+            ),
+            (
+                "🏆 5-in-1 Interactive Leaderboard",
+                "• 🥇 Dynamic switcher: **Words**, **Messages**, **Attachments**, **Emojis**, and **Keywords**!\n"
+                "• 📍 Filter by channel to uncover top 10 local legends and channel monthly histories.",
+            ),
+            (
+                "🔍 Retroactive History Deep-Sweep",
+                "• ⏳ Scan your server's chat history from **before** WordCounter joined!\n"
+                "• 🌐 Single user sweeps or whole-server deep scans with live progress & ETA.",
+            ),
+            (
+                "🔮 Coming Soon: 💰 Swear Jar Feature!",
+                "• 🪙 Keep chat clean or see who owes the jar the most pennies!\n"
+                "• 🤫 Track profanities and curse words with an interactive server swear jar!",
             ),
         ]
 
         container = create_v2_container(
-            title="📊 WordCounter — Chat & Word Analytics",
+            title="✨ 📊 WordCounter — Server Chat & Activity Analytics",
             description=desc,
             fields=fields,
             thumbnail_url=avatar_url,
-            footer="WordCounter • Real-Time Chat & Word Analytics",
+            footer="WordCounter • Level Up Your Community Analytics",
             color=BRAND_COLOR,
         )
 

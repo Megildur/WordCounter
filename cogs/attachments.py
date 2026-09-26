@@ -14,7 +14,7 @@ class Attachments(commands.Cog):
         await self.bot.db.ensure_connected()
 
     async def attachment_message(self, message, result, target_channel_id: Optional[int] = None) -> None:
-        attachment_count = len(message.attachments)
+        attachment_count = len(message.attachments) + (len(message.stickers) if getattr(message, "stickers", None) else 0)
         link_count = sum(1 for word in message.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         total_attachments = attachment_count + link_count
         if total_attachments > 0:
@@ -33,7 +33,7 @@ class Attachments(commands.Cog):
             )
 
     async def attachment_message_delete(self, message, result, target_channel_id: Optional[int] = None) -> None:
-        attachment_count = len(message.attachments)
+        attachment_count = len(message.attachments) + (len(message.stickers) if getattr(message, "stickers", None) else 0)
         link_count = sum(1 for word in message.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         total_attachments = attachment_count + link_count
         if total_attachments > 0:
@@ -52,8 +52,8 @@ class Attachments(commands.Cog):
             )
 
     async def attachment_message_edit(self, before, after, result, target_channel_id: Optional[int] = None) -> None:
-        before_attachment_count = len(before.attachments)
-        after_attachment_count = len(after.attachments)
+        before_attachment_count = len(before.attachments) + (len(before.stickers) if getattr(before, "stickers", None) else 0)
+        after_attachment_count = len(after.attachments) + (len(after.stickers) if getattr(after, "stickers", None) else 0)
         before_link_count = sum(1 for word in before.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         after_link_count = sum(1 for word in after.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         before_count = before_attachment_count + before_link_count

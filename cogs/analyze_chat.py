@@ -17,6 +17,7 @@ from cogs.utils.components import (
     create_v2_view,
     error_view,
     check_channel_with_config,
+    count_emojis,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,8 @@ class AnalyzeChat(commands.Cog):
             estimated_time = max(1, total_pages - 1) * 5.5 if total_pages > 1 else 5.0
             avatar_url = target.display_avatar.url if target.display_avatar else None
 
+            print(f"\n[ANALYSIS ACTIVE] ⚠️ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) — DO NOT RESTART BOT")
+
             status_view = create_v2_view(
                 title="⏳ Retroactive Deep-Sweep in Progress",
                 description=(
@@ -334,14 +337,16 @@ class AnalyzeChat(commands.Cog):
 
             total_words = 0
             total_attachments = 0
+            total_emojis = 0
             counted_messages = 0
             keyword_counts: Dict[str, int] = {k: 0 for k in keyword_list}
 
             channel_words: Dict[int, int] = defaultdict(int)
             channel_messages: Dict[int, int] = defaultdict(int)
             channel_attachments: Dict[int, int] = defaultdict(int)
+            channel_emojis: Dict[int, int] = defaultdict(int)
             channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
-            monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0})
+            monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0, "emojis": 0})
             monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
 
             offset = 0
@@ -397,6 +402,12 @@ class AnalyzeChat(commands.Cog):
                                 channel_words[eff_channel_id] += w_len
                                 monthly_stats[m_key]["words"] += w_len
 
+                                e_cnt = count_emojis(content)
+                                if e_cnt > 0:
+                                    total_emojis += e_cnt
+                                    channel_emojis[eff_channel_id] += e_cnt
+                                    monthly_stats[m_key]["emojis"] += e_cnt
+
                                 content_lower = content.lower()
                                 for kw in keyword_list:
                                     matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
@@ -405,7 +416,8 @@ class AnalyzeChat(commands.Cog):
                                         channel_keywords[(eff_channel_id, kw)] += matches
                                         monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
 
-                            att_len = len(msg.get("attachments", []))
+                            sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
+                            att_len = len(msg.get("attachments", [])) + sticker_len
                             link_len = sum(
                                 1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
                             )
@@ -424,12 +436,13 @@ class AnalyzeChat(commands.Cog):
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
                     est_remaining = remaining_pages * 5.5
+                    print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {min(offset, total_historical_messages):,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
                     prog_view = create_v2_view(
                         title="⏳ Retroactive Deep-Sweep in Progress",
                         description=(
                             f"**Target:** {target.mention}\n"
                             f"**Progress:** `{min(offset, total_historical_messages):,} / {total_historical_messages:,}` messages scanned\n"
-                            f"**Tallied So Far:** `{counted_messages:,}` messages • `{total_words:,}` words • `{total_attachments:,}` attachments\n\n"
+                            f"**Tallied So Far:** `{counted_messages:,}` messages • `{total_words:,}` words • `{total_attachments:,}` attachments • `{total_emojis:,}` emojis\n\n"
                             f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                         ),
                         thumbnail_url=avatar_url,
@@ -461,13 +474,17 @@ class AnalyzeChat(commands.Cog):
                 channel_keywords=channel_keywords,
                 monthly_stats=monthly_stats,
                 monthly_keywords=monthly_keywords,
+                channel_emojis=channel_emojis,
+                total_emojis=total_emojis,
             )
 
             total_duration = asyncio.get_event_loop().time() - start_time
+            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {counted_messages:,}, Words: {total_words:,}, Attachments: {total_attachments:,}, Emojis: {total_emojis:,})\n")
             fields = [
                 ("💬 Old Messages Added", f"**{counted_messages:,}** *(of {total_historical_messages:,} indexed)*"),
                 ("📝 Words Found & Added", f"**{total_words:,}**"),
                 ("📎 Attachments Found & Added", f"**{total_attachments:,}**"),
+                ("😀 Emojis Found & Added", f"**{total_emojis:,}**"),
             ]
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in keyword_counts.items()]
@@ -486,6 +503,7 @@ class AnalyzeChat(commands.Cog):
 
         finally:
             self.running_guilds.discard(guild.id)
+            print(f"[ANALYSIS LOCK RELEASED] Analysis lock released for '{guild.name}' ({guild.id})")
 
     async def _run_whole_server_analysis(
         self,
@@ -537,10 +555,13 @@ class AnalyzeChat(commands.Cog):
             grand_total_words = 0
             grand_total_messages = 0
             grand_total_attachments = 0
+            grand_total_emojis = 0
             grand_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
 
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
+
+            print(f"\n[ANALYSIS ACTIVE] ⚠️ Whole-server analysis started in '{guild.name}' ({guild.id}) for {len(pending_members)} pending members ({total_eligible} total) — DO NOT RESTART BOT")
 
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
@@ -556,6 +577,8 @@ class AnalyzeChat(commands.Cog):
                     total_pages_scanned=total_pages_scanned,
                 )
 
+                print(f"[ANALYSIS ACTIVE] '{guild.name}' -> Processing member {current_total_idx}/{total_eligible}: '{target.display_name}' ({target.id}) (Elapsed: {format_duration(elapsed)}, Est. Remaining: {format_duration(est_remaining)})")
+
                 status_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep",
                     description=(
@@ -565,7 +588,8 @@ class AnalyzeChat(commands.Cog):
                         f"**Server Totals Added So Far:**\n"
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
                         f"• 📝 Words: `{grand_total_words:,}`\n"
-                        f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
+                        f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
+                        f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                         f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
@@ -604,6 +628,7 @@ class AnalyzeChat(commands.Cog):
                         analyzed_count=analyzed_count,
                         total_pages_scanned=total_pages_scanned,
                     )
+                    print(f"[ANALYSIS SKIPPED] '{guild.name}' -> Member {current_total_idx}/{total_eligible}: '{target.display_name}' has 0 historical messages")
                     skip_view = create_v2_view(
                         title="⏳ Whole Server Retroactive Deep-Sweep",
                         description=(
@@ -613,7 +638,8 @@ class AnalyzeChat(commands.Cog):
                             f"**Server Totals Added So Far:**\n"
                             f"• 💬 Messages: `{grand_total_messages:,}`\n"
                             f"• 📝 Words: `{grand_total_words:,}`\n"
-                            f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
+                            f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
+                            f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                             f"**Elapsed Time:** `{format_duration(elapsed)}`"
                             + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
                         ),
@@ -627,14 +653,16 @@ class AnalyzeChat(commands.Cog):
 
                 user_words = 0
                 user_attachments = 0
+                user_emojis = 0
                 user_messages = 0
                 user_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
 
                 channel_words: Dict[int, int] = defaultdict(int)
                 channel_messages: Dict[int, int] = defaultdict(int)
                 channel_attachments: Dict[int, int] = defaultdict(int)
+                channel_emojis: Dict[int, int] = defaultdict(int)
                 channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
-                monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0})
+                monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0, "emojis": 0})
                 monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
 
                 offset = 0
@@ -689,6 +717,12 @@ class AnalyzeChat(commands.Cog):
                                     channel_words[eff_channel_id] += w_len
                                     monthly_stats[m_key]["words"] += w_len
 
+                                    e_cnt = count_emojis(content)
+                                    if e_cnt > 0:
+                                        user_emojis += e_cnt
+                                        channel_emojis[eff_channel_id] += e_cnt
+                                        monthly_stats[m_key]["emojis"] += e_cnt
+
                                     content_lower = content.lower()
                                     for kw in keyword_list:
                                         matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
@@ -697,7 +731,8 @@ class AnalyzeChat(commands.Cog):
                                             channel_keywords[(eff_channel_id, kw)] += matches
                                             monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
 
-                                att_len = len(msg.get("attachments", []))
+                                sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
+                                att_len = len(msg.get("attachments", [])) + sticker_len
                                 link_len = sum(
                                     1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
                                 )
@@ -723,6 +758,7 @@ class AnalyzeChat(commands.Cog):
                             analyzed_count=analyzed_count,
                             total_pages_scanned=total_pages_scanned + page_num,
                         )
+                        print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}' ({current_total_idx}/{total_eligible}): page {page_num}/{total_pages} (scanned {min(offset, total_user_messages):,}/{total_user_messages:,}, elapsed: {format_duration(elapsed)}, est. remaining: {format_duration(est_remaining)})")
                         prog_view = create_v2_view(
                             title="⏳ Whole Server Retroactive Deep-Sweep",
                             description=(
@@ -733,7 +769,8 @@ class AnalyzeChat(commands.Cog):
                                 f"**Server Totals Added So Far:**\n"
                                 f"• 💬 Messages: `{grand_total_messages + user_messages:,}`\n"
                                 f"• 📝 Words: `{grand_total_words + user_words:,}`\n"
-                                f"• 📎 Attachments: `{grand_total_attachments + user_attachments:,}`\n\n"
+                                f"• 📎 Attachments: `{grand_total_attachments + user_attachments:,}`\n"
+                                f"• 😀 Emojis: `{grand_total_emojis + user_emojis:,}`\n\n"
                                 f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                             ),
                             thumbnail_url=target.display_avatar.url if target.display_avatar else None,
@@ -765,6 +802,8 @@ class AnalyzeChat(commands.Cog):
                     channel_keywords=channel_keywords,
                     monthly_stats=monthly_stats,
                     monthly_keywords=monthly_keywords,
+                    channel_emojis=channel_emojis,
+                    total_emojis=user_emojis,
                 )
 
                 analyzed_count += 1
@@ -772,6 +811,7 @@ class AnalyzeChat(commands.Cog):
                 grand_total_words += user_words
                 grand_total_messages += user_messages
                 grand_total_attachments += user_attachments
+                grand_total_emojis += user_emojis
                 for kw, cnt in user_keywords.items():
                     grand_keywords[kw] += cnt
 
@@ -785,6 +825,7 @@ class AnalyzeChat(commands.Cog):
                     analyzed_count=analyzed_count,
                     total_pages_scanned=total_pages_scanned,
                 )
+                print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' ({current_total_idx}/{total_eligible}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs, {grand_total_attachments:,} atts, {grand_total_emojis:,} emojis")
                 prog_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep",
                     description=(
@@ -794,7 +835,8 @@ class AnalyzeChat(commands.Cog):
                         f"**Server Totals Added:**\n"
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
                         f"• 📝 Words: `{grand_total_words:,}`\n"
-                        f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
+                        f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
+                        f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                         f"**Elapsed Time:** `{format_duration(elapsed)}`"
                         + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
                     ),
@@ -808,6 +850,7 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(5.0)
 
             total_duration = asyncio.get_event_loop().time() - start_time
+            print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}\n")
             total_skipped = skipped_already_count + skipped_no_messages_count
             fields = [
                 (
@@ -821,6 +864,7 @@ class AnalyzeChat(commands.Cog):
                 ("💬 Historical Messages Added", f"**{grand_total_messages:,}**"),
                 ("📝 Historical Words Added", f"**{grand_total_words:,}**"),
                 ("📎 Historical Attachments Added", f"**{grand_total_attachments:,}**"),
+                ("😀 Historical Emojis Added", f"**{grand_total_emojis:,}**"),
             ]
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in grand_keywords.items()]
@@ -838,6 +882,7 @@ class AnalyzeChat(commands.Cog):
 
         finally:
             self.running_guilds.discard(guild.id)
+            print(f"[ANALYSIS LOCK RELEASED] Whole-server analysis lock released for '{guild.name}' ({guild.id})")
 
     analyze_chat = app_commands.Group(
         name="analyze_chat",

@@ -1,6 +1,38 @@
 from __future__ import annotations
-from typing import Optional, Sequence, Tuple, List, Set, Union
+import re
+from typing import Optional, Sequence, Tuple, List, Set, Union, Dict
 import discord
+
+CUSTOM_EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]{2,32}:\d+>')
+
+UNICODE_EMOJI_PATTERN = re.compile(
+    r'(?:'
+    r'[\U0001F1E6-\U0001F1FF]{2}'
+    r'|[\U0001F600-\U0001F64F]'
+    r'|[\U0001F300-\U0001F5FF]'
+    r'|[\U0001F680-\U0001F6FF]'
+    r'|[\U0001F700-\U0001F77F]'
+    r'|[\U0001F780-\U0001F7FF]'
+    r'|[\U0001F800-\U0001F8FF]'
+    r'|[\U0001F900-\U0001F9FF]'
+    r'|[\U0001FA00-\U0001FA6F]'
+    r'|[\U0001FA70-\U0001FAFF]'
+    r'|[\U00002600-\U000026FF]'
+    r'|[\U00002700-\U000027BF]'
+    r'|[\U00002300-\U000023FF]'
+    r'|[\U00002B50\U00002B55\U0000203C\U00002049\U00002139\U00002122\U00003030\U0000303D\U000000A9\U000000AE]'
+    r')(?:[\U0001F3FB-\U0001F3FF\uFE0E\uFE0F]|\u200D(?:[\U0001F000-\U0001FAFF\u2600-\u27BF][\U0001F3FB-\U0001F3FF\uFE0E\uFE0F]*))*'
+)
+
+
+def count_emojis(text: str) -> int:
+    if not text:
+        return 0
+    c_count = len(CUSTOM_EMOJI_PATTERN.findall(text))
+    cleaned = CUSTOM_EMOJI_PATTERN.sub('', text)
+    u_count = len(UNICODE_EMOJI_PATTERN.findall(cleaned))
+    return c_count + u_count
+
 
 BRAND_COLOR = discord.Colour.from_str('#af2202')
 SUCCESS_COLOR = discord.Colour.from_rgb(0, 255, 136)

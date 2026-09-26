@@ -9,12 +9,12 @@
     <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-57F287?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.7">
-    <img src="https://img.shields.io/badge/Release-v1.0.7-blue?style=for-the-badge" alt="Release v1.0.7" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.8">
+    <img src="https://img.shields.io/badge/Release-v1.0.8-blue?style=for-the-badge" alt="Release v1.0.8" />
   </a>
 </p>
 
-A feature-rich Discord bot designed to track **words**, **messages**, **attachments**, **media links**, and **custom keywords** across your Discord server with real-time analytics, monthly history breakdowns, and retroactive past-message analysis.
+A feature-rich Discord bot designed to track **words**, **messages**, **attachments** (including stickers), **emojis** (Unicode & custom), **media links**, and **custom keywords** across your Discord server with real-time analytics, monthly history breakdowns, and retroactive past-message analysis.
 
 ---
 
@@ -30,14 +30,14 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 
 ## ✨ Key Features
 
-- **⚡ Real-Time Tracking**: Counts words, messages, attachments, media links, and custom keywords instantly on `on_message`, with accurate updates on edits and deletions.
+- **⚡ Real-Time Tracking**: Counts words, messages, attachments (including Discord stickers), emojis (Unicode and custom), media links, and custom keywords instantly on `on_message`, with accurate updates on edits and deletions.
 - **📅 Monthly & Yearly Channel Analytics**: All stats are grouped by month, year, and channel from newest to oldest for both live tracking and historical message sweeps.
 - **👤 Interactive User Stats (`/stats user`)**:
-  - Displays overall server totals (words, messages, attachments, keywords) at the top.
+  - Displays overall server totals (words, messages, attachments, emojis, keywords) at the top.
   - Interactive month-by-month timeline underneath with dropdown navigation (`Month / Year...`) and `◀️ Newer` / `Older ▶️` buttons.
   - Shows per-channel activity breakdowns for the selected month.
 - **🏆 Unified Leaderboards (`/leaderboard [channel]`)**:
-  - Switch interactively between **Words**, **Messages**, **Attachments**, and **Keywords** using buttons.
+  - Switch interactively between **Words**, **Messages**, **Attachments**, **Emojis**, and **Keywords** using buttons.
   - Optional `channel` filter to view top 10 contributors in a specific channel plus a complete chronological monthly history breakdown (newest to oldest).
 - **🔍 Retroactive Chat Deep-Sweep (`/analyze_chat`)**:
   - Scan messages sent before the bot joined the server via Discord's Guild Search API.
@@ -47,6 +47,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
   - Add, edit, or remove tracked keywords with instant regex matching.
   - Reset individual user stats, specific channels, or perform a complete server wipe with re-analysis unlock tools.
 - **🎨 Modern Components V2 UI**: Clean, containerized Discord layout views with brand-colored embeds and responsive controls.
+- **🔮 Coming Soon: 💰 Swear Jar Feature**: An interactive server swear jar to track cursing and profanities, finding out who owes the jar the most pennies!
 
 ---
 
@@ -56,7 +57,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 | :--- | :--- | :--- |
 | `/help [ephemeral]` | Everyone | Comprehensive command guide, tips, and invite links. |
 | `/advertisement` | Everyone | Quick feature summary card with community and invite links. |
-| `/leaderboard [channel]` | Everyone | Interactive leaderboard for Words, Messages, Attachments, and Keywords. When filtering by channel, shows top 10 plus channel monthly history. |
+| `/leaderboard [channel]` | Everyone | Interactive leaderboard for Words, Messages, Attachments, Emojis, and Keywords. When filtering by channel, shows top 10 plus channel monthly history. |
 | `/stats user <member>` | Everyone | Member stats with overall totals and monthly channel history navigation. |
 | `/keyword list` | Everyone | Lists all custom keywords currently watched in the server. |
 | `/settings` | Admins (`Manage Server`) | Interactive control dashboard for tracking rules, channels, keywords, and data resets. |

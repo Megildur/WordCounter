@@ -12,6 +12,7 @@ from cogs.utils.components import (
     create_v2_view,
     error_view,
     check_channel_with_config,
+    count_emojis,
 )
 
 
@@ -22,7 +23,7 @@ class UserStatsView(discord.ui.LayoutView):
         guild: discord.Guild,
         target_user: discord.Member,
         author_id: int,
-        overall_stats: Tuple[int, int, int, List[Tuple[str, int]]],
+        overall_stats: Tuple[int, int, int, int, List[Tuple[str, int]]],
         monthly_records: List[Dict[str, Any]],
     ) -> None:
         super().__init__(timeout=180.0)
@@ -30,7 +31,7 @@ class UserStatsView(discord.ui.LayoutView):
         self.guild = guild
         self.target_user = target_user
         self.author_id = author_id
-        self.overall_words, self.overall_messages, self.overall_attachments, self.overall_keywords = overall_stats
+        self.overall_words, self.overall_messages, self.overall_attachments, self.overall_emojis, self.overall_keywords = overall_stats
         self.monthly_records = monthly_records
         self.current_index = 0
         self.total_months = len(monthly_records)
@@ -52,6 +53,7 @@ class UserStatsView(discord.ui.LayoutView):
         fields: List[Tuple[str, str]] = [
             ("💬 Total Message Count", f"{self.overall_messages:,}"),
             ("📎 Total Attachment Count", f"{self.overall_attachments:,}"),
+            ("😀 Total Emoji Count", f"{self.overall_emojis:,}"),
         ]
         if self.overall_keywords:
             for kw, kw_cnt in self.overall_keywords:
@@ -67,6 +69,7 @@ class UserStatsView(discord.ui.LayoutView):
                 f"• **Words:** {cur_month['words']:,}",
                 f"• **Messages:** {cur_month['messages']:,}",
                 f"• **Attachments:** {cur_month['attachments']:,}",
+                f"• **Emojis:** {cur_month.get('emojis', 0):,}",
             ]
             if cur_month.get("keywords"):
                 kw_parts = [f"`{k}`: {v:,}" for k, v in cur_month["keywords"].items() if v > 0]
@@ -85,7 +88,7 @@ class UserStatsView(discord.ui.LayoutView):
                 reverse=True,
             )
             for cid, c_data in sorted_chans:
-                line = f"• <#{cid}>: **{c_data['words']:,}** words • **{c_data['messages']:,}** msgs • **{c_data['attachments']:,}** atts"
+                line = f"• <#{cid}>: **{c_data['words']:,}** words • **{c_data['messages']:,}** msgs • **{c_data['attachments']:,}** atts • **{c_data.get('emojis', 0):,}** emojis"
                 if c_data.get("keywords"):
                     c_kw_parts = [f"`{k}`: {v:,}" for k, v in c_data["keywords"].items() if v > 0]
                     if c_kw_parts:
@@ -121,7 +124,7 @@ class UserStatsView(discord.ui.LayoutView):
         )
         for idx, item in enumerate(self.monthly_records[:25]):
             m_label = f"{calendar.month_name[item['month']]} {item['year']}"
-            m_desc = f"{item['words']:,} words • {item['messages']:,} msgs"
+            m_desc = f"{item['words']:,} words • {item['messages']:,} msgs • {item.get('emojis', 0):,} emojis"
             select.add_option(
                 label=m_label,
                 value=str(idx),
@@ -231,11 +234,11 @@ class Counter(commands.Cog):
             )
             return
 
-        words, messages_cnt, attachments_cnt, kresult = await self.bot.db.get_user_full_stats(
+        words, messages_cnt, attachments_cnt, emojis_cnt, kresult = await self.bot.db.get_user_full_stats(
             interaction.guild_id, user.id
         )
 
-        if not kresult and not words and not attachments_cnt and not messages_cnt:
+        if not kresult and not words and not attachments_cnt and not messages_cnt and not emojis_cnt:
             await interaction.response.send_message(
                 view=error_view('This user has not said any words in this server!'),
                 ephemeral=True,
@@ -248,7 +251,7 @@ class Counter(commands.Cog):
             guild=interaction.guild,
             target_user=user,
             author_id=interaction.user.id,
-            overall_stats=(words, messages_cnt, attachments_cnt, kresult),
+            overall_stats=(words, messages_cnt, attachments_cnt, emojis_cnt, kresult),
             monthly_records=monthly_records,
         )
         view.build()
@@ -279,12 +282,15 @@ class Counter(commands.Cog):
         await Keyword(self.bot).keyword_message(message, result, target_channel_id=target_channel_id)
         await Attachments(self.bot).attachment_message(message, result, target_channel_id=target_channel_id)
         word_count = len(message.content.split())
+        emoji_count = count_emojis(message.content)
         year = message.created_at.year
         month = message.created_at.month
         await self.update_count(message.guild, message.author, target_channel_id, word_count, year, month)
         await self.bot.db.add_message_count(message.guild.id, message.author.id, target_channel_id)
+        if emoji_count > 0:
+            await self.bot.db.add_emoji_count(message.guild.id, message.author.id, target_channel_id, emoji_count)
         await self.bot.db.record_monthly_activity(
-            message.guild.id, message.author.id, target_channel_id, year, month, messages=1
+            message.guild.id, message.author.id, target_channel_id, year, month, messages=1, emojis=emoji_count
         )
 
     @commands.Cog.listener()
@@ -302,12 +308,15 @@ class Counter(commands.Cog):
         await Keyword(self.bot).keyword_delete(message, result, target_channel_id=target_channel_id)
         await Attachments(self.bot).attachment_message_delete(message, result, target_channel_id=target_channel_id)
         word_count = len(message.content.split())
+        emoji_count = count_emojis(message.content)
         year = message.created_at.year
         month = message.created_at.month
         await self.remove_count(message.guild, message.author, target_channel_id, word_count, year, month)
         await self.bot.db.remove_message_count(message.guild.id, message.author.id, target_channel_id)
+        if emoji_count > 0:
+            await self.bot.db.remove_emoji_count(message.guild.id, message.author.id, target_channel_id, emoji_count)
         await self.bot.db.remove_monthly_activity(
-            message.guild.id, message.author.id, target_channel_id, year, month, messages=1
+            message.guild.id, message.author.id, target_channel_id, year, month, messages=1, emojis=emoji_count
         )
 
     @commands.Cog.listener()
@@ -326,9 +335,23 @@ class Counter(commands.Cog):
         await Attachments(self.bot).attachment_message_edit(before, after, result, target_channel_id=target_channel_id)
         old_msg_count = len(before.content.split())
         new_msg_count = len(after.content.split())
+        old_emoji_count = count_emojis(before.content)
+        new_emoji_count = count_emojis(after.content)
         year = before.created_at.year
         month = before.created_at.month
         await self.find_dif(before.guild, before.author, target_channel_id, old_msg_count, new_msg_count, year, month)
+        if old_emoji_count > new_emoji_count:
+            diff = old_emoji_count - new_emoji_count
+            await self.bot.db.remove_emoji_count(before.guild.id, before.author.id, target_channel_id, diff)
+            await self.bot.db.remove_monthly_activity(
+                before.guild.id, before.author.id, target_channel_id, year, month, emojis=diff
+            )
+        elif new_emoji_count > old_emoji_count:
+            diff = new_emoji_count - old_emoji_count
+            await self.bot.db.add_emoji_count(before.guild.id, before.author.id, target_channel_id, diff)
+            await self.bot.db.record_monthly_activity(
+                before.guild.id, before.author.id, target_channel_id, year, month, emojis=diff
+            )
 
     async def find_dif(self, guild, user, channel_id, old_msg_count, new_msg_count, year=None, month=None) -> None:
         if old_msg_count > new_msg_count:

@@ -134,6 +134,23 @@ class WordCounterDatabase:
                 )"""
             )
             await self.db.execute(
+                """CREATE TABLE IF NOT EXISTS emojis_channels (
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    count INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, channel_id, user_id)
+                )"""
+            )
+            await self.db.execute(
+                """CREATE TABLE IF NOT EXISTS emojis_users (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    count INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                )"""
+            )
+            await self.db.execute(
                 """CREATE TABLE IF NOT EXISTS monthly_user_stats (
                     guild_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
@@ -143,9 +160,14 @@ class WordCounterDatabase:
                     words INTEGER NOT NULL DEFAULT 0,
                     messages INTEGER NOT NULL DEFAULT 0,
                     attachments INTEGER NOT NULL DEFAULT 0,
+                    emojis INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (guild_id, user_id, channel_id, year, month)
                 )"""
             )
+            try:
+                await self.db.execute("ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
             await self.db.execute(
                 """CREATE TABLE IF NOT EXISTS monthly_user_keywords (
                     guild_id INTEGER NOT NULL,
@@ -528,6 +550,87 @@ class WordCounterDatabase:
                 )
             return await cursor.fetchall()
 
+    async def add_emoji_count(self, guild_id: int, user_id: int, channel_id: int, count: int) -> None:
+        if count <= 0:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT count FROM emojis_channels WHERE guild_id = ? AND channel_id = ? AND user_id = ?",
+                (guild_id, channel_id, user_id),
+            )
+            result = await cursor.fetchone()
+            if result is None:
+                await self.db.execute(
+                    "INSERT INTO emojis_channels (guild_id, channel_id, user_id, count) VALUES (?, ?, ?, ?)",
+                    (guild_id, channel_id, user_id, count),
+                )
+            else:
+                await self.db.execute(
+                    "UPDATE emojis_channels SET count = ? WHERE guild_id = ? AND channel_id = ? AND user_id = ?",
+                    (result[0] + count, guild_id, channel_id, user_id),
+                )
+
+            cursor = await self.db.execute(
+                "SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            u_result = await cursor.fetchone()
+            if u_result is None:
+                await self.db.execute(
+                    "INSERT INTO emojis_users (guild_id, user_id, count) VALUES (?, ?, ?)",
+                    (guild_id, user_id, count),
+                )
+            else:
+                await self.db.execute(
+                    "UPDATE emojis_users SET count = ? WHERE guild_id = ? AND user_id = ?",
+                    (u_result[0] + count, guild_id, user_id),
+                )
+            await self.db.commit()
+
+    async def remove_emoji_count(self, guild_id: int, user_id: int, channel_id: int, count: int) -> None:
+        if count <= 0:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT count FROM emojis_channels WHERE guild_id = ? AND channel_id = ? AND user_id = ?",
+                (guild_id, channel_id, user_id),
+            )
+            result = await cursor.fetchone()
+            if result is not None:
+                await self.db.execute(
+                    "UPDATE emojis_channels SET count = ? WHERE guild_id = ? AND channel_id = ? AND user_id = ?",
+                    (max(0, result[0] - count), guild_id, channel_id, user_id),
+                )
+
+            cursor = await self.db.execute(
+                "SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            u_result = await cursor.fetchone()
+            if u_result is not None:
+                await self.db.execute(
+                    "UPDATE emojis_users SET count = ? WHERE guild_id = ? AND user_id = ?",
+                    (max(0, u_result[0] - count), guild_id, user_id),
+                )
+            await self.db.commit()
+
+    async def get_emoji_leaderboard(self, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[int, int]]:
+        await self.ensure_connected()
+        async with self.db_lock:
+            if channel_id is None:
+                cursor = await self.db.execute(
+                    "SELECT user_id, count FROM emojis_users WHERE guild_id = ? ORDER BY count DESC",
+                    (guild_id,),
+                )
+            else:
+                cursor = await self.db.execute(
+                    "SELECT user_id, count FROM emojis_channels WHERE guild_id = ? AND channel_id = ? ORDER BY count DESC",
+                    (guild_id, channel_id),
+                )
+            return await cursor.fetchall()
+
     async def get_keywords(self, guild_id: int) -> List[str]:
         await self.ensure_connected()
         async with self.db_lock:
@@ -668,7 +771,7 @@ class WordCounterDatabase:
 
     async def get_user_full_stats(
         self, guild_id: int, user_id: int
-    ) -> Tuple[int, int, int, List[Tuple[str, int]]]:
+    ) -> Tuple[int, int, int, int, List[Tuple[str, int]]]:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(
@@ -714,18 +817,34 @@ class WordCounterDatabase:
                 messages = mresult[0]
 
             cursor = await self.db.execute(
+                "SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            eresult = await cursor.fetchone()
+            if eresult is None:
+                await self.db.execute(
+                    "INSERT INTO emojis_users (guild_id, user_id, count) VALUES (?, ?, ?)",
+                    (guild_id, user_id, 0),
+                )
+                emojis = 0
+            else:
+                emojis = eresult[0]
+
+            cursor = await self.db.execute(
                 "SELECT keyword, count FROM keyword_user WHERE user_id = ? AND guild_id = ?",
                 (user_id, guild_id),
             )
             kresult = await cursor.fetchall()
             await self.db.commit()
-            return words, messages, attachments, kresult
+            return words, messages, attachments, emojis, kresult
 
     async def reset_user_server_counts(self, guild_id: int, user_id: int) -> None:
         await self.ensure_connected()
         async with self.db_lock:
             await self.db.execute("DELETE FROM server WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.execute("DELETE FROM counters WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM emojis_users WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM emojis_channels WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.execute("DELETE FROM monthly_user_stats WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.execute("DELETE FROM monthly_user_keywords WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.commit()
@@ -743,6 +862,18 @@ class WordCounterDatabase:
                 "DELETE FROM counters WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
                 (guild_id, user_id, channel_id),
             )
+
+            cursor = await self.db.execute(
+                "SELECT count FROM emojis_channels WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
+                (guild_id, user_id, channel_id),
+            )
+            e_row = await cursor.fetchone()
+            e_removed = e_row[0] if e_row else 0
+            await self.db.execute(
+                "DELETE FROM emojis_channels WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
+                (guild_id, user_id, channel_id),
+            )
+
             await self.db.execute(
                 "DELETE FROM monthly_user_stats WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
                 (guild_id, user_id, channel_id),
@@ -755,6 +886,11 @@ class WordCounterDatabase:
                 await self.db.execute(
                     "UPDATE server SET count = MAX(0, count - ?) WHERE guild_id = ? AND user_id = ?",
                     (removed, guild_id, user_id),
+                )
+            if e_removed > 0:
+                await self.db.execute(
+                    "UPDATE emojis_users SET count = MAX(0, count - ?) WHERE guild_id = ? AND user_id = ?",
+                    (e_removed, guild_id, user_id),
                 )
             await self.db.commit()
 
@@ -770,6 +906,17 @@ class WordCounterDatabase:
                 "DELETE FROM counters WHERE guild_id = ? AND channel_id = ?",
                 (guild_id, channel_id),
             )
+
+            cursor = await self.db.execute(
+                "SELECT user_id, count FROM emojis_channels WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
+            e_rows = await cursor.fetchall()
+            await self.db.execute(
+                "DELETE FROM emojis_channels WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
+
             await self.db.execute(
                 "DELETE FROM monthly_user_stats WHERE guild_id = ? AND channel_id = ?",
                 (guild_id, channel_id),
@@ -783,6 +930,11 @@ class WordCounterDatabase:
                     "UPDATE server SET count = MAX(0, count - ?) WHERE guild_id = ? AND user_id = ?",
                     (r_count, guild_id, r_uid),
                 )
+            for r_uid, r_count in e_rows:
+                await self.db.execute(
+                    "UPDATE emojis_users SET count = MAX(0, count - ?) WHERE guild_id = ? AND user_id = ?",
+                    (r_count, guild_id, r_uid),
+                )
             await self.db.commit()
 
     async def reset_entire_server(self, guild_id: int) -> None:
@@ -794,6 +946,8 @@ class WordCounterDatabase:
             await self.db.execute("DELETE FROM message_channels WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM attachments_users WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM attachments_channels WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM emojis_users WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM emojis_channels WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM keyword_user WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM keyword_channel WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM monthly_user_stats WHERE guild_id = ?", (guild_id,))
@@ -868,6 +1022,8 @@ class WordCounterDatabase:
         channel_keywords: Dict[Tuple[int, str], int],
         monthly_stats: Optional[Dict[Tuple[int, int, int], Dict[str, int]]] = None,
         monthly_keywords: Optional[Dict[Tuple[int, str, int, int], int]] = None,
+        channel_emojis: Optional[Dict[int, int]] = None,
+        total_emojis: int = 0,
     ) -> None:
         await self.ensure_connected()
         async with self.db_lock:
@@ -934,6 +1090,29 @@ class WordCounterDatabase:
                         (guild_id, cid, user_id, a_cnt),
                     )
 
+            if total_emojis > 0:
+                await self.db.execute(
+                    """
+                    INSERT INTO emojis_users (guild_id, user_id, count)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        count = count + excluded.count
+                    """,
+                    (guild_id, user_id, total_emojis),
+                )
+            if channel_emojis:
+                for cid, e_cnt in channel_emojis.items():
+                    if e_cnt > 0:
+                        await self.db.execute(
+                            """
+                            INSERT INTO emojis_channels (guild_id, channel_id, user_id, count)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(guild_id, channel_id, user_id) DO UPDATE SET
+                                count = count + excluded.count
+                            """,
+                            (guild_id, cid, user_id, e_cnt),
+                        )
+
             for kw, k_cnt in keyword_counts.items():
                 if k_cnt > 0:
                     await self.db.execute(
@@ -962,17 +1141,19 @@ class WordCounterDatabase:
                     w = stats.get("words", 0)
                     msg_c = stats.get("messages", 0)
                     att_c = stats.get("attachments", 0)
-                    if w > 0 or msg_c > 0 or att_c > 0:
+                    emo_c = stats.get("emojis", 0)
+                    if w > 0 or msg_c > 0 or att_c > 0 or emo_c > 0:
                         await self.db.execute(
                             """
-                            INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(guild_id, user_id, channel_id, year, month) DO UPDATE SET
                                 words = words + excluded.words,
                                 messages = messages + excluded.messages,
-                                attachments = attachments + excluded.attachments
+                                attachments = attachments + excluded.attachments,
+                                emojis = emojis + excluded.emojis
                             """,
-                            (guild_id, user_id, cid, y, m, w, msg_c, att_c),
+                            (guild_id, user_id, cid, y, m, w, msg_c, att_c, emo_c),
                         )
 
             if monthly_keywords:
@@ -1004,19 +1185,21 @@ class WordCounterDatabase:
         words: int = 0,
         messages: int = 0,
         attachments: int = 0,
+        emojis: int = 0,
     ) -> None:
         await self.ensure_connected()
         async with self.db_lock:
             await self.db.execute(
                 """
-                INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, user_id, channel_id, year, month) DO UPDATE SET
                     words = words + excluded.words,
                     messages = messages + excluded.messages,
-                    attachments = attachments + excluded.attachments
+                    attachments = attachments + excluded.attachments,
+                    emojis = emojis + excluded.emojis
                 """,
-                (guild_id, user_id, channel_id, year, month, words, messages, attachments),
+                (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis),
             )
             await self.db.commit()
 
@@ -1030,6 +1213,7 @@ class WordCounterDatabase:
         words: int = 0,
         messages: int = 0,
         attachments: int = 0,
+        emojis: int = 0,
     ) -> None:
         await self.ensure_connected()
         async with self.db_lock:
@@ -1038,10 +1222,11 @@ class WordCounterDatabase:
                 UPDATE monthly_user_stats
                 SET words = MAX(0, words - ?),
                     messages = MAX(0, messages - ?),
-                    attachments = MAX(0, attachments - ?)
+                    attachments = MAX(0, attachments - ?),
+                    emojis = MAX(0, emojis - ?)
                 WHERE guild_id = ? AND user_id = ? AND channel_id = ? AND year = ? AND month = ?
                 """,
-                (words, messages, attachments, guild_id, user_id, channel_id, year, month),
+                (words, messages, attachments, emojis, guild_id, user_id, channel_id, year, month),
             )
             await self.db.commit()
 
@@ -1101,7 +1286,7 @@ class WordCounterDatabase:
         async with self.db_lock:
             cursor = await self.db.execute(
                 """
-                SELECT year, month, channel_id, words, messages, attachments
+                SELECT year, month, channel_id, words, messages, attachments, emojis
                 FROM monthly_user_stats
                 WHERE guild_id = ? AND user_id = ?
                 ORDER BY year DESC, month DESC, words DESC
@@ -1122,7 +1307,7 @@ class WordCounterDatabase:
             kw_rows = await cursor.fetchall()
 
             months_dict: Dict[Tuple[int, int], Dict[str, Any]] = {}
-            for y, m, cid, w, msg_c, att_c in stat_rows:
+            for y, m, cid, w, msg_c, att_c, emo_c in stat_rows:
                 key = (y, m)
                 if key not in months_dict:
                     months_dict[key] = {
@@ -1131,16 +1316,19 @@ class WordCounterDatabase:
                         "words": 0,
                         "messages": 0,
                         "attachments": 0,
+                        "emojis": 0,
                         "keywords": defaultdict(int),
                         "channels": {},
                     }
                 months_dict[key]["words"] += w
                 months_dict[key]["messages"] += msg_c
                 months_dict[key]["attachments"] += att_c
+                months_dict[key]["emojis"] += emo_c
                 months_dict[key]["channels"][cid] = {
                     "words": w,
                     "messages": msg_c,
                     "attachments": att_c,
+                    "emojis": emo_c,
                     "keywords": {},
                 }
 
@@ -1162,12 +1350,12 @@ class WordCounterDatabase:
 
     async def get_channel_monthly_breakdown(
         self, guild_id: int, channel_id: int
-    ) -> List[Tuple[int, int, int, int, int]]:
+    ) -> List[Tuple[int, int, int, int, int, int]]:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(
                 """
-                SELECT year, month, SUM(words), SUM(messages), SUM(attachments)
+                SELECT year, month, SUM(words), SUM(messages), SUM(attachments), SUM(emojis)
                 FROM monthly_user_stats
                 WHERE guild_id = ? AND channel_id = ?
                 GROUP BY year, month
@@ -1176,4 +1364,4 @@ class WordCounterDatabase:
                 (guild_id, channel_id),
             )
             rows = await cursor.fetchall()
-            return [(r[0], r[1], r[2] or 0, r[3] or 0, r[4] or 0) for r in rows]
+            return [(r[0], r[1], r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0) for r in rows]
