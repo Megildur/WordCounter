@@ -42,24 +42,55 @@ def compute_server_remaining_time(
     page_num: int,
     total_pages: int,
     total_pending: int,
+    analyzed_count: int = 0,
+    total_pages_scanned: int = 0,
 ) -> float:
-    if total_pending <= 0:
+    """Calculates dynamically updating estimated remaining time for whole server analysis.
+
+    Accurately scales with high message volume, multi-page user pagination,
+    and all remaining queued members.
+    """
+    if total_pending <= 0 or idx > total_pending:
         return 0.0
 
-    current_fraction = (page_num / max(1, total_pages)) if total_pages > 0 else 0.0
-    processed_count = (idx - 1) + current_fraction
-    remaining_members = total_pending - processed_count
+    SEC_PER_PAGE = 5.5
+    SEC_INTER_MEMBER = 5.0
+    SEC_ZERO_MEMBER = 1.5
 
-    if remaining_members <= 0:
-        return 0.0
-
-    if processed_count >= 1.0 and elapsed > 0:
-        avg_time_per_member = elapsed / processed_count
-        return max(0.0, avg_time_per_member * remaining_members)
+    # 1. Current member's remaining time
+    if total_pages > 0:
+        remaining_pages = max(0, total_pages - page_num)
+        current_member_time = remaining_pages * SEC_PER_PAGE
+        future_members_count = max(0, total_pending - idx)
     else:
-        rem_current_pages = max(0, total_pages - page_num)
-        rem_other_members = max(0, total_pending - idx)
-        return float(rem_current_pages * 5.0 + rem_other_members * 6.0)
+        current_member_time = 0.0
+        future_members_count = max(0, total_pending - idx + 1)
+
+    if future_members_count == 0:
+        return float(max(0.0, current_member_time))
+
+    # 2. Estimate future members' time based on observed server activity
+    completed_members = max(0, idx - 1)
+
+    p_active = (analyzed_count + 1.2) / (completed_members + 3.0)
+    p_active = min(1.0, max(0.05, p_active))
+
+    effective_pages_scanned = total_pages_scanned + (total_pages if total_pages > 0 else 0)
+    effective_analyzed = analyzed_count + (1 if total_pages > 0 else 0)
+    avg_pages_active = (effective_pages_scanned + 4.0) / (effective_analyzed + 1.0)
+    avg_pages_active = max(1.0, avg_pages_active)
+
+    active_member_time = (avg_pages_active * SEC_PER_PAGE) + SEC_INTER_MEMBER
+    inactive_member_time = SEC_ZERO_MEMBER
+    expected_sec_per_member = (p_active * active_member_time) + ((1.0 - p_active) * inactive_member_time)
+    expected_sec_per_member = max(2.5, expected_sec_per_member)
+
+    future_members_time = future_members_count * expected_sec_per_member
+
+    if total_pages > 0 and future_members_count > 0:
+        current_member_time += SEC_INTER_MEMBER
+
+    return float(max(0.0, current_member_time + future_members_time))
 
 
 async def _safe_edit_message(message: discord.Message | discord.WebhookMessage, **kwargs) -> None:
@@ -291,7 +322,7 @@ class AnalyzeChat(commands.Cog):
                 return
 
             total_pages = (total_historical_messages + 24) // 25
-            estimated_time = max(0, (total_pages - 1)) * 5.0
+            estimated_time = max(1, total_pages - 1) * 5.5 if total_pages > 1 else 5.0
             avatar_url = target.display_avatar.url if target.display_avatar else None
 
             status_view = create_v2_view(
@@ -370,10 +401,10 @@ class AnalyzeChat(commands.Cog):
                 if offset >= total_historical_messages:
                     break
 
-                if page_num % 2 == 0 or total_pages <= 4:
+                if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
-                    est_remaining = remaining_pages * 5.0
+                    est_remaining = remaining_pages * 5.5
                     prog_view = create_v2_view(
                         title="⏳ Retroactive Deep-Sweep in Progress",
                         description=(
@@ -481,6 +512,7 @@ class AnalyzeChat(commands.Cog):
             total_eligible = len(all_eligible_members)
             analyzed_count = 0
             skipped_no_messages_count = 0
+            total_pages_scanned = 0
             grand_total_words = 0
             grand_total_messages = 0
             grand_total_attachments = 0
@@ -490,6 +522,7 @@ class AnalyzeChat(commands.Cog):
 
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
+                total_skipped = skipped_already_count + skipped_no_messages_count
                 elapsed = asyncio.get_event_loop().time() - start_time
                 est_remaining = compute_server_remaining_time(
                     elapsed=elapsed,
@@ -497,13 +530,16 @@ class AnalyzeChat(commands.Cog):
                     page_num=0,
                     total_pages=0,
                     total_pending=len(pending_members),
+                    analyzed_count=analyzed_count,
+                    total_pages_scanned=total_pages_scanned,
                 )
 
                 status_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep",
                     description=(
                         f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
-                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped (Already Done):** `{skipped_already_count}`\n\n"
+                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                        f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
                         f"**Server Totals Added So Far:**\n"
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
                         f"• 📝 Words: `{grand_total_words:,}`\n"
@@ -535,6 +571,35 @@ class AnalyzeChat(commands.Cog):
                 if total_user_messages == 0:
                     await self.bot.db.mark_user_analyzed(guild.id, target.id)
                     skipped_no_messages_count += 1
+                    total_skipped = skipped_already_count + skipped_no_messages_count
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    est_remaining = compute_server_remaining_time(
+                        elapsed=elapsed,
+                        idx=idx + 1,
+                        page_num=0,
+                        total_pages=0,
+                        total_pending=len(pending_members),
+                        analyzed_count=analyzed_count,
+                        total_pages_scanned=total_pages_scanned,
+                    )
+                    skip_view = create_v2_view(
+                        title="⏳ Whole Server Retroactive Deep-Sweep",
+                        description=(
+                            f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention} *(Skipped — 0 messages)*\n"
+                            f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                            f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
+                            f"**Server Totals Added So Far:**\n"
+                            f"• 💬 Messages: `{grand_total_messages:,}`\n"
+                            f"• 📝 Words: `{grand_total_words:,}`\n"
+                            f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
+                            f"**Elapsed Time:** `{format_duration(elapsed)}`"
+                            + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
+                        ),
+                        thumbnail_url=target.display_avatar.url if target.display_avatar else None,
+                        footer=f"Member {current_total_idx}/{total_eligible} • Skipped (no prior messages)",
+                        color=WARNING_COLOR,
+                    )
+                    await _safe_edit_message(status_msg, view=skip_view)
                     await asyncio.sleep(1.0)
                     continue
 
@@ -601,7 +666,7 @@ class AnalyzeChat(commands.Cog):
                     if offset >= total_user_messages:
                         break
 
-                    if page_num % 2 == 0 or total_pages <= 4:
+                    if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                         elapsed = asyncio.get_event_loop().time() - start_time
                         est_remaining = compute_server_remaining_time(
                             elapsed=elapsed,
@@ -609,13 +674,16 @@ class AnalyzeChat(commands.Cog):
                             page_num=page_num,
                             total_pages=total_pages,
                             total_pending=len(pending_members),
+                            analyzed_count=analyzed_count,
+                            total_pages_scanned=total_pages_scanned + page_num,
                         )
                         prog_view = create_v2_view(
                             title="⏳ Whole Server Retroactive Deep-Sweep",
                             description=(
                                 f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
                                 f"**Scanning Member Messages:** `{min(offset, total_user_messages):,} / {total_user_messages:,}` (Page {page_num}/{total_pages})\n"
-                                f"**Members Analyzed:** `{analyzed_count}` | **Skipped (Already Done):** `{skipped_already_count}`\n\n"
+                                f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                                f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
                                 f"**Server Totals Added So Far:**\n"
                                 f"• 💬 Messages: `{grand_total_messages + user_messages:,}`\n"
                                 f"• 📝 Words: `{grand_total_words + user_words:,}`\n"
@@ -623,7 +691,7 @@ class AnalyzeChat(commands.Cog):
                                 f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                             ),
                             thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                            footer=f"Member {current_total_idx}/{total_eligible} • Pacing 5.0s per request",
+                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing 5.0s per request",
                             color=WARNING_COLOR,
                         )
                         await _safe_edit_message(status_msg, view=prog_view)
@@ -652,6 +720,7 @@ class AnalyzeChat(commands.Cog):
                 )
 
                 analyzed_count += 1
+                total_pages_scanned += page_num
                 grand_total_words += user_words
                 grand_total_messages += user_messages
                 grand_total_attachments += user_attachments
@@ -665,20 +734,25 @@ class AnalyzeChat(commands.Cog):
                     page_num=0,
                     total_pages=0,
                     total_pending=len(pending_members),
+                    analyzed_count=analyzed_count,
+                    total_pages_scanned=total_pages_scanned,
                 )
                 prog_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep",
                     description=(
                         f"**Completed Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
-                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped (Already Done):** `{skipped_already_count}`\n\n"
+                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                        f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
                         f"**Server Totals Added:**\n"
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
                         f"• 📝 Words: `{grand_total_words:,}`\n"
                         f"• 📎 Attachments: `{grand_total_attachments:,}`\n\n"
-                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
+                        f"**Elapsed Time:** `{format_duration(elapsed)}`"
+                        + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
                     ),
-                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)",
-                    color=WARNING_COLOR,
+                    thumbnail_url=target.display_avatar.url if target.display_avatar else None,
+                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (" • Pacing 5.0s to next member" if idx < len(pending_members) else ""),
+                    color=WARNING_COLOR if idx < len(pending_members) else SUCCESS_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=prog_view)
 
@@ -686,13 +760,15 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(5.0)
 
             total_duration = asyncio.get_event_loop().time() - start_time
+            total_skipped = skipped_already_count + skipped_no_messages_count
             fields = [
                 (
                     "👥 Server Members Summary",
                     f"**{total_eligible:,}** total non-bot members\n"
                     f"• **{analyzed_count:,}** analyzed with messages\n"
-                    f"• **{skipped_no_messages_count:,}** had no prior messages\n"
-                    f"• **{skipped_already_count:,}** were previously analyzed",
+                    f"• **{skipped_no_messages_count:,}** skipped (no prior messages)\n"
+                    f"• **{skipped_already_count:,}** skipped (previously analyzed)\n"
+                    f"• **Total Skipped:** `{total_skipped:,}`",
                 ),
                 ("💬 Historical Messages Added", f"**{grand_total_messages:,}**"),
                 ("📝 Historical Words Added", f"**{grand_total_words:,}**"),
