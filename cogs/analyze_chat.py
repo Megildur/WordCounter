@@ -46,18 +46,20 @@ def compute_server_remaining_time(
     total_pending: int,
     analyzed_count: int = 0,
     total_pages_scanned: int = 0,
+    active_servers: int = 1,
 ) -> float:
     if total_pending <= 0 or idx > total_pending:
         return 0.0
 
-    SEC_PER_PAGE = 10.5
-    SEC_INTER_MEMBER = 10.0
+    current_sleep = 30.0 + (max(0, active_servers - 1) * 10.0)
+    SEC_PER_PAGE = current_sleep + 0.5
+    SEC_INTER_MEMBER = current_sleep
     SEC_ZERO_MEMBER = 2.0
 
     total_pages_done = total_pages_scanned + page_num
     if total_pages_done > 2 and elapsed > 0:
         measured_sec_per_page = elapsed / total_pages_done
-        effective_sec_per_page = max(10.0, min(30.0, (SEC_PER_PAGE * 0.3) + (measured_sec_per_page * 0.7)))
+        effective_sec_per_page = max(current_sleep, min(current_sleep + 25.0, (SEC_PER_PAGE * 0.3) + (measured_sec_per_page * 0.7)))
     else:
         effective_sec_per_page = SEC_PER_PAGE
 
@@ -85,7 +87,7 @@ def compute_server_remaining_time(
     active_member_time = (avg_pages_active * effective_sec_per_page) + SEC_INTER_MEMBER
     inactive_member_time = SEC_ZERO_MEMBER
     expected_sec_per_member = (p_active * active_member_time) + ((1.0 - p_active) * inactive_member_time)
-    expected_sec_per_member = max(3.5, expected_sec_per_member)
+    expected_sec_per_member = max(5.0, expected_sec_per_member)
 
     future_members_time = future_members_count * expected_sec_per_member
 
@@ -162,15 +164,22 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
                 "If you proceed now, words, messages, and attachments will be counted, but no keywords will be tallied."
             )
 
+        time_warning = (
+            "⏳ **Duration Notice (Takes a Long Time):**\n"
+            "To prevent Discord search rate limits, this command uses strict safety pacing (30+ seconds per page of 25 messages, scaling to 40s/50s if other servers run sweeps concurrently). "
+            "Sweeping thousands of messages will take multiple hours. **Do NOT restart the bot** while analysis is running."
+        )
+
         desc = (
             f"**Important Notice:** Keywords have to be set first in `/settings` to be counted during retroactive analysis.\n\n"
             f"{kw_section}\n\n"
             f"{scope_desc}\n\n"
+            f"{time_warning}\n\n"
             f"Do you want to proceed with retroactive analysis?"
         )
 
         container = discord.ui.Container(accent_colour=WARNING_COLOR)
-        container.add_item(discord.ui.TextDisplay("### ⚠️ Confirm Retroactive Analysis"))
+        container.add_item(discord.ui.TextDisplay("### ⚠️ Confirm Retroactive Analysis (Takes a Long Time)"))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(desc))
 
@@ -228,6 +237,10 @@ class AnalyzeChat(commands.Cog):
         if not hasattr(self.bot, "db"):
             self.bot.db = WordCounterDatabase(self.bot)
         print("AnalyzeChat cog loaded")
+
+    def get_search_sleep_delay(self) -> float:
+        active_count = max(1, len(self.running_guilds))
+        return 30.0 + (max(0, active_count - 1) * 10.0)
 
     async def cog_load(self) -> None:
         await self.bot.db.ensure_connected()
@@ -326,11 +339,8 @@ class AnalyzeChat(commands.Cog):
             watched_ids, ignored_ids = await self.bot.db.get_guild_tracking_config(guild.id)
             keyword_list: List[str] = await self.bot.db.get_keywords(guild.id)
 
-            bot_join_time = guild.me.joined_at if guild.me else None
-            if bot_join_time is not None:
-                max_id_snowflake = discord.utils.time_snowflake(bot_join_time)
-            else:
-                max_id_snowflake = discord.utils.time_snowflake(discord.utils.utcnow())
+            command_time = interaction.created_at if interaction.created_at else discord.utils.utcnow()
+            max_id_snowflake = discord.utils.time_snowflake(command_time)
 
             try:
                 data = await self._fetch_search_page(
@@ -357,27 +367,29 @@ class AnalyzeChat(commands.Cog):
                     status_msg,
                     view=create_v2_view(
                         title="🔍 Retroactive Analysis Complete",
-                        description=f"No historical messages were found for {target.mention} prior to the bot joining.",
+                        description=f"No historical messages were found for {target.mention} up to the command execution time.",
                         color=WARNING_COLOR,
                     ),
                 )
                 return
 
             total_pages = (total_historical_messages + 24) // 25
-            estimated_time = max(1, total_pages - 1) * 10.5 if total_pages > 1 else 10.0
+            current_sleep = self.get_search_sleep_delay()
+            estimated_time = max(1, total_pages - 1) * (current_sleep + 0.5) if total_pages > 1 else current_sleep
             avatar_url = target.display_avatar.url if target.display_avatar else None
 
-            print(f"\n[ANALYSIS ACTIVE] ⚠️ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) — DO NOT RESTART BOT")
+            print(f"\n[ANALYSIS ACTIVE] ⚠️ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) — DO NOT RESTART BOT (Pacing: {current_sleep:.1f}s, Active Servers: {len(self.running_guilds)})")
 
             status_view = create_v2_view(
-                title="⏳ Retroactive Deep-Sweep in Progress",
+                title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
                 description=(
-                    f"Found **{total_historical_messages:,}** historical messages for {target.mention} prior to the bot joining.\n"
-                    f"Sweeping history with strict **10.0s** anti-ratelimit pacing...\n\n"
-                    f"**Estimated Remaining:** `{format_duration(estimated_time)}` ({total_pages} page(s))"
+                    f"Found **{total_historical_messages:,}** historical messages for {target.mention} up to the command execution time.\n"
+                    f"Sweeping history with strict **{current_sleep:.1f}s** anti-ratelimit pacing ({len(self.running_guilds)} active server(s))...\n\n"
+                    f"**Estimated Remaining:** `{format_duration(estimated_time)}` ({total_pages} page(s))\n"
+                    f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
                 ),
                 thumbnail_url=avatar_url,
-                footer="Do not dismiss • Using Discord Guild Message Search API",
+                footer=f"Do not dismiss • Pacing {current_sleep:.1f}s per request • {len(self.running_guilds)} active server(s)",
                 color=WARNING_COLOR,
             )
             await _safe_edit_message(status_msg, view=status_view)
@@ -481,27 +493,30 @@ class AnalyzeChat(commands.Cog):
                     break
 
                 if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
+                    current_sleep = self.get_search_sleep_delay()
+                    active_servers = len(self.running_guilds)
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
-                    measured_sec_per_page = (elapsed / page_num) if page_num > 0 else 10.5
-                    sec_per_page = max(10.0, min(30.0, (10.5 * 0.3) + (measured_sec_per_page * 0.7)))
+                    measured_sec_per_page = (elapsed / page_num) if page_num > 0 else (current_sleep + 0.5)
+                    sec_per_page = max(current_sleep, min(current_sleep + 25.0, ((current_sleep + 0.5) * 0.3) + (measured_sec_per_page * 0.7)))
                     est_remaining = remaining_pages * sec_per_page
                     print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {min(offset, total_historical_messages):,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
                     prog_view = create_v2_view(
-                        title="⏳ Retroactive Deep-Sweep in Progress",
+                        title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
                         description=(
                             f"**Target:** {target.mention}\n"
                             f"**Progress:** `{min(offset, total_historical_messages):,} / {total_historical_messages:,}` messages scanned\n"
                             f"**Tallied So Far:** `{counted_messages:,}` messages • `{total_words:,}` words • `{total_attachments:,}` attachments • `{total_emojis:,}` emojis\n\n"
-                            f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
+                            f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
+                            f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is running."
                         ),
                         thumbnail_url=avatar_url,
-                        footer=f"Page {page_num}/{total_pages} • Pacing 10.0s per request",
+                        footer=f"Page {page_num}/{total_pages} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
                         color=WARNING_COLOR,
                     )
                     await _safe_edit_message(status_msg, view=prog_view)
 
-                await asyncio.sleep(10.0)
+                await asyncio.sleep(self.get_search_sleep_delay())
 
                 try:
                     data = await self._fetch_search_page(
@@ -589,11 +604,8 @@ class AnalyzeChat(commands.Cog):
                 )
                 return
 
-            bot_join_time = guild.me.joined_at if guild.me else None
-            if bot_join_time is not None:
-                max_id_snowflake = discord.utils.time_snowflake(bot_join_time)
-            else:
-                max_id_snowflake = discord.utils.time_snowflake(discord.utils.utcnow())
+            command_time = interaction.created_at if interaction.created_at else discord.utils.utcnow()
+            max_id_snowflake = discord.utils.time_snowflake(command_time)
 
             watched_ids, ignored_ids = await self.bot.db.get_guild_tracking_config(guild.id)
             keyword_list: List[str] = await self.bot.db.get_keywords(guild.id)
@@ -611,12 +623,16 @@ class AnalyzeChat(commands.Cog):
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
 
-            print(f"\n[ANALYSIS ACTIVE] ⚠️ Whole-server analysis started in '{guild.name}' ({guild.id}) for {len(pending_members)} pending members ({total_eligible} total) — DO NOT RESTART BOT")
+            current_sleep = self.get_search_sleep_delay()
+            active_servers = len(self.running_guilds)
+            print(f"\n[ANALYSIS ACTIVE] ⚠️ Whole-server analysis started in '{guild.name}' ({guild.id}) for {len(pending_members)} pending members ({total_eligible} total) — DO NOT RESTART BOT (Pacing: {current_sleep:.1f}s, Active Servers: {active_servers})")
 
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
                 total_skipped = skipped_already_count + skipped_no_messages_count
                 elapsed = asyncio.get_event_loop().time() - start_time
+                current_sleep = self.get_search_sleep_delay()
+                active_servers = len(self.running_guilds)
                 est_remaining = compute_server_remaining_time(
                     elapsed=elapsed,
                     idx=idx,
@@ -625,12 +641,13 @@ class AnalyzeChat(commands.Cog):
                     total_pending=len(pending_members),
                     analyzed_count=analyzed_count,
                     total_pages_scanned=total_pages_scanned,
+                    active_servers=active_servers,
                 )
 
                 print(f"[ANALYSIS ACTIVE] '{guild.name}' -> Processing member {current_total_idx}/{total_eligible}: '{target.display_name}' ({target.id}) (Elapsed: {format_duration(elapsed)}, Est. Remaining: {format_duration(est_remaining)})")
 
                 status_view = create_v2_view(
-                    title="⏳ Whole Server Retroactive Deep-Sweep",
+                    title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                     description=(
                         f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
                         f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
@@ -640,10 +657,11 @@ class AnalyzeChat(commands.Cog):
                         f"• 📝 Words: `{grand_total_words:,}`\n"
                         f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
                         f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
-                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
+                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
+                        f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                    footer=f"Member {current_total_idx}/{total_eligible} • Pacing 10.0s per request",
+                    footer=f"Member {current_total_idx}/{total_eligible} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
                     color=WARNING_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=status_view)
@@ -669,6 +687,8 @@ class AnalyzeChat(commands.Cog):
                     skipped_no_messages_count += 1
                     total_skipped = skipped_already_count + skipped_no_messages_count
                     elapsed = asyncio.get_event_loop().time() - start_time
+                    current_sleep = self.get_search_sleep_delay()
+                    active_servers = len(self.running_guilds)
                     est_remaining = compute_server_remaining_time(
                         elapsed=elapsed,
                         idx=idx + 1,
@@ -677,10 +697,11 @@ class AnalyzeChat(commands.Cog):
                         total_pending=len(pending_members),
                         analyzed_count=analyzed_count,
                         total_pages_scanned=total_pages_scanned,
+                        active_servers=active_servers,
                     )
                     print(f"[ANALYSIS SKIPPED] '{guild.name}' -> Member {current_total_idx}/{total_eligible}: '{target.display_name}' has 0 historical messages")
                     skip_view = create_v2_view(
-                        title="⏳ Whole Server Retroactive Deep-Sweep",
+                        title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                         description=(
                             f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention} *(Skipped — 0 messages)*\n"
                             f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
@@ -692,9 +713,10 @@ class AnalyzeChat(commands.Cog):
                             f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                             f"**Elapsed Time:** `{format_duration(elapsed)}`"
                             + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
+                            + "\n-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
                         ),
                         thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                        footer=f"Member {current_total_idx}/{total_eligible} • Skipped (no prior messages)",
+                        footer=f"Member {current_total_idx}/{total_eligible} • Skipped (no prior messages) • Pacing {current_sleep:.1f}s",
                         color=WARNING_COLOR,
                     )
                     await _safe_edit_message(status_msg, view=skip_view)
@@ -800,6 +822,8 @@ class AnalyzeChat(commands.Cog):
 
                     if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                         elapsed = asyncio.get_event_loop().time() - start_time
+                        current_sleep = self.get_search_sleep_delay()
+                        active_servers = len(self.running_guilds)
                         est_remaining = compute_server_remaining_time(
                             elapsed=elapsed,
                             idx=idx,
@@ -808,10 +832,11 @@ class AnalyzeChat(commands.Cog):
                             total_pending=len(pending_members),
                             analyzed_count=analyzed_count,
                             total_pages_scanned=total_pages_scanned + page_num,
+                            active_servers=active_servers,
                         )
                         print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}' ({current_total_idx}/{total_eligible}): page {page_num}/{total_pages} (scanned {min(offset, total_user_messages):,}/{total_user_messages:,}, elapsed: {format_duration(elapsed)}, est. remaining: {format_duration(est_remaining)})")
                         prog_view = create_v2_view(
-                            title="⏳ Whole Server Retroactive Deep-Sweep",
+                            title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                             description=(
                                 f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
                                 f"**Scanning Member Messages:** `{min(offset, total_user_messages):,} / {total_user_messages:,}` (Page {page_num}/{total_pages})\n"
@@ -822,15 +847,16 @@ class AnalyzeChat(commands.Cog):
                                 f"• 📝 Words: `{grand_total_words + user_words:,}`\n"
                                 f"• 📎 Attachments: `{grand_total_attachments + user_attachments:,}`\n"
                                 f"• 😀 Emojis: `{grand_total_emojis + user_emojis:,}`\n\n"
-                                f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
+                                f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
+                                f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
                             ),
                             thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing 10.0s per request",
+                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
                             color=WARNING_COLOR,
                         )
                         await _safe_edit_message(status_msg, view=prog_view)
 
-                    await asyncio.sleep(10.0)
+                    await asyncio.sleep(self.get_search_sleep_delay())
 
                     try:
                         data = await self._fetch_search_page(
@@ -867,6 +893,8 @@ class AnalyzeChat(commands.Cog):
                     grand_keywords[kw] += cnt
 
                 elapsed = asyncio.get_event_loop().time() - start_time
+                current_sleep = self.get_search_sleep_delay()
+                active_servers = len(self.running_guilds)
                 est_remaining = compute_server_remaining_time(
                     elapsed=elapsed,
                     idx=idx + 1,
@@ -875,10 +903,11 @@ class AnalyzeChat(commands.Cog):
                     total_pending=len(pending_members),
                     analyzed_count=analyzed_count,
                     total_pages_scanned=total_pages_scanned,
+                    active_servers=active_servers,
                 )
                 print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' ({current_total_idx}/{total_eligible}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs, {grand_total_attachments:,} atts, {grand_total_emojis:,} emojis")
                 prog_view = create_v2_view(
-                    title="⏳ Whole Server Retroactive Deep-Sweep",
+                    title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                     description=(
                         f"**Completed Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
                         f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
@@ -890,15 +919,16 @@ class AnalyzeChat(commands.Cog):
                         f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                         f"**Elapsed Time:** `{format_duration(elapsed)}`"
                         + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
+                        + "\n-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (" • Pacing 10.0s to next member" if idx < len(pending_members) else ""),
+                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (f" • Pacing {current_sleep:.1f}s to next member ({active_servers} active server(s))" if idx < len(pending_members) else ""),
                     color=WARNING_COLOR if idx < len(pending_members) else SUCCESS_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=prog_view)
 
                 if idx < len(pending_members):
-                    await asyncio.sleep(10.0)
+                    await asyncio.sleep(self.get_search_sleep_delay())
 
             total_duration = asyncio.get_event_loop().time() - start_time
             print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}\n")
@@ -937,13 +967,13 @@ class AnalyzeChat(commands.Cog):
 
     analyze_chat = app_commands.Group(
         name="analyze_chat",
-        description="Retroactively analyze historical messages sent before the bot joined the server",
+        description="Retroactively analyze messages up to command execution (Takes a long time; 30s+ safety pacing)",
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @analyze_chat.command(
         name="single_user",
-        description="Retroactively analyze a single user's chat history before the bot joined",
+        description="Analyze a member's chat history up to command execution (Takes a long time; 30s+ pacing)",
     )
     @app_commands.describe(target="The server member to retroactively analyze")
     async def single_user(self, interaction: discord.Interaction, target: discord.Member) -> None:
@@ -1004,7 +1034,7 @@ class AnalyzeChat(commands.Cog):
 
     @analyze_chat.command(
         name="whole_server",
-        description="Retroactively analyze all server members' chat history before the bot joined",
+        description="Analyze all members' chat history up to command execution (Takes multiple hours; 30s+ pacing)",
     )
     async def whole_server(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:

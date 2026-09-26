@@ -95,15 +95,19 @@ class HelpView(discord.ui.LayoutView):
 
         elif page_index == 2:
             title = "🔍 Historical Chat Analysis (/analyze_chat)"
-            description = "Scan messages sent before WordCounter joined the server. Requires **Manage Server** permission."
+            description = "Scan messages sent up to the command execution time. Requires **Manage Server** permission."
             fields = [
                 (
                     "👤 /analyze_chat single_user <member>",
-                    "Scans historical messages for a specific member, grouping by month, year, and channel.",
+                    "Scans historical messages for a specific member up to command execution time, grouping by month, year, and channel.",
                 ),
                 (
                     "🌐 /analyze_chat whole_server",
                     "Scans historical messages for all non-bot members one by one with live progress and skipped tracking.",
+                ),
+                (
+                    "⏳ Rate Limiting & Safety Pacing (Takes a Long Time)",
+                    "To prevent Discord rate limits, searches run with strict safety pacing (30s+ per page of 25 messages, scaling to 40s/50s+ if multiple servers run sweeps concurrently). Sweeping thousands of messages takes multiple hours. **Do NOT restart the bot** while an analysis is in progress!",
                 ),
                 (
                     "⚠️ Important Note on Keywords",
@@ -242,8 +246,9 @@ class AdvertisementView(discord.ui.LayoutView):
             ),
             (
                 "🔍 Retroactive History Deep-Sweep",
-                "• ⏳ Scan your server's chat history from **before** WordCounter joined!\n"
-                "• 🌐 Single user sweeps or whole-server deep scans with live progress & ETA.",
+                "• ⏳ Scan your server's chat history up to the command execution time!\n"
+                "• 🌐 Single user or whole-server deep scans with 30s+ multi-server safety pacing & live ETA.\n"
+                "• ⚠️ Deep sweeps take time to prevent Discord rate limits — do not restart the bot during scans!",
             ),
             (
                 "🔮 Coming Soon: 💰 Swear Jar Feature!",
