@@ -16,7 +16,7 @@ load_dotenv()
 
 def get_support_server_url() -> str:
     url = os.getenv("BOT_SERVER", "").strip()
-    return url if url else "https://discord.gg"
+    return url if url else "https://discord.gg/Hr595Zk2tr"
 
 
 def get_bot_invite_url(bot: commands.Bot) -> str:
