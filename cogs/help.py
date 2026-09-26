@@ -30,8 +30,7 @@ def get_bot_invite_url(bot: commands.Bot) -> str:
 
 class HelpView(discord.ui.LayoutView):
     """
-    Interactive Components V2 Paginated Help Menu with navigation controls
-    and support server website link button.
+    Paginated Help Menu with navigation controls and link buttons.
     """
 
     def __init__(self, bot: commands.Bot, author_id: int) -> None:
@@ -39,7 +38,7 @@ class HelpView(discord.ui.LayoutView):
         self.bot = bot
         self.author_id = author_id
         self.current_page: int = 0
-        self.total_pages: int = 5
+        self.total_pages: int = 4
         self.build_page()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -52,125 +51,89 @@ class HelpView(discord.ui.LayoutView):
         return True
 
     def _get_page_content(self, page_index: int) -> Tuple[str, str, Optional[List[Tuple[str, str]]]]:
-        """Returns (title, description, fields) for each help page."""
         if page_index == 0:
-            title = "📖 WordCounter — Overview & Quick Start"
-            description = (
-                "Welcome to **WordCounter**, the advanced Discord chat analytics bot! "
-                "WordCounter tracks words, messages, attachments, media links, and custom keywords in real-time "
-                "with modern Discord Components V2 interfaces and retroactive historical sweeps.\n\n"
-                "### 🚀 Quick Start Guide\n"
-                "1. **Enable Tracking**: Use `/settings` to choose between **Whole Server Mode** (tracks all channels) or **Specific Mode**.\n"
-                "2. **Add Tracked Keywords**: Configure custom keywords in `/settings` → **Keywords Watchlist**.\n"
-                "3. **View Rankings**: Use `/leaderboard` to browse real-time server rankings with interactive category buttons.\n"
-                "4. **Retroactive Sweep**: Use `/analyze_chat` to count messages sent *before* the bot joined the server!"
-            )
+            title = "📊 Stats & Leaderboard"
+            description = "Commands for viewing server activity rankings and individual user stats."
             fields = [
-                ("💡 Need Help or Support?", "Click the **🌐 Support Server** button below to join our official support community.")
+                (
+                    "🏆 /leaderboard [channel]",
+                    "View rankings for **Words**, **Messages**, **Attachments**, or **Keywords**.\n"
+                    "Filter by a specific channel using the optional `channel` option.",
+                ),
+                (
+                    "👤 /stats user <member>",
+                    "View a member's total words, messages, attachments, and tracked keyword counts.",
+                ),
+                (
+                    "🔑 /keyword list",
+                    "List all keywords currently tracked in this server.",
+                ),
+                (
+                    "🖱️ Context Menus (Right-Click)",
+                    "• **Message Word Count**: Right-click any message → Apps → Message Word Count\n"
+                    "• **User Stats**: Right-click any user profile → Apps → User Stats",
+                ),
             ]
             return title, description, fields
 
         elif page_index == 1:
-            title = "📊 Leaderboards & Analytics (/leaderboard)"
-            description = (
-                "**Unified Server Leaderboard (`/leaderboard [channel]`)**\n"
-                "All server statistics are consolidated into a single interactive command! "
-                "Use the interactive buttons at the bottom of the leaderboard to switch views instantly without typing new commands."
-            )
+            title = "⚙️ Server Settings (/settings)"
+            description = "Manage tracking channels, watched keywords, and server data. Requires **Manage Server** permission."
             fields = [
                 (
-                    "🔘 Leaderboard Categories",
-                    "• 📝 **Words**: Top word contributors across the server or channel.\n"
-                    "• 💬 **Messages**: Total messages sent by members.\n"
-                    "• 📎 **Attachments**: Files, images, and media links shared.\n"
-                    "• 🔑 **Keywords**: Usage rankings for all tracked server keywords.",
+                    "🏠 Tracking Modes",
+                    "• **Whole Server**: Tracks all channels automatically. Add channels or categories to the ignore list to exclude them.\n"
+                    "• **Specific Mode**: Only tracks channels and categories you explicitly choose.",
                 ),
                 (
-                    "📄 Interactive Pagination & Channel Filter",
-                    "• Navigate through large user bases with `◀️ Previous` and `Next ▶️` buttons.\n"
-                    "• Specify the optional `channel` parameter to filter rankings to a specific text channel.",
+                    "📁 Category Tracking",
+                    "Adding or ignoring a category applies to all channels inside it.",
+                ),
+                (
+                    "🔑 Keywords Watchlist",
+                    "Add or remove custom words for the bot to count across messages.",
+                ),
+                (
+                    "🛠️ Data & Reset Tools",
+                    "Reset stats for a specific user, clear channel counts, or wipe server data.",
                 ),
             ]
             return title, description, fields
 
         elif page_index == 2:
-            title = "⚙️ Server Configuration (/settings)"
-            description = (
-                "**Administrator Dashboard (`/settings`)**\n"
-                "The `/settings` dashboard is strictly restricted to members with the **Manage Server** permission "
-                "and is always sent **ephemerally** for privacy. It includes a **✖️ Close Menu** button to cleanly dismiss anytime."
-            )
+            title = "🔍 Historical Chat Analysis (/analyze_chat)"
+            description = "Scan messages sent before WordCounter joined the server. Requires **Manage Server** permission."
             fields = [
                 (
-                    "🏠 Tracking Modes",
-                    "• **Whole Server Mode**: Tracks all text channels and categories automatically, with an ignored list for channels/categories you want excluded.\n"
-                    "• **Specific Mode**: Only counts messages inside specifically selected text channels and categories.",
-                ),
-                (
-                    "📁 Category Watching",
-                    "Selecting an entire **Category** automatically watches or ignores all channels and threads inside that category!",
-                ),
-                (
-                    "🔑 Keywords Watchlist",
-                    "Add keywords via interactive Modals, bulk edit existing lists, or remove keywords from tracking.",
-                ),
-                (
-                    "🛠️ Data & Reset Tools",
-                    "Reset word counts per-user or per-channel, unlock retroactive re-analysis, or reset server stats.",
-                ),
-            ]
-            return title, description, fields
-
-        elif page_index == 3:
-            title = "🔍 Retroactive Chat Deep-Sweep (/analyze_chat)"
-            description = (
-                "**Retroactive Historical Chat Analysis (`/analyze_chat`)**\n"
-                "Need stats for messages sent *before* WordCounter joined your server? "
-                "WordCounter uses Discord's Guild Message Search API to sweep historical archives!"
-            )
-            fields = [
-                (
-                    "👤 /analyze_chat single_user @member",
-                    "Retroactively sweeps historical messages for a specific member prior to the bot's join date.",
+                    "👤 /analyze_chat single_user <member>",
+                    "Scans historical messages for a specific member and adds them to their stats.",
                 ),
                 (
                     "🌐 /analyze_chat whole_server",
-                    "Gathers all non-bot members in the server and retroactively sweeps their chat history one by one, automatically skipping previously analyzed members.",
+                    "Scans historical messages for all non-bot members one by one. Automatically skips members who were already scanned.",
                 ),
                 (
-                    "⚠️ Pre-Flight Keyword Confirmation",
-                    "Keywords must be configured in `/settings` **before** running analysis in order to be counted. Both commands provide an interactive confirmation modal first.",
-                ),
-                (
-                    "⏳ Anti-Ratelimit Pacing & Duration",
-                    "Strict 5.0s pacing per request ensures zero Discord API violations. Live container messages display estimated time remaining in minutes.",
+                    "⚠️ Important Note on Keywords",
+                    "Keywords must be configured in `/settings` **before** running an analysis. Keywords added later will not be counted in past scans.",
                 ),
             ]
             return title, description, fields
 
         else:
-            title = "👤 User Stats, Context Menus & Apps"
-            description = (
-                "**Quick Stats & User App Features**\n"
-                "WordCounter includes built-in commands and context menus for quick user and message lookups."
-            )
+            title = "📱 Bot Info & User App"
+            description = "WordCounter commands and install options."
             fields = [
                 (
-                    "💬 /stats user @member",
-                    "Shows detailed statistics for a member including total words, messages, attachments, and specific keyword breakdowns.",
+                    "🚀 User App Installation",
+                    "You can install WordCounter directly to your Discord account. This allows you to run `/help` and `/advertisement` in any server or DM.",
                 ),
                 (
-                    "🔑 /keyword list",
-                    "Displays all currently tracked keywords configured in the server.",
+                    "📢 /advertisement",
+                    "Post a quick feature summary card with invite links.",
                 ),
                 (
-                    "🖱️ Discord Context Menus (Right-Click)",
-                    "• **Message Word Count**: Right-click any message → **Apps** → **Message Word Count** to count words in that message.\n"
-                    "• **User Stats**: Right-click any user profile → **Apps** → **User Stats** to view their full stats card.",
-                ),
-                (
-                    "📱 User Installable App (/advertisement)",
-                    "WordCounter can be installed directly to your personal Discord account! Use `/advertisement` in any server or DM to showcase the bot!",
+                    "🔗 Quick Links",
+                    "Use the buttons below to join the support server or invite WordCounter to another server.",
                 ),
             ]
             return title, description, fields
@@ -183,7 +146,7 @@ class HelpView(discord.ui.LayoutView):
             title=title,
             description=description,
             fields=fields,
-            footer=f"Page {self.current_page + 1}/{self.total_pages} • WordCounter V2 Help",
+            footer=f"Page {self.current_page + 1}/{self.total_pages} • WordCounter Help",
             color=BRAND_COLOR,
         )
 
@@ -263,28 +226,26 @@ class AdvertisementView(discord.ui.LayoutView):
         avatar_url = bot_user.display_avatar.url if bot_user and bot_user.display_avatar else None
 
         desc = (
-            "Transform community engagement and analyze your server's activity with **WordCounter**! "
-            "Whether you want real-time word counting, interactive leaderboards, or retroactive historical sweeps, "
-            "WordCounter provides the most powerful and modern Discord analytics experience."
+            "Track words, messages, attachments, and custom keywords across your server with real-time leaderboards and historical chat analysis."
         )
 
         fields = [
             (
-                "⚡ Core Features at a Glance",
-                "• 📝 **Real-Time Tracking**: Counts words, messages, attachments, media links, and keywords automatically.\n"
-                "• 🏆 **Unified Leaderboard**: Interactive switcher buttons for Words, Messages, Attachments, and Keywords with pagination.\n"
-                "• 🔍 **Retroactive Chat Deep-Sweep**: Sweep messages sent *before* the bot joined the server (per-user or whole server!).\n"
-                "• ⚙️ **Comprehensive Settings**: Whole Server vs Specific Mode, category watching, ignored lists, and keyword watchlists.\n"
-                "• 🔒 **Enterprise-Grade Architecture**: SQLite WAL mode, async connection locks, and Manage Server security guards.",
+                "⚡ Features",
+                "• **Live Tracking**: Counts words, messages, attachments, media links, and custom keywords.\n"
+                "• **Interactive Leaderboard**: Switch between Words, Messages, Attachments, and Keywords.\n"
+                "• **Historical Chat Sweep**: Scan messages sent before the bot joined (per-user or whole server).\n"
+                "• **Channel & Category Control**: Whole-server mode with ignore lists, or specific channel/category tracking.\n"
+                "• **Keyword Watchlist**: Track custom phrases and see who says them most.",
             ),
             (
-                "📱 User Installable App",
-                "Install WordCounter to your personal Discord account to run `/advertisement` and `/help` across any server or DM!",
+                "📱 User Installable",
+                "Install WordCounter to your Discord account to use commands across any server or DM.",
             ),
         ]
 
         container = create_v2_container(
-            title="📊 WordCounter — The Ultimate Discord Chat Analytics Bot",
+            title="📊 WordCounter — Chat & Word Analytics",
             description=desc,
             fields=fields,
             thumbnail_url=avatar_url,
@@ -323,7 +284,7 @@ class HelpCog(commands.Cog, name="Help"):
 
     @app_commands.command(
         name="help",
-        description="Comprehensive paginated guide to all WordCounter commands and features",
+        description="View guide to WordCounter commands and features",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -334,7 +295,7 @@ class HelpCog(commands.Cog, name="Help"):
 
     @app_commands.command(
         name="advertisement",
-        description="Display an interactive advertisement card for WordCounter to share in any server",
+        description="Show an overview card of WordCounter features and links",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)

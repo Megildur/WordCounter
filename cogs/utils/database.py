@@ -705,8 +705,8 @@ class WordCounterDatabase:
     async def reset_user_server_counts(self, guild_id: int, user_id: int) -> None:
         await self.ensure_connected()
         async with self.db_lock:
-            await self.db.execute("UPDATE server SET count = 0 WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
-            await self.db.execute("UPDATE counters SET count = 0 WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM server WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM counters WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.commit()
 
     async def reset_user_channel_counts(self, guild_id: int, user_id: int, channel_id: int) -> None:
@@ -719,7 +719,7 @@ class WordCounterDatabase:
             row = await cursor.fetchone()
             removed = row[0] if row else 0
             await self.db.execute(
-                "UPDATE counters SET count = 0 WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
+                "DELETE FROM counters WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
                 (guild_id, user_id, channel_id),
             )
             if removed > 0:
@@ -738,7 +738,7 @@ class WordCounterDatabase:
             )
             rows = await cursor.fetchall()
             await self.db.execute(
-                "UPDATE counters SET count = 0 WHERE guild_id = ? AND channel_id = ?",
+                "DELETE FROM counters WHERE guild_id = ? AND channel_id = ?",
                 (guild_id, channel_id),
             )
             for r_uid, r_count in rows:
@@ -748,12 +748,40 @@ class WordCounterDatabase:
                 )
             await self.db.commit()
 
-    async def reset_entire_server_counts(self, guild_id: int) -> None:
+    async def reset_entire_server(self, guild_id: int) -> None:
+        """
+        Performs a complete fresh restart for a guild:
+        - Deletes all recorded counts (words, messages, attachments, keywords)
+        - Deletes all chat analysis history (unlocks all members to be analyzed again)
+        - Deletes all tracking settings (watched channels, ignored channels/categories)
+        - Deletes all tracked keywords
+        """
         await self.ensure_connected()
         async with self.db_lock:
-            await self.db.execute("UPDATE server SET count = 0 WHERE guild_id = ?", (guild_id,))
-            await self.db.execute("UPDATE counters SET count = 0 WHERE guild_id = ?", (guild_id,))
+            # Delete word counts
+            await self.db.execute("DELETE FROM server WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM counters WHERE guild_id = ?", (guild_id,))
+            # Delete message counts
+            await self.db.execute("DELETE FROM message_user WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM message_channels WHERE guild_id = ?", (guild_id,))
+            # Delete attachment counts
+            await self.db.execute("DELETE FROM attachments_users WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM attachments_channels WHERE guild_id = ?", (guild_id,))
+            # Delete keyword counts
+            await self.db.execute("DELETE FROM keyword_user WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM keyword_channel WHERE guild_id = ?", (guild_id,))
+            # Reset analyzed users history so /analyze_chat can scan all members again
+            await self.db.execute("DELETE FROM analyzed_users WHERE guild_id = ?", (guild_id,))
+            # Reset server tracking configuration and ignored channels/categories
+            await self.db.execute("DELETE FROM channels WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM ignore WHERE guild_id = ?", (guild_id,))
+            # Reset tracked keywords watchlist
+            await self.db.execute("DELETE FROM keyword WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
+
+    async def reset_entire_server_counts(self, guild_id: int) -> None:
+        """Alias for complete server reset for backward compatibility."""
+        await self.reset_entire_server(guild_id)
 
     # --- Retroactive Analysis ---
 
@@ -782,6 +810,16 @@ class WordCounterDatabase:
             await self.db.execute(
                 "DELETE FROM analyzed_users WHERE user_id = ? AND guild_id = ?",
                 (user_id, guild_id),
+            )
+            await self.db.commit()
+
+    async def unlock_all_analyzed(self, guild_id: int) -> None:
+        """Clears all analyzed members in a guild without wiping stats or settings."""
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.execute(
+                "DELETE FROM analyzed_users WHERE guild_id = ?",
+                (guild_id,),
             )
             await self.db.commit()
 

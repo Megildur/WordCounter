@@ -486,11 +486,15 @@ class SettingsMenuView(discord.ui.LayoutView):
             container.add_item(discord.ui.Separator())
             container.add_item(
                 discord.ui.TextDisplay(
-                    "⚠️ **DANGER: Confirm Full Server Word Count Reset**\n"
-                    "This will reset the recorded word counts for **ALL users across the entire server** to `0`. Are you sure?"
+                    "⚠️ **DANGER: Confirm Full Server Fresh Restart**\n"
+                    "This will completely reset **EVERYTHING** for this server:\n"
+                    "• **All Statistics**: Words, messages, attachments, and keywords reset to `0`\n"
+                    "• **Chat Analysis**: History cleared (all members can be retroactively analyzed again)\n"
+                    "• **Settings**: Tracking mode, watched/ignored channels, and keywords reset\n\n"
+                    "Are you sure you want to perform a fresh restart?"
                 )
             )
-            confirm_btn = discord.ui.Button(label="⚠️ Yes, Reset All Server Counts", style=discord.ButtonStyle.danger)
+            confirm_btn = discord.ui.Button(label="⚠️ Yes, Reset Everything (Fresh Restart)", style=discord.ButtonStyle.danger)
             cancel_btn = discord.ui.Button(label="✖️ Cancel", style=discord.ButtonStyle.secondary)
             confirm_btn.callback = self._confirm_wipe_server
             cancel_btn.callback = self._cancel_confirmation
@@ -521,15 +525,15 @@ class SettingsMenuView(discord.ui.LayoutView):
         )
         btn_exec_reset.callback = self._execute_scoped_reset
 
+        unlock_label = "🔓 Unlock User Re-Analyze" if self.selected_reset_user_id else "🔓 Unlock All Re-Analyze"
         btn_unlock_analyze = discord.ui.Button(
-            label="🔓 Unlock User Re-Analyze",
+            label=unlock_label,
             style=discord.ButtonStyle.secondary,
-            disabled=(self.selected_reset_user_id is None),
         )
         btn_unlock_analyze.callback = self._unlock_user_analyze
 
         btn_wipe_all = discord.ui.Button(
-            label="⚠️ Reset Entire Server",
+            label="⚠️ Reset Entire Server (Fresh Restart)",
             style=discord.ButtonStyle.danger,
         )
         btn_wipe_all.callback = self._prompt_wipe_server
@@ -679,10 +683,12 @@ class SettingsMenuView(discord.ui.LayoutView):
 
     async def _unlock_user_analyze(self, interaction: discord.Interaction) -> None:
         uid = self.selected_reset_user_id
-        if uid is None:
-            return
-        await self.bot.db.unlock_user_analyzed(self.guild.id, uid)
-        self.status_banner = (f"🔓 Unlocked retroactive `/analyze` for <@{uid}>!", SUCCESS_COLOR)
+        if uid is not None:
+            await self.bot.db.unlock_user_analyzed(self.guild.id, uid)
+            self.status_banner = (f"🔓 Unlocked retroactive chat analysis for <@{uid}>!", SUCCESS_COLOR)
+        else:
+            await self.bot.db.unlock_all_analyzed(self.guild.id)
+            self.status_banner = ("🔓 Unlocked retroactive chat analysis for **all members** in the server!", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _prompt_wipe_server(self, interaction: discord.Interaction) -> None:
@@ -690,9 +696,16 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.refresh_and_edit(interaction)
 
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
-        await self.bot.db.reset_entire_server_counts(self.guild.id)
+        await self.bot.db.reset_entire_server(self.guild.id)
         self.pending_confirmation = None
-        self.status_banner = ("✅ All word counts across the entire server have been reset to 0!", SUCCESS_COLOR)
+        self.selected_reset_user_id = None
+        self.selected_reset_channel_id = None
+        self.active_tab = "overview"
+        self.status_banner = (
+            "✅ **Server Reset Complete!** All counts (words, messages, attachments, keywords), "
+            "chat analysis history, channels, and keywords have been reset to a fresh restart.",
+            SUCCESS_COLOR,
+        )
         await self.refresh_and_edit(interaction)
 
     async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
