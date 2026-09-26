@@ -122,8 +122,24 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
    ```
 
 6. **Add Bot to Allowed Server**:
-   - Generate an invite link in your [Discord Developer Portal](https://discord.com/developers/applications) (under **OAuth2** -> **URL Generator**, select `bot` and `applications.commands` scopes with standard permissions).
-   - Use the generated invite to add the bot to your server listed in `ALLOWED_GUILDS`.
+   - In the [Discord Developer Portal](https://discord.com/developers/applications), navigate to **OAuth2** -> **URL Generator** (or configure **Installation** -> **Default Install Settings** for Guild Install):
+     - **Scopes**:
+       - `bot`
+       - `applications.commands`
+     - **Bot Permissions** (Permission Integer: `277025507392`):
+       - `Send Messages`
+       - `Send Messages in Threads`
+       - `Embed Links`
+       - `Attach Files`
+       - `Read Message History`
+       - `Add Reactions`
+       - `Use Application Commands`
+       - *(Optional/Recommended)*: `View Channels`
+   - Use the generated invite URL to add the bot to your server listed in `ALLOWED_GUILDS`:
+     ```text
+     https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=277025507392&scope=bot+applications.commands
+     ```
+     *(Or if set up as Default Install: `https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&integration_type=0`)*
 
 7. **Sync Slash Commands**:
    - In any server listed in your `ALLOWED_GUILDS`, run the quicksync command:
