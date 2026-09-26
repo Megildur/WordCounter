@@ -50,13 +50,20 @@ def compute_server_remaining_time(
     if total_pending <= 0 or idx > total_pending:
         return 0.0
 
-    SEC_PER_PAGE = 5.5
-    SEC_INTER_MEMBER = 5.0
-    SEC_ZERO_MEMBER = 1.5
+    SEC_PER_PAGE = 10.5
+    SEC_INTER_MEMBER = 10.0
+    SEC_ZERO_MEMBER = 2.0
+
+    total_pages_done = total_pages_scanned + page_num
+    if total_pages_done > 2 and elapsed > 0:
+        measured_sec_per_page = elapsed / total_pages_done
+        effective_sec_per_page = max(10.0, min(30.0, (SEC_PER_PAGE * 0.3) + (measured_sec_per_page * 0.7)))
+    else:
+        effective_sec_per_page = SEC_PER_PAGE
 
     if total_pages > 0:
         remaining_pages = max(0, total_pages - page_num)
-        current_member_time = remaining_pages * SEC_PER_PAGE
+        current_member_time = remaining_pages * effective_sec_per_page
         future_members_count = max(0, total_pending - idx)
     else:
         current_member_time = 0.0
@@ -75,10 +82,10 @@ def compute_server_remaining_time(
     avg_pages_active = (effective_pages_scanned + 4.0) / (effective_analyzed + 1.0)
     avg_pages_active = max(1.0, avg_pages_active)
 
-    active_member_time = (avg_pages_active * SEC_PER_PAGE) + SEC_INTER_MEMBER
+    active_member_time = (avg_pages_active * effective_sec_per_page) + SEC_INTER_MEMBER
     inactive_member_time = SEC_ZERO_MEMBER
     expected_sec_per_member = (p_active * active_member_time) + ((1.0 - p_active) * inactive_member_time)
-    expected_sec_per_member = max(2.5, expected_sec_per_member)
+    expected_sec_per_member = max(3.5, expected_sec_per_member)
 
     future_members_time = future_members_count * expected_sec_per_member
 
@@ -226,7 +233,7 @@ class AnalyzeChat(commands.Cog):
         await self.bot.db.ensure_connected()
 
     async def _fetch_search_page(
-        self, guild_id: int, author_id: int, max_id: int, offset: int = 0
+        self, guild_id: int, author_id: int, max_id: int, offset: int = 0, max_retries: int = 5
     ) -> Dict[str, Any]:
         route = Route("GET", "/guilds/{guild_id}/messages/search", guild_id=guild_id)
         params = {
@@ -234,6 +241,7 @@ class AnalyzeChat(commands.Cog):
             "max_id": max_id,
             "offset": offset,
         }
+        retries = 0
 
         while True:
             try:
@@ -241,17 +249,56 @@ class AnalyzeChat(commands.Cog):
 
                 if not isinstance(data, dict) or "messages" not in data or data.get("message") == "Indexing":
                     retry_after = data.get("retry_after", 5) if isinstance(data, dict) else 5
-                    logger.info(f"Search index building for guild {guild_id}. Waiting {retry_after}s...")
+                    print(f"[ANALYSIS NOTICE] Discord search index building for guild {guild_id}. Waiting {retry_after}s...")
                     await asyncio.sleep(float(retry_after))
                     continue
 
                 return data
 
+            except discord.RateLimited as e:
+                retry_after = max(10.0, float(getattr(e, "retry_after", 15.0)))
+                retries += 1
+                print(f"[ANALYSIS RATE LIMIT] Discord search rate limit hit. Waiting {retry_after:.1f}s (retry {retries}/{max_retries})...")
+                await asyncio.sleep(retry_after)
+                if retries >= max_retries:
+                    raise e
+                continue
+
             except discord.HTTPException as e:
                 if e.status == 202:
-                    logger.info("HTTP 202: Search index building. Retrying in 5s...")
+                    print(f"[ANALYSIS NOTICE] HTTP 202: Search index building. Retrying in 5s...")
                     await asyncio.sleep(5.0)
                     continue
+
+                if e.status == 429:
+                    retry_after = 15.0
+                    if hasattr(e, "response") and hasattr(e.response, "headers"):
+                        hdr = e.response.headers.get("Retry-After")
+                        if hdr:
+                            try:
+                                retry_after = max(10.0, float(hdr))
+                            except Exception:
+                                pass
+                    retries += 1
+                    print(f"[ANALYSIS RATE LIMIT] HTTP 429: Search rate limit hit. Waiting {retry_after:.1f}s (retry {retries}/{max_retries})...")
+                    await asyncio.sleep(retry_after)
+                    if retries >= max_retries:
+                        raise e
+                    continue
+
+                if e.status in (500, 502, 503, 504, 524):
+                    retries += 1
+                    backoff = min(60.0, 5.0 * (2 ** (retries - 1)))
+                    print(f"[ANALYSIS SERVER ERROR] HTTP {e.status}: Discord server error. Retrying in {backoff:.1f}s (retry {retries}/{max_retries})...")
+                    await asyncio.sleep(backoff)
+                    if retries >= max_retries:
+                        raise e
+                    continue
+
+                if e.status == 400 and offset >= 5000:
+                    print(f"[ANALYSIS NOTICE] Reached Discord's hard search offset limit (5,000 messages) for member {author_id}.")
+                    return {"messages": [], "total_results": offset}
+
                 raise e
 
     async def _run_retroactive_analysis(
@@ -317,7 +364,7 @@ class AnalyzeChat(commands.Cog):
                 return
 
             total_pages = (total_historical_messages + 24) // 25
-            estimated_time = max(1, total_pages - 1) * 5.5 if total_pages > 1 else 5.0
+            estimated_time = max(1, total_pages - 1) * 10.5 if total_pages > 1 else 10.0
             avatar_url = target.display_avatar.url if target.display_avatar else None
 
             print(f"\n[ANALYSIS ACTIVE] ⚠️ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) — DO NOT RESTART BOT")
@@ -326,7 +373,7 @@ class AnalyzeChat(commands.Cog):
                 title="⏳ Retroactive Deep-Sweep in Progress",
                 description=(
                     f"Found **{total_historical_messages:,}** historical messages for {target.mention} prior to the bot joining.\n"
-                    f"Sweeping history with strict **5.0s** anti-ratelimit pacing...\n\n"
+                    f"Sweeping history with strict **10.0s** anti-ratelimit pacing...\n\n"
                     f"**Estimated Remaining:** `{format_duration(estimated_time)}` ({total_pages} page(s))"
                 ),
                 thumbnail_url=avatar_url,
@@ -361,6 +408,7 @@ class AnalyzeChat(commands.Cog):
 
                 messages_array = data.get("messages", [])
                 if not messages_array:
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({counted_messages:,} messages counted).")
                     break
 
                 for hit in messages_array:
@@ -435,7 +483,9 @@ class AnalyzeChat(commands.Cog):
                 if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_pages = max(0, total_pages - page_num)
-                    est_remaining = remaining_pages * 5.5
+                    measured_sec_per_page = (elapsed / page_num) if page_num > 0 else 10.5
+                    sec_per_page = max(10.0, min(30.0, (10.5 * 0.3) + (measured_sec_per_page * 0.7)))
+                    est_remaining = remaining_pages * sec_per_page
                     print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {min(offset, total_historical_messages):,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
                     prog_view = create_v2_view(
                         title="⏳ Retroactive Deep-Sweep in Progress",
@@ -446,19 +496,19 @@ class AnalyzeChat(commands.Cog):
                             f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                         ),
                         thumbnail_url=avatar_url,
-                        footer=f"Page {page_num}/{total_pages} • Pacing 5.0s per request",
+                        footer=f"Page {page_num}/{total_pages} • Pacing 10.0s per request",
                         color=WARNING_COLOR,
                     )
                     await _safe_edit_message(status_msg, view=prog_view)
 
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(10.0)
 
                 try:
                     data = await self._fetch_search_page(
                         guild.id, target.id, max_id_snowflake, offset=offset
                     )
                 except Exception as e:
-                    logger.error(f"Failed offset {offset} during retroactive sweep: {e}")
+                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
                     break
 
             await self.bot.db.save_retroactive_analysis(
@@ -593,7 +643,7 @@ class AnalyzeChat(commands.Cog):
                         f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                    footer=f"Member {current_total_idx}/{total_eligible} • Pacing 5.0s per request",
+                    footer=f"Member {current_total_idx}/{total_eligible} • Pacing 10.0s per request",
                     color=WARNING_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=status_view)
@@ -676,6 +726,7 @@ class AnalyzeChat(commands.Cog):
 
                     messages_array = data.get("messages", [])
                     if not messages_array:
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({user_messages:,} messages counted).")
                         break
 
                     for hit in messages_array:
@@ -774,19 +825,19 @@ class AnalyzeChat(commands.Cog):
                                 f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`"
                             ),
                             thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing 5.0s per request",
+                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing 10.0s per request",
                             color=WARNING_COLOR,
                         )
                         await _safe_edit_message(status_msg, view=prog_view)
 
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(10.0)
 
                     try:
                         data = await self._fetch_search_page(
                             guild.id, target.id, max_id_snowflake, offset=offset
                         )
                     except Exception as e:
-                        logger.error(f"Failed offset {offset} for member {target.id}: {e}")
+                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
                         break
 
                 await self.bot.db.save_retroactive_analysis(
@@ -841,13 +892,13 @@ class AnalyzeChat(commands.Cog):
                         + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (" • Pacing 5.0s to next member" if idx < len(pending_members) else ""),
+                    footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (" • Pacing 10.0s to next member" if idx < len(pending_members) else ""),
                     color=WARNING_COLOR if idx < len(pending_members) else SUCCESS_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=prog_view)
 
                 if idx < len(pending_members):
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(10.0)
 
             total_duration = asyncio.get_event_loop().time() - start_time
             print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}\n")

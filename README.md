@@ -41,7 +41,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
   - Optional `channel` filter to view top 10 contributors in a specific channel plus a complete chronological monthly history breakdown (newest to oldest).
 - **🔍 Retroactive Chat Deep-Sweep (`/analyze_chat`)**:
   - Scan messages sent before the bot joined the server via Discord's Guild Search API.
-  - Supports single-user analysis or whole-server sweeping with live progress tracking, dynamic ETA estimation, skipped-user accounting, and 5.0s anti-ratelimit pacing.
+  - Supports single-user analysis or whole-server sweeping with live progress tracking, adaptive dynamic ETA estimation, skipped-user accounting, and 10.0s anti-ratelimit pacing with automatic backoff retries.
 - **⚙️ Interactive Settings Dashboard (`/settings`)**:
   - Switch between **Whole Server Mode** (with ignore lists) or **Specific Channels/Categories Mode**.
   - Add, edit, or remove tracked keywords with instant regex matching.
