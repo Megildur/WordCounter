@@ -3,7 +3,6 @@ from discord.ext import commands
 from discord import app_commands
 from cogs.keyword import Keyword
 from cogs.attachments import Attachments
-from cogs.messages import Messages
 from cogs.utils.database import WordCounterDatabase
 from cogs.utils.components import (
     BRAND_COLOR,
@@ -120,7 +119,7 @@ class Counter(commands.Cog):
         await Attachments(self.bot).attachment_message(message, result, target_channel_id=target_channel_id)
         word_count = len(message.content.split())
         await self.update_count(message.guild, message.author, target_channel_id, word_count)
-        await Messages(self.bot).add_msg(message.guild.id, message.author.id, target_channel_id)
+        await self.bot.db.add_message_count(message.guild.id, message.author.id, target_channel_id)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
@@ -138,7 +137,7 @@ class Counter(commands.Cog):
         await Attachments(self.bot).attachment_message_delete(message, result, target_channel_id=target_channel_id)
         word_count = len(message.content.split())
         await self.remove_count(message.guild, message.author, target_channel_id, word_count)
-        await Messages(self.bot).del_msg(message.guild.id, message.author.id, target_channel_id)
+        await self.bot.db.remove_message_count(message.guild.id, message.author.id, target_channel_id)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
