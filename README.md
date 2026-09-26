@@ -121,6 +121,16 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
    python main.py
    ```
 
+6. **Sync Slash Commands**:
+   - In any server listed in your `ALLOWED_GUILDS`, run the quicksync command:
+     ```text
+     !wcquicksync
+     ```
+   - Then run the slash command to complete the guild command sync:
+     ```text
+     /owner sync sync_type:Guild
+     ```
+
 ---
 
 ## 🛡️ Support & Community
