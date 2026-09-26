@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from datetime import datetime
 import logging
 import re
 from collections import defaultdict
@@ -45,11 +46,6 @@ def compute_server_remaining_time(
     analyzed_count: int = 0,
     total_pages_scanned: int = 0,
 ) -> float:
-    """Calculates dynamically updating estimated remaining time for whole server analysis.
-
-    Accurately scales with high message volume, multi-page user pagination,
-    and all remaining queued members.
-    """
     if total_pending <= 0 or idx > total_pending:
         return 0.0
 
@@ -57,7 +53,6 @@ def compute_server_remaining_time(
     SEC_INTER_MEMBER = 5.0
     SEC_ZERO_MEMBER = 1.5
 
-    # 1. Current member's remaining time
     if total_pages > 0:
         remaining_pages = max(0, total_pages - page_num)
         current_member_time = remaining_pages * SEC_PER_PAGE
@@ -69,7 +64,6 @@ def compute_server_remaining_time(
     if future_members_count == 0:
         return float(max(0.0, current_member_time))
 
-    # 2. Estimate future members' time based on observed server activity
     completed_members = max(0, idx - 1)
 
     p_active = (analyzed_count + 1.2) / (completed_members + 3.0)
@@ -347,6 +341,8 @@ class AnalyzeChat(commands.Cog):
             channel_messages: Dict[int, int] = defaultdict(int)
             channel_attachments: Dict[int, int] = defaultdict(int)
             channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
+            monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0})
+            monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
 
             offset = 0
             page_num = 0
@@ -375,15 +371,31 @@ class AnalyzeChat(commands.Cog):
                             else:
                                 eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
 
+                            ts_str = msg.get("timestamp")
+                            if ts_str:
+                                try:
+                                    dt = datetime.fromisoformat(ts_str)
+                                    msg_year = dt.year
+                                    msg_month = dt.month
+                                except Exception:
+                                    msg_year = 2024
+                                    msg_month = 1
+                            else:
+                                msg_year = 2024
+                                msg_month = 1
+
+                            m_key = (eff_channel_id, msg_year, msg_month)
                             content = msg.get("content", "") or ""
                             counted_messages += 1
                             channel_messages[eff_channel_id] += 1
+                            monthly_stats[m_key]["messages"] += 1
 
                             if content:
                                 words = content.split()
                                 w_len = len(words)
                                 total_words += w_len
                                 channel_words[eff_channel_id] += w_len
+                                monthly_stats[m_key]["words"] += w_len
 
                                 content_lower = content.lower()
                                 for kw in keyword_list:
@@ -391,6 +403,7 @@ class AnalyzeChat(commands.Cog):
                                     if matches > 0:
                                         keyword_counts[kw] += matches
                                         channel_keywords[(eff_channel_id, kw)] += matches
+                                        monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
 
                             att_len = len(msg.get("attachments", []))
                             link_len = sum(
@@ -400,6 +413,7 @@ class AnalyzeChat(commands.Cog):
                             if msg_att_total > 0:
                                 total_attachments += msg_att_total
                                 channel_attachments[eff_channel_id] += msg_att_total
+                                monthly_stats[m_key]["attachments"] += msg_att_total
 
                 offset += 25
                 page_num += 1
@@ -445,6 +459,8 @@ class AnalyzeChat(commands.Cog):
                 channel_messages=channel_messages,
                 channel_attachments=channel_attachments,
                 channel_keywords=channel_keywords,
+                monthly_stats=monthly_stats,
+                monthly_keywords=monthly_keywords,
             )
 
             total_duration = asyncio.get_event_loop().time() - start_time
@@ -618,6 +634,8 @@ class AnalyzeChat(commands.Cog):
                 channel_messages: Dict[int, int] = defaultdict(int)
                 channel_attachments: Dict[int, int] = defaultdict(int)
                 channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
+                monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0})
+                monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
 
                 offset = 0
                 page_num = 0
@@ -645,15 +663,31 @@ class AnalyzeChat(commands.Cog):
                                 else:
                                     eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
 
+                                ts_str = msg.get("timestamp")
+                                if ts_str:
+                                    try:
+                                        dt = datetime.fromisoformat(ts_str)
+                                        msg_year = dt.year
+                                        msg_month = dt.month
+                                    except Exception:
+                                        msg_year = 2024
+                                        msg_month = 1
+                                else:
+                                    msg_year = 2024
+                                    msg_month = 1
+
+                                m_key = (eff_channel_id, msg_year, msg_month)
                                 content = msg.get("content", "") or ""
                                 user_messages += 1
                                 channel_messages[eff_channel_id] += 1
+                                monthly_stats[m_key]["messages"] += 1
 
                                 if content:
                                     words = content.split()
                                     w_len = len(words)
                                     user_words += w_len
                                     channel_words[eff_channel_id] += w_len
+                                    monthly_stats[m_key]["words"] += w_len
 
                                     content_lower = content.lower()
                                     for kw in keyword_list:
@@ -661,6 +695,7 @@ class AnalyzeChat(commands.Cog):
                                         if matches > 0:
                                             user_keywords[kw] += matches
                                             channel_keywords[(eff_channel_id, kw)] += matches
+                                            monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
 
                                 att_len = len(msg.get("attachments", []))
                                 link_len = sum(
@@ -670,6 +705,7 @@ class AnalyzeChat(commands.Cog):
                                 if msg_att_total > 0:
                                     user_attachments += msg_att_total
                                     channel_attachments[eff_channel_id] += msg_att_total
+                                    monthly_stats[m_key]["attachments"] += msg_att_total
 
                     offset += 25
                     page_num += 1
@@ -727,6 +763,8 @@ class AnalyzeChat(commands.Cog):
                     channel_messages=channel_messages,
                     channel_attachments=channel_attachments,
                     channel_keywords=channel_keywords,
+                    monthly_stats=monthly_stats,
+                    monthly_keywords=monthly_keywords,
                 )
 
                 analyzed_count += 1

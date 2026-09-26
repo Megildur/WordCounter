@@ -132,6 +132,37 @@ class WordCounterDatabase:
                     PRIMARY KEY (user_id, guild_id)
                 )"""
             )
+            await self.db.execute(
+                """CREATE TABLE IF NOT EXISTS monthly_user_stats (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    words INTEGER NOT NULL DEFAULT 0,
+                    messages INTEGER NOT NULL DEFAULT 0,
+                    attachments INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id, channel_id, year, month)
+                )"""
+            )
+            await self.db.execute(
+                """CREATE TABLE IF NOT EXISTS monthly_user_keywords (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    keyword TEXT NOT NULL,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id, channel_id, keyword, year, month)
+                )"""
+            )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_monthly_user ON monthly_user_stats (guild_id, user_id, year DESC, month DESC)"
+            )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_monthly_channel ON monthly_user_stats (guild_id, channel_id, year DESC, month DESC)"
+            )
             await self.db.commit()
 
             legacy_files = [
@@ -694,6 +725,8 @@ class WordCounterDatabase:
         async with self.db_lock:
             await self.db.execute("DELETE FROM server WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.execute("DELETE FROM counters WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM monthly_user_stats WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self.db.execute("DELETE FROM monthly_user_keywords WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.commit()
 
     async def reset_user_channel_counts(self, guild_id: int, user_id: int, channel_id: int) -> None:
@@ -707,6 +740,14 @@ class WordCounterDatabase:
             removed = row[0] if row else 0
             await self.db.execute(
                 "DELETE FROM counters WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
+                (guild_id, user_id, channel_id),
+            )
+            await self.db.execute(
+                "DELETE FROM monthly_user_stats WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
+                (guild_id, user_id, channel_id),
+            )
+            await self.db.execute(
+                "DELETE FROM monthly_user_keywords WHERE guild_id = ? AND user_id = ? AND channel_id = ?",
                 (guild_id, user_id, channel_id),
             )
             if removed > 0:
@@ -728,6 +769,14 @@ class WordCounterDatabase:
                 "DELETE FROM counters WHERE guild_id = ? AND channel_id = ?",
                 (guild_id, channel_id),
             )
+            await self.db.execute(
+                "DELETE FROM monthly_user_stats WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
+            await self.db.execute(
+                "DELETE FROM monthly_user_keywords WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
             for r_uid, r_count in rows:
                 await self.db.execute(
                     "UPDATE server SET count = MAX(0, count - ?) WHERE guild_id = ? AND user_id = ?",
@@ -746,6 +795,8 @@ class WordCounterDatabase:
             await self.db.execute("DELETE FROM attachments_channels WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM keyword_user WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM keyword_channel WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM monthly_user_stats WHERE guild_id = ?", (guild_id,))
+            await self.db.execute("DELETE FROM monthly_user_keywords WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM analyzed_users WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM channels WHERE guild_id = ?", (guild_id,))
             await self.db.execute("DELETE FROM ignore WHERE guild_id = ?", (guild_id,))
@@ -784,7 +835,6 @@ class WordCounterDatabase:
             await self.db.commit()
 
     async def unlock_all_analyzed(self, guild_id: int) -> None:
-        """Clears all analyzed members in a guild without wiping stats or settings."""
         await self.ensure_connected()
         async with self.db_lock:
             await self.db.execute(
@@ -815,6 +865,8 @@ class WordCounterDatabase:
         channel_messages: Dict[int, int],
         channel_attachments: Dict[int, int],
         channel_keywords: Dict[Tuple[int, str], int],
+        monthly_stats: Optional[Dict[Tuple[int, int, int], Dict[str, int]]] = None,
+        monthly_keywords: Optional[Dict[Tuple[int, str, int, int], int]] = None,
     ) -> None:
         await self.ensure_connected()
         async with self.db_lock:
@@ -904,8 +956,223 @@ class WordCounterDatabase:
                         (guild_id, cid, kw, user_id, k_cnt),
                     )
 
+            if monthly_stats:
+                for (cid, y, m), stats in monthly_stats.items():
+                    w = stats.get("words", 0)
+                    msg_c = stats.get("messages", 0)
+                    att_c = stats.get("attachments", 0)
+                    if w > 0 or msg_c > 0 or att_c > 0:
+                        await self.db.execute(
+                            """
+                            INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(guild_id, user_id, channel_id, year, month) DO UPDATE SET
+                                words = words + excluded.words,
+                                messages = messages + excluded.messages,
+                                attachments = attachments + excluded.attachments
+                            """,
+                            (guild_id, user_id, cid, y, m, w, msg_c, att_c),
+                        )
+
+            if monthly_keywords:
+                for (cid, kw, y, m), k_cnt in monthly_keywords.items():
+                    if k_cnt > 0:
+                        await self.db.execute(
+                            """
+                            INSERT INTO monthly_user_keywords (guild_id, user_id, channel_id, keyword, year, month, count)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(guild_id, user_id, channel_id, keyword, year, month) DO UPDATE SET
+                                count = count + excluded.count
+                            """,
+                            (guild_id, user_id, cid, kw, y, m, k_cnt),
+                        )
+
             await self.db.execute(
                 "INSERT OR IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
                 (user_id, guild_id),
             )
             await self.db.commit()
+
+    async def record_monthly_activity(
+        self,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        year: int,
+        month: int,
+        words: int = 0,
+        messages: int = 0,
+        attachments: int = 0,
+    ) -> None:
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.execute(
+                """
+                INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id, channel_id, year, month) DO UPDATE SET
+                    words = words + excluded.words,
+                    messages = messages + excluded.messages,
+                    attachments = attachments + excluded.attachments
+                """,
+                (guild_id, user_id, channel_id, year, month, words, messages, attachments),
+            )
+            await self.db.commit()
+
+    async def remove_monthly_activity(
+        self,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        year: int,
+        month: int,
+        words: int = 0,
+        messages: int = 0,
+        attachments: int = 0,
+    ) -> None:
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.execute(
+                """
+                UPDATE monthly_user_stats
+                SET words = MAX(0, words - ?),
+                    messages = MAX(0, messages - ?),
+                    attachments = MAX(0, attachments - ?)
+                WHERE guild_id = ? AND user_id = ? AND channel_id = ? AND year = ? AND month = ?
+                """,
+                (words, messages, attachments, guild_id, user_id, channel_id, year, month),
+            )
+            await self.db.commit()
+
+    async def record_monthly_keyword(
+        self,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        keyword: str,
+        year: int,
+        month: int,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.execute(
+                """
+                INSERT INTO monthly_user_keywords (guild_id, user_id, channel_id, keyword, year, month, count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id, channel_id, keyword, year, month) DO UPDATE SET
+                    count = count + excluded.count
+                """,
+                (guild_id, user_id, channel_id, keyword, year, month, count),
+            )
+            await self.db.commit()
+
+    async def remove_monthly_keyword(
+        self,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        keyword: str,
+        year: int,
+        month: int,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.execute(
+                """
+                UPDATE monthly_user_keywords
+                SET count = MAX(0, count - ?)
+                WHERE guild_id = ? AND user_id = ? AND channel_id = ? AND keyword = ? AND year = ? AND month = ?
+                """,
+                (count, guild_id, user_id, channel_id, keyword, year, month),
+            )
+            await self.db.commit()
+
+    async def get_user_monthly_breakdown(
+        self, guild_id: int, user_id: int
+    ) -> List[Dict[str, Any]]:
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                """
+                SELECT year, month, channel_id, words, messages, attachments
+                FROM monthly_user_stats
+                WHERE guild_id = ? AND user_id = ?
+                ORDER BY year DESC, month DESC, words DESC
+                """,
+                (guild_id, user_id),
+            )
+            stat_rows = await cursor.fetchall()
+
+            cursor = await self.db.execute(
+                """
+                SELECT year, month, channel_id, keyword, count
+                FROM monthly_user_keywords
+                WHERE guild_id = ? AND user_id = ?
+                ORDER BY year DESC, month DESC
+                """,
+                (guild_id, user_id),
+            )
+            kw_rows = await cursor.fetchall()
+
+            months_dict: Dict[Tuple[int, int], Dict[str, Any]] = {}
+            for y, m, cid, w, msg_c, att_c in stat_rows:
+                key = (y, m)
+                if key not in months_dict:
+                    months_dict[key] = {
+                        "year": y,
+                        "month": m,
+                        "words": 0,
+                        "messages": 0,
+                        "attachments": 0,
+                        "keywords": defaultdict(int),
+                        "channels": {},
+                    }
+                months_dict[key]["words"] += w
+                months_dict[key]["messages"] += msg_c
+                months_dict[key]["attachments"] += att_c
+                months_dict[key]["channels"][cid] = {
+                    "words": w,
+                    "messages": msg_c,
+                    "attachments": att_c,
+                    "keywords": {},
+                }
+
+            for y, m, cid, kw, k_cnt in kw_rows:
+                key = (y, m)
+                if key in months_dict:
+                    months_dict[key]["keywords"][kw] += k_cnt
+                    if cid in months_dict[key]["channels"]:
+                        months_dict[key]["channels"][cid]["keywords"][kw] = k_cnt
+
+            sorted_months = sorted(
+                months_dict.values(),
+                key=lambda item: (item["year"], item["month"]),
+                reverse=True,
+            )
+            for m_item in sorted_months:
+                m_item["keywords"] = dict(m_item["keywords"])
+            return sorted_months
+
+    async def get_channel_monthly_breakdown(
+        self, guild_id: int, channel_id: int
+    ) -> List[Tuple[int, int, int, int, int]]:
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                """
+                SELECT year, month, SUM(words), SUM(messages), SUM(attachments)
+                FROM monthly_user_stats
+                WHERE guild_id = ? AND channel_id = ?
+                GROUP BY year, month
+                ORDER BY year DESC, month DESC
+                """,
+                (guild_id, channel_id),
+            )
+            rows = await cursor.fetchall()
+            return [(r[0], r[1], r[2] or 0, r[3] or 0, r[4] or 0) for r in rows]

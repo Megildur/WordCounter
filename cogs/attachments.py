@@ -23,7 +23,14 @@ class Attachments(commands.Cog):
                 if isinstance(message.channel, discord.Thread)
                 else message.channel.id
             )
-            await self.at_add(message.guild.id, eff_channel_id, message.author.id, total_attachments)
+            await self.at_add(
+                message.guild.id,
+                eff_channel_id,
+                message.author.id,
+                total_attachments,
+                message.created_at.year,
+                message.created_at.month,
+            )
 
     async def attachment_message_delete(self, message, result, target_channel_id: Optional[int] = None) -> None:
         attachment_count = len(message.attachments)
@@ -35,7 +42,14 @@ class Attachments(commands.Cog):
                 if isinstance(message.channel, discord.Thread)
                 else message.channel.id
             )
-            await self.at_delete(message.guild.id, eff_channel_id, message.author.id, total_attachments)
+            await self.at_delete(
+                message.guild.id,
+                eff_channel_id,
+                message.author.id,
+                total_attachments,
+                message.created_at.year,
+                message.created_at.month,
+            )
 
     async def attachment_message_edit(self, before, after, result, target_channel_id: Optional[int] = None) -> None:
         before_attachment_count = len(before.attachments)
@@ -50,19 +64,45 @@ class Attachments(commands.Cog):
                 if isinstance(before.channel, discord.Thread)
                 else before.channel.id
             )
-            await self.find_dif(before.guild.id, eff_channel_id, before.author.id, before_count, after_count)
+            await self.find_dif(
+                before.guild.id,
+                eff_channel_id,
+                before.author.id,
+                before_count,
+                after_count,
+                before.created_at.year,
+                before.created_at.month,
+            )
 
-    async def find_dif(self, guild_id, channel_id, user_id, before_count, after_count) -> None:
+    async def find_dif(self, guild_id, channel_id, user_id, before_count, after_count, year=None, month=None) -> None:
         if before_count > after_count:
-            await self.at_delete(guild_id, channel_id, user_id, before_count - after_count)
+            await self.at_delete(guild_id, channel_id, user_id, before_count - after_count, year, month)
         elif before_count < after_count:
-            await self.at_add(guild_id, channel_id, user_id, after_count - before_count)
+            await self.at_add(guild_id, channel_id, user_id, after_count - before_count, year, month)
 
-    async def at_add(self, guild_id, channel_id, user_id, count) -> None:
+    async def at_add(self, guild_id, channel_id, user_id, count, year=None, month=None) -> None:
         await self.bot.db.add_attachment_count(guild_id, channel_id, user_id, count)
+        if year is not None and month is not None:
+            await self.bot.db.record_monthly_activity(
+                guild_id=guild_id,
+                user_id=user_id,
+                channel_id=channel_id,
+                year=year,
+                month=month,
+                attachments=count,
+            )
 
-    async def at_delete(self, guild_id, channel_id, user_id, count) -> None:
+    async def at_delete(self, guild_id, channel_id, user_id, count, year=None, month=None) -> None:
         await self.bot.db.remove_attachment_count(guild_id, channel_id, user_id, count)
+        if year is not None and month is not None:
+            await self.bot.db.remove_monthly_activity(
+                guild_id=guild_id,
+                user_id=user_id,
+                channel_id=channel_id,
+                year=year,
+                month=month,
+                attachments=count,
+            )
 
 
 async def setup(bot) -> None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import calendar
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 import discord
@@ -86,8 +87,8 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.bot = bot
         self.guild = guild
         self.author_id = author_id
-        self.active_tab: str = "overview"  # overview | channels | keywords | reset
-        self.pending_confirmation: Optional[str] = None  # whole_server | disable_server | wipe_server
+        self.active_tab: str = "overview"
+        self.pending_confirmation: Optional[str] = None
         self.status_banner: Optional[Tuple[str, discord.Colour]] = None
 
         self.selected_reset_user_id: Optional[int] = None
@@ -582,7 +583,7 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_added(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])  # type: ignore
+        raw_values = interaction.data.get("values", [])
         selected_ids = [int(v) for v in raw_values]
 
         if self.is_whole_server:
@@ -628,7 +629,7 @@ class SettingsMenuView(discord.ui.LayoutView):
         await interaction.response.send_modal(BulkEditKeywordsModal(self, self.keywords))
 
     async def _on_keywords_removed(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])  # type: ignore
+        raw_values = interaction.data.get("values", [])
         await self.bot.db.remove_keywords(self.guild.id, raw_values)
         self.status_banner = (f"🗑️ Removed **{len(raw_values)}** keyword(s): `{', '.join(raw_values)}`", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
@@ -820,9 +821,20 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
             desc = f"{subtitle}\n\n" + "\n".join(lines)
             footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total users: {len(valid_results)}"
 
+        fields: Optional[List[Tuple[str, str]]] = None
+        if self.channel is not None:
+            monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
+            if monthly_data:
+                m_lines = [
+                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments"
+                    for y, m, w, msg_cnt, att_cnt in monthly_data
+                ]
+                fields = [("📅 Monthly Channel History (Newest to Oldest)", "\n".join(m_lines))]
+
         container = create_v2_container(
             title=title,
             description=desc,
+            fields=fields,
             footer=footer_text,
             color=BRAND_COLOR,
         )
@@ -882,6 +894,17 @@ class UnifiedLeaderboardView(discord.ui.LayoutView):
                 fields.append((f'🔑 Keyword: "{kw}"', "\n".join(user_lines)))
 
             footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total keywords: {len(keyword_data)}"
+
+        if self.channel is not None:
+            monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
+            if monthly_data:
+                m_lines = [
+                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments"
+                    for y, m, w, msg_cnt, att_cnt in monthly_data
+                ]
+                if fields is None:
+                    fields = []
+                fields.append(("📅 Monthly Channel History (Newest to Oldest)", "\n".join(m_lines)))
 
         container = create_v2_container(
             title="🔑 Keyword Leaderboard",

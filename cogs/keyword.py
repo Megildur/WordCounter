@@ -30,10 +30,12 @@ class Keyword(commands.Cog):
             else message.channel.id
         )
         content_lower = message.content.lower()
+        year = message.created_at.year
+        month = message.created_at.month
         for kw in keywords:
             word_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
             if word_count > 0:
-                await self.update_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id)
+                await self.update_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id, year, month)
 
     async def keyword_delete(self, message, result, target_channel_id: Optional[int] = None) -> None:
         keywords = await self.bot.db.get_keywords(message.guild.id)
@@ -45,10 +47,12 @@ class Keyword(commands.Cog):
             else message.channel.id
         )
         content_lower = message.content.lower()
+        year = message.created_at.year
+        month = message.created_at.month
         for kw in keywords:
             word_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
             if word_count > 0:
-                await self.remove_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id)
+                await self.remove_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id, year, month)
 
     async def keyword_edit(self, before, after, result, target_channel_id: Optional[int] = None) -> None:
         keywords = await self.bot.db.get_keywords(before.guild.id)
@@ -61,23 +65,29 @@ class Keyword(commands.Cog):
         )
         b_content_lower = before.content.lower()
         a_content_lower = after.content.lower()
+        year = before.created_at.year
+        month = before.created_at.month
         for kw in keywords:
             bword_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", b_content_lower))
             aword_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", a_content_lower))
             if (bword_count > 0 or aword_count > 0) and bword_count != aword_count:
-                await self.find_dif(kw, bword_count, aword_count, before.guild.id, eff_channel_id, before.author.id)
+                await self.find_dif(kw, bword_count, aword_count, before.guild.id, eff_channel_id, before.author.id, year, month)
 
-    async def find_dif(self, keyword, bword_count, aword_count, guild_id, channel_id, user_id) -> None:
+    async def find_dif(self, keyword, bword_count, aword_count, guild_id, channel_id, user_id, year=None, month=None) -> None:
         if bword_count > aword_count:
-            await self.remove_kw(keyword, bword_count - aword_count, guild_id, channel_id, user_id)
+            await self.remove_kw(keyword, bword_count - aword_count, guild_id, channel_id, user_id, year, month)
         elif aword_count > bword_count:
-            await self.update_kw(keyword, aword_count - bword_count, guild_id, channel_id, user_id)
+            await self.update_kw(keyword, aword_count - bword_count, guild_id, channel_id, user_id, year, month)
 
-    async def remove_kw(self, keyword, word_count, guild_id, channel_id, user_id) -> None:
+    async def remove_kw(self, keyword, word_count, guild_id, channel_id, user_id, year=None, month=None) -> None:
         await self.bot.db.remove_keyword_count(keyword, word_count, guild_id, channel_id, user_id)
+        if year is not None and month is not None:
+            await self.bot.db.remove_monthly_keyword(guild_id, user_id, channel_id, keyword, year, month, word_count)
 
-    async def update_kw(self, word, count, guild_id, channel_id, user_id) -> None:
+    async def update_kw(self, word, count, guild_id, channel_id, user_id, year=None, month=None) -> None:
         await self.bot.db.update_keyword_count(word, count, guild_id, channel_id, user_id)
+        if year is not None and month is not None:
+            await self.bot.db.record_monthly_keyword(guild_id, user_id, channel_id, word, year, month, count)
 
     keyword = app_commands.Group(name='keyword', description='Keyword viewing commands')
 

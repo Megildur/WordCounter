@@ -20,10 +20,8 @@ def get_support_server_url() -> str:
 
 
 def get_bot_invite_url(bot: commands.Bot) -> str:
-    client_id = bot.user.id if bot.user else None
-    if client_id:
-        return f"https://discord.com/oauth2/authorize?client_id={client_id}&permissions=277025507392&scope=bot+applications.commands"
-    return "https://discord.com"
+    client_id = bot.user.id if bot.user else 1551875701748277299
+    return f"https://discord.com/oauth2/authorize?client_id={client_id}&integration_type=0"
 
 
 class HelpView(discord.ui.LayoutView):
@@ -53,11 +51,11 @@ class HelpView(discord.ui.LayoutView):
                 (
                     "🏆 /leaderboard [channel]",
                     "View rankings for **Words**, **Messages**, **Attachments**, or **Keywords**.\n"
-                    "Filter by a specific channel using the optional `channel` option.",
+                    "Filter by a channel to see top 10 contributors and a month-by-month history breakdown from newest to oldest.",
                 ),
                 (
                     "👤 /stats user <member>",
-                    "View a member's total words, messages, attachments, and tracked keyword counts.",
+                    "View overall totals plus interactive month-by-month and channel-by-channel breakdowns.",
                 ),
                 (
                     "🔑 /keyword list",
@@ -101,11 +99,11 @@ class HelpView(discord.ui.LayoutView):
             fields = [
                 (
                     "👤 /analyze_chat single_user <member>",
-                    "Scans historical messages for a specific member and adds them to their stats.",
+                    "Scans historical messages for a specific member, grouping by month, year, and channel.",
                 ),
                 (
                     "🌐 /analyze_chat whole_server",
-                    "Scans historical messages for all non-bot members one by one. Automatically skips members who were already scanned.",
+                    "Scans historical messages for all non-bot members one by one with live progress and skipped tracking.",
                 ),
                 (
                     "⚠️ Important Note on Keywords",
@@ -115,16 +113,16 @@ class HelpView(discord.ui.LayoutView):
             return title, description, fields
 
         else:
-            title = "📱 Bot Info & User App"
-            description = "WordCounter commands and install options."
+            title = "ℹ️ Bot Info & Monthly Analytics"
+            description = "WordCounter commands, monthly analytics, and links."
             fields = [
                 (
-                    "🚀 User App Installation",
-                    "You can install WordCounter directly to your Discord account. This allows you to run `/help` and `/advertisement` in any server or DM.",
+                    "📅 Monthly & Yearly Analytics",
+                    "All messages, words, attachments, and keywords are grouped by month, year, and channel for both live tracking and historical sweeps.",
                 ),
                 (
                     "📢 /advertisement",
-                    "Post a quick feature summary card with invite links.",
+                    "Post a feature summary card with invite links.",
                 ),
                 (
                     "🔗 Quick Links",
@@ -215,21 +213,18 @@ class AdvertisementView(discord.ui.LayoutView):
         avatar_url = bot_user.display_avatar.url if bot_user and bot_user.display_avatar else None
 
         desc = (
-            "Track words, messages, attachments, and custom keywords across your server with real-time leaderboards and historical chat analysis."
+            "Track words, messages, attachments, and custom keywords across your server with real-time leaderboards, monthly historical analytics, and deep chat analysis."
         )
 
         fields = [
             (
                 "⚡ Features",
                 "• **Live Tracking**: Counts words, messages, attachments, media links, and custom keywords.\n"
-                "• **Interactive Leaderboard**: Switch between Words, Messages, Attachments, and Keywords.\n"
+                "• **Monthly & Yearly Analytics**: Stats grouped by month, year, and channel from newest to oldest.\n"
+                "• **Interactive Leaderboard**: Words, Messages, Attachments, and Keywords with channel monthly breakdowns.\n"
                 "• **Historical Chat Sweep**: Scan messages sent before the bot joined (per-user or whole server).\n"
                 "• **Channel & Category Control**: Whole-server mode with ignore lists, or specific channel/category tracking.\n"
                 "• **Keyword Watchlist**: Track custom phrases and see who says them most.",
-            ),
-            (
-                "📱 User Installable",
-                "Install WordCounter to your Discord account to use commands across any server or DM.",
             ),
         ]
 
@@ -274,8 +269,8 @@ class HelpCog(commands.Cog, name="Help"):
         name="help",
         description="View guide to WordCounter commands and features",
     )
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.describe(ephemeral="Whether to show the help menu privately (default: False)")
     async def help_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
         view = HelpView(self.bot, interaction.user.id)
@@ -285,8 +280,8 @@ class HelpCog(commands.Cog, name="Help"):
         name="advertisement",
         description="Show an overview card of WordCounter features and links",
     )
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
         view = AdvertisementView(self.bot)
         await interaction.response.send_message(view=view)
