@@ -9,8 +9,8 @@
     <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-57F287?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.8">
-    <img src="https://img.shields.io/badge/Release-v1.0.8-blue?style=for-the-badge" alt="Release v1.0.8" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.10">
+    <img src="https://img.shields.io/badge/Release-v1.0.10-blue?style=for-the-badge" alt="Release v1.0.10" />
   </a>
 </p>
 
