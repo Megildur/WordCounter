@@ -27,22 +27,7 @@ class Status(commands.Cog):
                 discord.Activity(type=discord.ActivityType.listening, name=f"{user_count} users", state="Global user base - Processing"),
                 
                 discord.Activity(type=discord.ActivityType.watching, name="the Discord Developer Portal", state="Reading docs - Updating API"),
-                discord.Activity(type=discord.ActivityType.playing, name="with fun commands", state="Generating memes - Rolling the dice"),
-                discord.Activity(type=discord.ActivityType.playing, name="with discord.py", state="Building V2 UI - Squashing bugs"),
                 
-                discord.Activity(type=discord.ActivityType.playing, name="Sky: Children of the Light", state="Flying through Eden - Playing with friends"),
-                discord.Activity(type=discord.ActivityType.playing, name="The Legend of Zelda", state="Water Temple - Stuck on a puzzle"),
-                discord.Activity(type=discord.ActivityType.playing, name="Pokémon", state="Shiny Hunting - Route 1"),
-                discord.Activity(type=discord.ActivityType.playing, name="a retro console", state="Blowing on the cartridge - Player 1 Ready"),
-                
-                discord.Activity(type=discord.ActivityType.listening, name="Bring Me The Horizon", state="Post Human: Survival Horror - Headbanging"),
-                discord.Activity(type=discord.ActivityType.listening, name="Sleeping With Sirens", state="Post-Hardcore Mix - Vibing"),
-                discord.Activity(type=discord.ActivityType.listening, name="Linkin Park", state="Meteora - On repeat"),
-                discord.Activity(type=discord.ActivityType.listening, name="System of a Down", state="Toxicity - Queueing next song"),
-                
-                discord.Streaming(name="Lofi Beats", url="https://www.twitch.tv/lofigirl", state="24/7 Chill - Live"),
-                discord.Streaming(name="Bot Development", url="https://www.twitch.tv/freecodecamp", state="Writing Python - Debugging"),
-
                 discord.CustomActivity(name=f"Currently active in {server_count} guilds 🚀"),
                 discord.CustomActivity(name="Recharging my batteries 🔋"),
                 discord.CustomActivity(name="Beep boop 🤖")

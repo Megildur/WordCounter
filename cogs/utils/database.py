@@ -785,6 +785,16 @@ class WordCounterDatabase:
             )
             await self.db.commit()
 
+    async def get_analyzed_users(self, guild_id: int) -> Set[int]:
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT user_id FROM analyzed_users WHERE guild_id = ?",
+                (guild_id,),
+            )
+            rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+
     async def save_retroactive_analysis(
         self,
         guild_id: int,

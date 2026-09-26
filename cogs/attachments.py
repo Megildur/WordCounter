@@ -1,14 +1,7 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 from typing import Optional
-from paginator import ButtonPaginator
 from cogs.utils.database import WordCounterDatabase
-from cogs.utils.components import (
-    INFO_COLOR,
-    create_v2_container,
-    error_view,
-)
 
 
 class Attachments(commands.Cog):
@@ -70,75 +63,6 @@ class Attachments(commands.Cog):
 
     async def at_delete(self, guild_id, channel_id, user_id, count) -> None:
         await self.bot.db.remove_attachment_count(guild_id, channel_id, user_id, count)
-
-    attachment = app_commands.Group(name='attachment', description='Attachment commands')
-
-    @attachment.command(name='leaderboard', description='Shows the attachment leaderboard')
-    @app_commands.describe(channel='The channel to show the leaderboard for')
-    async def attachment_leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
-        result = await self.bot.db.get_attachment_leaderboard(
-            interaction.guild.id, channel.id if channel else None
-        )
-        subtitle = (
-            f'Top attachment contributors in {channel.mention}'
-            if channel
-            else 'Top attachment contributors in the server'
-        )
-
-        if not result:
-            await interaction.response.send_message(
-                view=error_view('No users found.', title='🏆 Attachment Leaderboard'),
-                ephemeral=True,
-            )
-            return
-
-        valid_results = []
-        for user_id, count in result:
-            user = interaction.guild.get_member(user_id)
-            if user:
-                valid_results.append((user, count))
-
-        if not valid_results:
-            await interaction.response.send_message(
-                view=error_view('No active users found.', title='🏆 Attachment Leaderboard'),
-                ephemeral=True,
-            )
-            return
-
-        containers = []
-        users_per_page = 10
-        total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
-
-        for page_num in range(total_pages):
-            start_idx = page_num * users_per_page
-            end_idx = min(start_idx + users_per_page, len(valid_results))
-            page_data = valid_results[start_idx:end_idx]
-
-            lines = []
-            for index, (user, count) in enumerate(page_data, start=start_idx + 1):
-                if index == 1:
-                    lines.append(f"🥇 **{user.display_name}** - {count:,} attachments")
-                elif index == 2:
-                    lines.append(f"🥈 **{user.display_name}** - {count:,} attachments")
-                elif index == 3:
-                    lines.append(f"🥉 **{user.display_name}** - {count:,} attachments")
-                else:
-                    lines.append(f"**{index}.** {user.display_name} - {count:,} attachments")
-
-            container = create_v2_container(
-                title='🏆 Attachment Leaderboard',
-                description=f"{subtitle}\n\n" + "\n".join(lines),
-                footer=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}",
-                color=INFO_COLOR,
-            )
-            containers.append(container)
-
-        paginator = ButtonPaginator.create_standard_paginator(
-            containers,
-            author_id=interaction.user.id,
-            timeout=180.0,
-        )
-        await paginator.start(interaction)
 
 
 async def setup(bot) -> None:

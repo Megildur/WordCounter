@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import List, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -211,6 +212,12 @@ class SettingsMenuView(discord.ui.LayoutView):
                 f"-# Word Counter V2 Settings Dashboard • Active Tab: {self.active_tab.title()}"
             )
         )
+        close_btn = discord.ui.Button(
+            label="✖️ Close Menu",
+            style=discord.ButtonStyle.secondary,
+        )
+        close_btn.callback = self._on_close_menu
+        container.add_item(discord.ui.ActionRow(close_btn))
         self.add_item(container)
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
@@ -668,6 +675,299 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.build_ui()
         await interaction.response.edit_message(view=self)
 
+    async def _on_close_menu(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.edit_original_response(
+                    view=create_v2_view(
+                        title="⚙️ Settings Closed",
+                        description="The settings menu has been closed.",
+                        color=BRAND_COLOR,
+                    )
+                )
+            except Exception:
+                pass
+
+
+class UnifiedLeaderboardView(discord.ui.LayoutView):
+    """
+    Interactive leaderboard view supporting switching between Words, Messages, Attachments,
+    and Keywords leaderboards, with pagination controls.
+    """
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        guild: discord.Guild,
+        author_id: int,
+        channel: Optional[discord.TextChannel] = None,
+        initial_category: str = "words",
+    ) -> None:
+        super().__init__(timeout=180.0)
+        self.bot = bot
+        self.guild = guild
+        self.author_id = author_id
+        self.channel = channel
+        self.active_category: str = initial_category  # "words" | "messages" | "attachments" | "keywords"
+        self.current_page: int = 0
+        self.total_pages: int = 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                view=error_view("Only the person who used `/leaderboard` can interact with these buttons."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def build(self) -> None:
+        self.clear_items()
+        cid = self.channel.id if self.channel else None
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+        if self.active_category == "words":
+            title = "📝 Word Count Leaderboard"
+            unit = "words"
+            subtitle = f"Top word contributors in {self.channel.mention}" if self.channel else "Top word contributors in the server"
+            empty_msg = f"No words recorded yet in {self.channel.mention}." if self.channel else "No words recorded yet in this server."
+            results = await self.bot.db.get_word_leaderboard(self.guild.id, cid)
+            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
+
+        elif self.active_category == "messages":
+            title = "💬 Message Leaderboard"
+            unit = "messages"
+            subtitle = f"Top message contributors in {self.channel.mention}" if self.channel else "Top message contributors in the server"
+            empty_msg = f"No messages recorded yet in {self.channel.mention}." if self.channel else "No messages recorded yet in this server."
+            results = await self.bot.db.get_message_leaderboard(self.guild.id, cid)
+            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
+
+        elif self.active_category == "attachments":
+            title = "📎 Attachment Leaderboard"
+            unit = "attachments"
+            subtitle = f"Top attachment contributors in {self.channel.mention}" if self.channel else "Top attachment contributors in the server"
+            empty_msg = f"No attachments recorded yet in {self.channel.mention}." if self.channel else "No attachments recorded yet in this server."
+            results = await self.bot.db.get_attachment_leaderboard(self.guild.id, cid)
+            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
+
+        elif self.active_category == "keywords":
+            await self._render_keywords_leaderboard(cid, medals)
+
+    async def _render_standard_leaderboard(
+        self,
+        title: str,
+        unit: str,
+        subtitle: str,
+        empty_msg: str,
+        results: List[Tuple[int, int]],
+        medals: Dict[int, str],
+    ) -> None:
+        valid_results = []
+        for uid, count in results:
+            member = self.guild.get_member(uid)
+            name = member.display_name if member else f"<@{uid}>"
+            valid_results.append((name, count))
+
+        per_page = 10
+        self.total_pages = max(1, (len(valid_results) + per_page - 1) // per_page)
+        if self.current_page >= self.total_pages:
+            self.current_page = 0
+
+        if not valid_results:
+            desc = f"{subtitle}\n\n*{empty_msg}*"
+            footer_text = "Page 1/1 • Total users: 0"
+        else:
+            start_idx = self.current_page * per_page
+            end_idx = min(start_idx + per_page, len(valid_results))
+            page_slice = valid_results[start_idx:end_idx]
+
+            lines = []
+            for rank, (name, count) in enumerate(page_slice, start=start_idx + 1):
+                prefix = medals.get(rank, f"**{rank}.**")
+                lines.append(f"{prefix} **{name}** - {count:,} {unit}")
+
+            desc = f"{subtitle}\n\n" + "\n".join(lines)
+            footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total users: {len(valid_results)}"
+
+        container = create_v2_container(
+            title=title,
+            description=desc,
+            footer=footer_text,
+            color=BRAND_COLOR,
+        )
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(self._build_category_row())
+
+        if self.total_pages > 1:
+            container.add_item(self._build_pagination_row())
+
+        self.add_item(container)
+
+    async def _render_keywords_leaderboard(
+        self,
+        cid: Optional[int],
+        medals: Dict[int, str],
+    ) -> None:
+        subtitle = f"Top keyword usage in {self.channel.mention}" if self.channel else "Top keyword usage in the server"
+        raw_results = await self.bot.db.get_keyword_leaderboard(self.guild.id, cid)
+
+        kw_map: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        for kw, cnt, uid in raw_results:
+            kw_map[kw][uid] += cnt
+
+        keyword_data = []
+        for kw in sorted(kw_map.keys()):
+            users_sorted = sorted(kw_map[kw].items(), key=lambda x: x[1], reverse=True)
+            valid_users = []
+            for uid, count in users_sorted:
+                member = self.guild.get_member(uid)
+                name = member.display_name if member else f"<@{uid}>"
+                valid_users.append((name, count))
+            if valid_users:
+                keyword_data.append((kw, valid_users))
+
+        per_page = 5
+        self.total_pages = max(1, (len(keyword_data) + per_page - 1) // per_page)
+        if self.current_page >= self.total_pages:
+            self.current_page = 0
+
+        fields: Optional[List[Tuple[str, str]]] = None
+        if not keyword_data:
+            desc = f"{subtitle}\n\n*No keyword usage has been recorded yet.*"
+            footer_text = "Page 1/1 • Total keywords: 0"
+        else:
+            desc = subtitle
+            start_idx = self.current_page * per_page
+            end_idx = min(start_idx + per_page, len(keyword_data))
+            page_slice = keyword_data[start_idx:end_idx]
+
+            fields = []
+            for kw, users in page_slice:
+                user_lines = []
+                for i, (name, count) in enumerate(users[:10], start=1):
+                    prefix = medals.get(i, f"**{i}.**")
+                    user_lines.append(f"{prefix} **{name}**: {count:,}")
+                fields.append((f'🔑 Keyword: "{kw}"', "\n".join(user_lines)))
+
+            footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total keywords: {len(keyword_data)}"
+
+        container = create_v2_container(
+            title="🔑 Keyword Leaderboard",
+            description=desc,
+            fields=fields,
+            footer=footer_text,
+            color=BRAND_COLOR,
+        )
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(self._build_category_row())
+
+        if self.total_pages > 1:
+            container.add_item(self._build_pagination_row())
+
+        self.add_item(container)
+
+    def _build_category_row(self) -> discord.ui.ActionRow:
+        btn_words = discord.ui.Button(
+            label="Words",
+            emoji="📝",
+            style=discord.ButtonStyle.primary if self.active_category == "words" else discord.ButtonStyle.secondary,
+            disabled=self.active_category == "words",
+        )
+        btn_words.callback = self._on_switch_words
+
+        btn_messages = discord.ui.Button(
+            label="Messages",
+            emoji="💬",
+            style=discord.ButtonStyle.primary if self.active_category == "messages" else discord.ButtonStyle.secondary,
+            disabled=self.active_category == "messages",
+        )
+        btn_messages.callback = self._on_switch_messages
+
+        btn_attachments = discord.ui.Button(
+            label="Attachments",
+            emoji="📎",
+            style=discord.ButtonStyle.primary if self.active_category == "attachments" else discord.ButtonStyle.secondary,
+            disabled=self.active_category == "attachments",
+        )
+        btn_attachments.callback = self._on_switch_attachments
+
+        btn_keywords = discord.ui.Button(
+            label="Keywords",
+            emoji="🔑",
+            style=discord.ButtonStyle.primary if self.active_category == "keywords" else discord.ButtonStyle.secondary,
+            disabled=self.active_category == "keywords",
+        )
+        btn_keywords.callback = self._on_switch_keywords
+
+        return discord.ui.ActionRow(btn_words, btn_messages, btn_attachments, btn_keywords)
+
+    def _build_pagination_row(self) -> discord.ui.ActionRow:
+        btn_prev = discord.ui.Button(
+            label="◀️ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.current_page <= 0,
+        )
+        btn_prev.callback = self._on_prev_page
+
+        btn_ind = discord.ui.Button(
+            label=f"Page {self.current_page + 1}/{self.total_pages}",
+            style=discord.ButtonStyle.primary,
+            disabled=True,
+        )
+        btn_ind.callback = self._on_indicator
+
+        btn_next = discord.ui.Button(
+            label="Next ▶️",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.current_page >= self.total_pages - 1,
+        )
+        btn_next.callback = self._on_next_page
+
+        return discord.ui.ActionRow(btn_prev, btn_ind, btn_next)
+
+    async def _on_switch_words(self, interaction: discord.Interaction) -> None:
+        self.active_category = "words"
+        self.current_page = 0
+        await self.refresh_and_edit(interaction)
+
+    async def _on_switch_messages(self, interaction: discord.Interaction) -> None:
+        self.active_category = "messages"
+        self.current_page = 0
+        await self.refresh_and_edit(interaction)
+
+    async def _on_switch_attachments(self, interaction: discord.Interaction) -> None:
+        self.active_category = "attachments"
+        self.current_page = 0
+        await self.refresh_and_edit(interaction)
+
+    async def _on_switch_keywords(self, interaction: discord.Interaction) -> None:
+        self.active_category = "keywords"
+        self.current_page = 0
+        await self.refresh_and_edit(interaction)
+
+    async def _on_prev_page(self, interaction: discord.Interaction) -> None:
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self.refresh_and_edit(interaction)
+
+    async def _on_next_page(self, interaction: discord.Interaction) -> None:
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+        await self.refresh_and_edit(interaction)
+
+    async def _on_indicator(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
+    async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
+        await self.build()
+        await interaction.response.edit_message(view=self)
+
 
 class Counter_Cmds(commands.Cog):
     def __init__(self, bot) -> None:
@@ -684,8 +984,7 @@ class Counter_Cmds(commands.Cog):
         description="Interactive settings dashboard to configure channels, categories, keywords, and resets",
     )
     @app_commands.default_permissions(manage_guild=True)
-    @app_commands.describe(ephemeral="Whether to show the settings menu privately (default: False)")
-    async def settings_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
+    async def settings_command(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
                 view=error_view("This command can only be used inside a server."),
@@ -693,84 +992,49 @@ class Counter_Cmds(commands.Cog):
             )
             return
 
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                view=error_view("You need the `Manage Server` permission to access settings."),
+                ephemeral=True,
+            )
+            return
+
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.response.send_message(view=menu, ephemeral=ephemeral)
+        await interaction.response.send_message(view=menu, ephemeral=True)
 
-    words = app_commands.Group(name="words", description="Commands to view the current word count stats of the server.")
+    @app_commands.command(
+        name="leaderboard",
+        description="Shows server leaderboards for words, messages, attachments, and keywords",
+    )
+    @app_commands.describe(channel="Optional channel to filter the leaderboard by")
+    async def leaderboard(
+        self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                view=error_view("This command can only be used inside a server."),
+                ephemeral=True,
+            )
+            return
 
-    @words.command(name="leaderboard", description="Shows the word count leaderboard of the server")
-    @app_commands.describe(channel="The channel to show the leaderboard of members in")
-    async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
-        if interaction.guild_id is None or not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+        if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
             await interaction.response.send_message(
                 view=error_view("Word count is not enabled on this server! Use `/settings` to enable it."),
                 ephemeral=True,
             )
             return
 
-        result = await self.bot.db.get_word_leaderboard(
-            interaction.guild_id, channel.id if channel else None
-        )
-        if channel is None:
-            empty_msg = "No one has said any words in this server yet."
-            subtitle = "Top word contributors in the server"
-        else:
-            empty_msg = f"No one has said any words in {channel.mention} yet."
-            subtitle = f"Top word contributors in {channel.mention}"
-
-        if not result:
-            await interaction.response.send_message(view=error_view(empty_msg), ephemeral=True)
-            return
-
-        valid_results = []
-        for user_id, count in result:
-            user = interaction.guild.get_member(user_id)
-            if user is not None:
-                valid_results.append((user, count))
-
-        if not valid_results:
-            await interaction.response.send_message(
-                view=error_view("No active users found."),
-                ephemeral=True,
-            )
-            return
-
-        containers = []
-        users_per_page = 10
-        total_pages = (len(valid_results) + users_per_page - 1) // users_per_page
-
-        for page_num in range(total_pages):
-            start_idx = page_num * users_per_page
-            end_idx = min(start_idx + users_per_page, len(valid_results))
-            page_data = valid_results[start_idx:end_idx]
-
-            lines = []
-            for index, (user, count) in enumerate(page_data, start=start_idx + 1):
-                if index == 1:
-                    lines.append(f"🥇 **{user.display_name}** - {count:,} words")
-                elif index == 2:
-                    lines.append(f"🥈 **{user.display_name}** - {count:,} words")
-                elif index == 3:
-                    lines.append(f"🥉 **{user.display_name}** - {count:,} words")
-                else:
-                    lines.append(f"**{index}.** {user.display_name} - {count:,} words")
-
-            container = create_v2_container(
-                title="📝 Word Count Leaderboard",
-                description=f"{subtitle}\n\n" + "\n".join(lines),
-                footer=f"Page {page_num + 1}/{total_pages} • Total users: {len(valid_results)}",
-                color=BRAND_COLOR,
-            )
-            containers.append(container)
-
-        paginator = ButtonPaginator.create_standard_paginator(
-            containers,
+        view = UnifiedLeaderboardView(
+            bot=self.bot,
+            guild=interaction.guild,
             author_id=interaction.user.id,
-            timeout=180.0,
+            channel=channel,
+            initial_category="words",
         )
-        await paginator.start(interaction)
+        await view.build()
+        await interaction.response.send_message(view=view)
 
 
 async def setup(bot) -> None:
