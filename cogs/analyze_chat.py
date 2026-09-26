@@ -351,8 +351,13 @@ class AnalyzeChat(commands.Cog):
             offset = 0
             page_num = 0
             start_time = asyncio.get_event_loop().time()
+            thread_parent_map: Dict[int, int] = {}
 
             while True:
+                for th in data.get("threads", []):
+                    if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                        thread_parent_map[int(th["id"])] = int(th["parent_id"])
+
                 messages_array = data.get("messages", [])
                 if not messages_array:
                     break
@@ -363,12 +368,12 @@ class AnalyzeChat(commands.Cog):
                             raw_channel_id = int(msg.get("channel_id", 0))
                             if watched_ids:
                                 is_watched, eff_channel_id = check_channel_with_config(
-                                    guild, raw_channel_id, watched_ids, ignored_ids
+                                    guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
                                 )
                                 if not is_watched:
                                     continue
                             else:
-                                eff_channel_id = raw_channel_id
+                                eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
 
                             content = msg.get("content", "") or ""
                             counted_messages += 1
@@ -389,7 +394,7 @@ class AnalyzeChat(commands.Cog):
 
                             att_len = len(msg.get("attachments", []))
                             link_len = sum(
-                                1 for w in content.split() if w.startswith(("http://", "https://"))
+                                1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
                             )
                             msg_att_total = att_len + link_len
                             if msg_att_total > 0:
@@ -519,6 +524,7 @@ class AnalyzeChat(commands.Cog):
             grand_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
 
             start_time = asyncio.get_event_loop().time()
+            thread_parent_map: Dict[int, int] = {}
 
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
@@ -618,6 +624,10 @@ class AnalyzeChat(commands.Cog):
                 total_pages = (total_user_messages + 24) // 25
 
                 while True:
+                    for th in data.get("threads", []):
+                        if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                            thread_parent_map[int(th["id"])] = int(th["parent_id"])
+
                     messages_array = data.get("messages", [])
                     if not messages_array:
                         break
@@ -628,12 +638,12 @@ class AnalyzeChat(commands.Cog):
                                 raw_channel_id = int(msg.get("channel_id", 0))
                                 if watched_ids:
                                     is_watched, eff_channel_id = check_channel_with_config(
-                                        guild, raw_channel_id, watched_ids, ignored_ids
+                                        guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
                                     )
                                     if not is_watched:
                                         continue
                                 else:
-                                    eff_channel_id = raw_channel_id
+                                    eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
 
                                 content = msg.get("content", "") or ""
                                 user_messages += 1
@@ -654,7 +664,7 @@ class AnalyzeChat(commands.Cog):
 
                                 att_len = len(msg.get("attachments", []))
                                 link_len = sum(
-                                    1 for w in content.split() if w.startswith(("http://", "https://"))
+                                    1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
                                 )
                                 msg_att_total = att_len + link_len
                                 if msg_att_total > 0:

@@ -111,6 +111,7 @@ def check_channel_with_config(
     channel_or_id: Union[discord.abc.GuildChannel, discord.Thread, int],
     watched_ids: Set[int],
     ignored_ids: Set[int],
+    thread_parent_map: Optional[Dict[int, int]] = None,
 ) -> Tuple[bool, int]:
     if isinstance(channel_or_id, int):
         channel_id = channel_or_id
@@ -136,6 +137,12 @@ def check_channel_with_config(
             category_id = getattr(parent_chan, 'category_id', None) if parent_chan else None
         else:
             category_id = getattr(channel_obj, 'category_id', None)
+    elif thread_parent_map and channel_id in thread_parent_map:
+        parent_id = thread_parent_map[channel_id]
+        if parent_id:
+            effective_channel_id = parent_id
+            parent_chan = guild.get_channel(parent_id)
+            category_id = getattr(parent_chan, 'category_id', None) if parent_chan else None
 
     if not watched_ids:
         return False, effective_channel_id

@@ -1,3 +1,4 @@
+import re
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -25,12 +26,12 @@ class Keyword(commands.Cog):
             return
         eff_channel_id = target_channel_id or (
             message.channel.parent_id
-            if message.channel.type == discord.ChannelType.public_thread
+            if isinstance(message.channel, discord.Thread)
             else message.channel.id
         )
-        words = message.content.lower().split()
+        content_lower = message.content.lower()
         for kw in keywords:
-            word_count = words.count(kw.lower())
+            word_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
             if word_count > 0:
                 await self.update_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id)
 
@@ -40,12 +41,12 @@ class Keyword(commands.Cog):
             return
         eff_channel_id = target_channel_id or (
             message.channel.parent_id
-            if message.channel.type == discord.ChannelType.public_thread
+            if isinstance(message.channel, discord.Thread)
             else message.channel.id
         )
-        words = message.content.lower().split()
+        content_lower = message.content.lower()
         for kw in keywords:
-            word_count = words.count(kw.lower())
+            word_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
             if word_count > 0:
                 await self.remove_kw(kw, word_count, message.guild.id, eff_channel_id, message.author.id)
 
@@ -55,14 +56,14 @@ class Keyword(commands.Cog):
             return
         eff_channel_id = target_channel_id or (
             before.channel.parent_id
-            if before.channel.type == discord.ChannelType.public_thread
+            if isinstance(before.channel, discord.Thread)
             else before.channel.id
         )
-        bwords = before.content.lower().split()
-        awords = after.content.lower().split()
+        b_content_lower = before.content.lower()
+        a_content_lower = after.content.lower()
         for kw in keywords:
-            bword_count = bwords.count(kw.lower())
-            aword_count = awords.count(kw.lower())
+            bword_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", b_content_lower))
+            aword_count = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", a_content_lower))
             if (bword_count > 0 or aword_count > 0) and bword_count != aword_count:
                 await self.find_dif(kw, bword_count, aword_count, before.guild.id, eff_channel_id, before.author.id)
 

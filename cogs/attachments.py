@@ -15,24 +15,24 @@ class Attachments(commands.Cog):
 
     async def attachment_message(self, message, result, target_channel_id: Optional[int] = None) -> None:
         attachment_count = len(message.attachments)
-        link_count = sum(1 for word in message.content.split() if word.startswith(('http://', 'https://')))
+        link_count = sum(1 for word in message.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         total_attachments = attachment_count + link_count
         if total_attachments > 0:
             eff_channel_id = target_channel_id or (
                 message.channel.parent_id
-                if message.channel.type == discord.ChannelType.public_thread
+                if isinstance(message.channel, discord.Thread)
                 else message.channel.id
             )
             await self.at_add(message.guild.id, eff_channel_id, message.author.id, total_attachments)
 
     async def attachment_message_delete(self, message, result, target_channel_id: Optional[int] = None) -> None:
         attachment_count = len(message.attachments)
-        link_count = sum(1 for word in message.content.split() if word.startswith(('http://', 'https://')))
+        link_count = sum(1 for word in message.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         total_attachments = attachment_count + link_count
         if total_attachments > 0:
             eff_channel_id = target_channel_id or (
                 message.channel.parent_id
-                if message.channel.type == discord.ChannelType.public_thread
+                if isinstance(message.channel, discord.Thread)
                 else message.channel.id
             )
             await self.at_delete(message.guild.id, eff_channel_id, message.author.id, total_attachments)
@@ -40,14 +40,14 @@ class Attachments(commands.Cog):
     async def attachment_message_edit(self, before, after, result, target_channel_id: Optional[int] = None) -> None:
         before_attachment_count = len(before.attachments)
         after_attachment_count = len(after.attachments)
-        before_link_count = sum(1 for word in before.content.split() if word.startswith(('http://', 'https://')))
-        after_link_count = sum(1 for word in after.content.split() if word.startswith(('http://', 'https://')))
+        before_link_count = sum(1 for word in before.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
+        after_link_count = sum(1 for word in after.content.split() if word.strip('<>()"\'').startswith(('http://', 'https://')))
         before_count = before_attachment_count + before_link_count
         after_count = after_attachment_count + after_link_count
         if (before_count + after_count) > 0:
             eff_channel_id = target_channel_id or (
                 before.channel.parent_id
-                if before.channel.type == discord.ChannelType.public_thread
+                if isinstance(before.channel, discord.Thread)
                 else before.channel.id
             )
             await self.find_dif(before.guild.id, eff_channel_id, before.author.id, before_count, after_count)
