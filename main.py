@@ -19,11 +19,14 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
-        await self.load_extension('sync')
-        await self.load_extension('ext')
+        await self.load_extension('Quicksync')
+        await self.load_extension('Status')
+        await self.load_extension('Errors')
+        await self.load_extension('Server_log')
+        await self.load_extension('OwnerCommands')
         for filename in os.listdir('cogs'):
             if filename.endswith('.py'):
-                cog_name = filename[:-3]  # Remove the .py extension
+                cog_name = filename[:-3]
                 await self.load_extension(f'cogs.{cog_name}')
 
     async def close(self) -> None:
