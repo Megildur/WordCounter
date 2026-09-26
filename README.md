@@ -121,7 +121,11 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
    python main.py
    ```
 
-6. **Sync Slash Commands**:
+6. **Add Bot to Allowed Server**:
+   - Generate an invite link in your [Discord Developer Portal](https://discord.com/developers/applications) (under **OAuth2** -> **URL Generator**, select `bot` and `applications.commands` scopes with standard permissions).
+   - Use the generated invite to add the bot to your server listed in `ALLOWED_GUILDS`.
+
+7. **Sync Slash Commands**:
    - In any server listed in your `ALLOWED_GUILDS`, run the quicksync command:
      ```text
      !wcquicksync
