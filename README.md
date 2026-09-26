@@ -1,7 +1,7 @@
 # 📊 WordCounter
 
 <p align="center">
-  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&integration_type=0">
+  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277025507392&scope=bot+applications.commands&integration_type=0">
     <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
@@ -22,7 +22,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 
 | Link | Description | URL |
 | :--- | :--- | :--- |
-| 🤖 **Invite WordCounter** | Add the bot directly to your Discord server | [**Add Bot to Server**](https://discord.com/oauth2/authorize?client_id=1551875701748277299&integration_type=0) |
+| 🤖 **Invite WordCounter** | Add the bot directly to your Discord server | [**Add Bot to Server**](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277025507392&scope=bot+applications.commands&integration_type=0) |
 | 💬 **Discord Support Server** | Get help, report bugs, and suggest features | [**Join Community Server**](https://discord.gg/Hr595Zk2tr) |
 | 📦 **GitHub Repository** | View source code and release notes | [**Megildur/WordCounter**](https://github.com/Megildur/WordCounter) |
 
@@ -137,9 +137,8 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
        - *(Optional/Recommended)*: `View Channels`
    - Use the generated invite URL to add the bot to your server listed in `ALLOWED_GUILDS`:
      ```text
-     https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=277025507392&scope=bot+applications.commands
+     https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=277025507392&scope=bot+applications.commands&integration_type=0
      ```
-     *(Or if set up as Default Install: `https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&integration_type=0`)*
 
 7. **Sync Slash Commands**:
    - In any server listed in your `ALLOWED_GUILDS`, run the quicksync command:
@@ -157,4 +156,4 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 
 Need assistance, found an issue, or want to suggest new features?
 - **Join our Discord**: [https://discord.gg/Hr595Zk2tr](https://discord.gg/Hr595Zk2tr)
-- **Invite WordCounter**: [https://discord.com/oauth2/authorize?client_id=1551875701748277299&integration_type=0](https://discord.com/oauth2/authorize?client_id=1551875701748277299&integration_type=0)
+- **Invite WordCounter**: [https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277025507392&scope=bot+applications.commands&integration_type=0](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277025507392&scope=bot+applications.commands&integration_type=0)

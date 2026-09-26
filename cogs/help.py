@@ -21,7 +21,7 @@ def get_support_server_url() -> str:
 
 def get_bot_invite_url(bot: commands.Bot) -> str:
     client_id = bot.user.id if bot.user else 1551875701748277299
-    return f"https://discord.com/oauth2/authorize?client_id={client_id}&integration_type=0"
+    return f"https://discord.com/oauth2/authorize?client_id={client_id}&permissions=277025507392&scope=bot+applications.commands&integration_type=0"
 
 
 class HelpView(discord.ui.LayoutView):
