@@ -38,7 +38,6 @@ PageT_co = TypeVar("PageT_co", bound=Page, covariant=True)
 
 
 class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
-    """Universal Components V2 paginator using discord.ui.LayoutView and discord.ui.Container."""
 
     message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
 
@@ -68,7 +67,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         self._files: List[discord.File] = []
 
     def _create_previous_button(self) -> discord.ui.Button:
-        """Create previous button with consistent styling"""
         button = discord.ui.Button(
             label="◀️ Previous",
             style=discord.ButtonStyle.secondary,
@@ -78,7 +76,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         return button
 
     def _create_next_button(self) -> discord.ui.Button:
-        """Create next button with consistent styling"""
         button = discord.ui.Button(
             label="Next ▶️",
             style=discord.ButtonStyle.secondary,
@@ -88,7 +85,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         return button
 
     def _create_page_indicator(self) -> discord.ui.Button:
-        """Create page indicator button"""
         button = discord.ui.Button(
             label=f"Page {self.current_page + 1}/{self.max_pages}",
             style=discord.ButtonStyle.primary,
@@ -98,7 +94,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         return button
 
     async def _previous_callback(self, interaction: Interaction) -> None:
-        """Handle previous button click"""
         if self.loop:
             self.current_page = self.max_pages - 1 if self.current_page <= 0 else self.current_page - 1
         else:
@@ -107,7 +102,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         await self.update_page(interaction)
 
     async def _next_callback(self, interaction: Interaction) -> None:
-        """Handle next button click"""
         if self.loop:
             self.current_page = 0 if self.current_page >= self.max_pages - 1 else self.current_page + 1
         else:
@@ -116,7 +110,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         await self.update_page(interaction)
 
     async def _indicator_callback(self, interaction: Interaction) -> None:
-        """Handle page indicator click (does nothing)"""
         await interaction.response.defer()
 
     def stop(self) -> None:
@@ -151,7 +144,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         return page
 
     def _clone_container(self, container: discord.ui.Container) -> discord.ui.Container:
-        """Clones a discord.ui.Container so navigation buttons can be added cleanly per render."""
         cloned = discord.ui.Container(
             accent_colour=container.accent_colour,
             spoiler=container.spoiler,
@@ -208,7 +200,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
                 )
             )
 
-        # Attach pagination controls inside the last container on the page
         target_container = containers[-1]
         if self.max_pages > 1 or self.custom_buttons:
             target_container.add_item(discord.ui.Separator())
@@ -283,7 +274,6 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         per_page: int = 1,
         loop: bool = False,
     ) -> "ButtonPaginator":
-        """Factory method for standard V2 Container paginator"""
         return cls(
             pages,
             author_id=author_id,
