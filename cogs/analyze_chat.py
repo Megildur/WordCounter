@@ -256,6 +256,7 @@ class MemberScanState:
         self.monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
         self.passes_attempted = 0
         self.completed = False
+        self.seen_msg_ids: Set[int] = set()
 
 
 class AnalyzeChat(commands.Cog):
@@ -282,6 +283,7 @@ class AnalyzeChat(commands.Cog):
             "author_id": author_id,
             "max_id": max_id,
             "offset": offset,
+            "include_nsfw": "true",
         }
         retries = 0
 
@@ -351,6 +353,7 @@ class AnalyzeChat(commands.Cog):
         ignored_ids: Set[int],
         keyword_list: List[str],
         thread_parent_map: Dict[int, int],
+        unknown_channel_ids: Optional[Set[int]] = None,
         on_progress: Optional[Any] = None,
     ) -> None:
         target = state.target
@@ -359,10 +362,9 @@ class AnalyzeChat(commands.Cog):
 
         if state.passes_attempted > 0 and state.oldest_target_msg_id is not None:
             new_max_id = state.oldest_target_msg_id - 1
-            if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
-                state.last_shifted_max_id = new_max_id
-                state.current_max_id = new_max_id
-                state.offset = 0
+            state.last_shifted_max_id = new_max_id
+            state.current_max_id = new_max_id
+            state.offset = 0
 
         consecutive_blanks = 0
 
@@ -382,11 +384,11 @@ class AnalyzeChat(commands.Cog):
             messages_array = data.get("messages", [])
 
             if not messages_array:
-                if state.offset < 5000 and consecutive_blanks < 5:
+                if state.offset < 5000 and consecutive_blanks < 20:
                     consecutive_blanks += 1
                     state.offset += 25
                     state.page_num += 1
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Blank batch at offset {state.offset - 25} (possible archived thread). Advancing to next batch (offset {state.offset}, skip {consecutive_blanks}/5)...")
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Blank batch at offset {state.offset - 25} (possible archived thread). Advancing to next batch (offset {state.offset}, skip {consecutive_blanks}/20)...")
                     if on_progress:
                         await on_progress(state)
                     await asyncio.sleep(self.get_search_sleep_delay())
@@ -413,7 +415,7 @@ class AnalyzeChat(commands.Cog):
                             )
                             messages_array = data.get("messages", [])
                             if not messages_array:
-                                for probe in (25, 50, 75, 100):
+                                for probe in (25, 50, 75, 100, 150, 200, 250, 300, 400, 500):
                                     print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Shifted offset 0 was blank. Probing offset {probe} to step past potential archived thread...")
                                     await asyncio.sleep(self.get_search_sleep_delay())
                                     probe_data = await self._fetch_search_page(guild.id, target.id, state.current_max_id, offset=probe)
@@ -428,7 +430,7 @@ class AnalyzeChat(commands.Cog):
                             messages_array = []
 
                 if not messages_array:
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}). Reached end of accessible search index ({state.user_messages:,} messages counted).")
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}). Pausing member sweep ({state.user_messages:,} messages counted).")
                     break
 
             consecutive_blanks = 0
@@ -436,16 +438,37 @@ class AnalyzeChat(commands.Cog):
                 for msg in hit:
                     if msg.get("author", {}).get("id") == str(target.id):
                         m_id_str = msg.get("id")
-                        if m_id_str:
-                            try:
-                                m_id_int = int(m_id_str)
-                                if m_id_int > 0:
-                                    if state.oldest_target_msg_id is None or m_id_int < state.oldest_target_msg_id:
-                                        state.oldest_target_msg_id = m_id_int
-                            except Exception:
-                                pass
+                        if not m_id_str:
+                            continue
+                        try:
+                            m_id_int = int(m_id_str)
+                        except Exception:
+                            continue
+                        if m_id_int <= 0:
+                            continue
+                        if state.oldest_target_msg_id is None or m_id_int < state.oldest_target_msg_id:
+                            state.oldest_target_msg_id = m_id_int
+                        if m_id_int in state.seen_msg_ids:
+                            continue
+                        state.seen_msg_ids.add(m_id_int)
 
                         raw_channel_id = int(msg.get("channel_id", 0))
+                        if raw_channel_id not in thread_parent_map:
+                            ch_obj = guild.get_channel_or_thread(raw_channel_id)
+                            if ch_obj is not None:
+                                p_id = getattr(ch_obj, "parent_id", None)
+                                if p_id:
+                                    thread_parent_map[raw_channel_id] = p_id
+                            elif unknown_channel_ids is not None and raw_channel_id not in unknown_channel_ids:
+                                try:
+                                    fetched_ch = await guild.fetch_channel(raw_channel_id)
+                                    if fetched_ch is not None:
+                                        p_id = getattr(fetched_ch, "parent_id", None)
+                                        if p_id:
+                                            thread_parent_map[raw_channel_id] = p_id
+                                except Exception:
+                                    unknown_channel_ids.add(raw_channel_id)
+
                         if watched_ids:
                             is_watched, eff_channel_id = check_channel_with_config(
                                 guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
@@ -613,6 +636,9 @@ class AnalyzeChat(commands.Cog):
 
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
+            for th in guild.threads:
+                thread_parent_map[th.id] = th.parent_id
+            unknown_channel_ids: Set[int] = set()
             state = MemberScanState(target, total_historical_messages, max_id_snowflake)
 
             async def on_single_progress(s: MemberScanState) -> None:
@@ -647,23 +673,34 @@ class AnalyzeChat(commands.Cog):
                 ignored_ids=ignored_ids,
                 keyword_list=keyword_list,
                 thread_parent_map=thread_parent_map,
+                unknown_channel_ids=unknown_channel_ids,
                 on_progress=on_single_progress,
             )
 
-            if state.page_num * 25 < state.total_user_messages * 0.85 and state.oldest_target_msg_id is not None:
+            current_pass = 1
+            max_single_passes = 3
+            while current_pass < max_single_passes:
+                is_complete = (
+                    state.user_messages >= state.total_user_messages * 0.85
+                    or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
+                    or state.oldest_target_msg_id is None
+                )
+                if is_complete:
+                    break
+                current_pass += 1
                 state.passes_attempted += 1
                 scanned_display = min(state.page_num * 25, state.total_user_messages)
-                print(f"[ANALYSIS RETRY] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages. Pausing 30s to allow Discord search index to settle before second pass...")
+                print(f"[ANALYSIS RETRY] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages. Pausing 30s to allow Discord search index to settle before pass {current_pass}...")
                 pause_view = create_v2_view(
-                    title="⏳ Retroactive Deep-Sweep — Retry Pass (Takes a Long Time)",
+                    title=f"⏳ Retroactive Deep-Sweep — Retry Pass {current_pass} (Takes a Long Time)",
                     description=(
                         f"**Target:** {target.mention}\n"
                         f"**Progress:** `{scanned_display:,} / {state.total_user_messages:,}` messages scanned\n"
                         f"**Tallied So Far:** `{state.user_messages:,}` messages • `{state.user_words:,}` words • `{state.user_attachments:,}` attachments • `{state.user_emojis:,}` emojis\n\n"
-                        f"-# ⏳ Blank batch encountered with remaining messages. Pausing 30s before retry pass..."
+                        f"-# ⏳ Blank batch encountered with remaining messages. Pausing 30s before retry pass {current_pass}..."
                     ),
                     thumbnail_url=avatar_url,
-                    footer=f"Retry Pass 2 • Pacing {self.get_search_sleep_delay():.1f}s",
+                    footer=f"Retry Pass {current_pass} • Pacing {self.get_search_sleep_delay():.1f}s",
                     color=WARNING_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=pause_view)
@@ -676,6 +713,7 @@ class AnalyzeChat(commands.Cog):
                     ignored_ids=ignored_ids,
                     keyword_list=keyword_list,
                     thread_parent_map=thread_parent_map,
+                    unknown_channel_ids=unknown_channel_ids,
                     on_progress=on_single_progress,
                 )
 
@@ -775,6 +813,9 @@ class AnalyzeChat(commands.Cog):
 
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
+            for th in guild.threads:
+                thread_parent_map[th.id] = th.parent_id
+            unknown_channel_ids: Set[int] = set()
 
             current_sleep = self.get_search_sleep_delay()
             active_servers = len(self.running_guilds)
@@ -924,16 +965,24 @@ class AnalyzeChat(commands.Cog):
                     ignored_ids=ignored_ids,
                     keyword_list=keyword_list,
                     thread_parent_map=thread_parent_map,
+                    unknown_channel_ids=unknown_channel_ids,
                     on_progress=on_server_progress,
                 )
 
-                if state.page_num * 25 < state.total_user_messages * 0.85:
+                is_complete = (
+                    state.user_messages >= state.total_user_messages * 0.85
+                    or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
+                    or state.oldest_target_msg_id is None
+                )
+
+                if not is_complete:
                     deferred_members.append(state)
-                    print(f"[ANALYSIS DEFERRED] '{guild.name}' -> '{target.display_name}': Scanned {min(state.page_num * 25, state.total_user_messages):,}/{state.total_user_messages:,} messages ({state.user_messages:,} counted) before reaching blank index. Putting user aside to continue other members, will circle back for pass 2!")
+                    scanned_display = min(state.page_num * 25, state.total_user_messages)
+                    print(f"[ANALYSIS DEFERRED] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages ({state.user_messages:,} counted) before reaching blank index. Putting user aside to continue other members, will circle back for pass 2!")
                     def_view = create_v2_view(
                         title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                         description=(
-                            f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention} *(Deferred for pass 2 — {state.total_user_messages - min(state.page_num * 25, state.total_user_messages):,} messages remain)*\n"
+                            f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention} *(Deferred for pass 2 — {max(0, state.total_user_messages - state.user_messages):,} messages remain)*\n"
                             f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}` | **Deferred:** `{len(deferred_members)}`\n\n"
                             f"**Server Totals Added So Far:**\n"
                             f"• 💬 Messages: `{grand_total_messages:,}`\n"
@@ -1014,7 +1063,8 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(self.get_search_sleep_delay())
 
             pass_num = 1
-            while deferred_members and pass_num < 3:
+            max_passes = 4
+            while deferred_members and pass_num < max_passes:
                 pass_num += 1
                 retry_queue = list(deferred_members)
                 deferred_members.clear()
@@ -1072,10 +1122,16 @@ class AnalyzeChat(commands.Cog):
                         ignored_ids=ignored_ids,
                         keyword_list=keyword_list,
                         thread_parent_map=thread_parent_map,
+                        unknown_channel_ids=unknown_channel_ids,
                         on_progress=on_retry_progress,
                     )
 
-                    if state.page_num * 25 < state.total_user_messages * 0.85 and pass_num < 2:
+                    is_complete = (
+                        state.user_messages >= state.total_user_messages * 0.85
+                        or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
+                        or state.oldest_target_msg_id is None
+                    )
+                    if not is_complete and pass_num < max_passes:
                         deferred_members.append(state)
                         continue
 
