@@ -752,7 +752,7 @@ class AnalyzeChat(commands.Cog):
         if total_recovered > 0:
             print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': {pass_name} finished — recovered {total_recovered:,} total messages ({state.user_messages:,} counted).")
         if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': {len(state.blank_pages)} page(s) remained empty after {max_passes} pass(es) of {pass_name}.")
+            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': {len(state.blank_pages)} page(s) remained at 0 messages after {max_passes} pass(es) of {pass_name} (likely private channels, inaccessible threads, or deleted messages).")
 
 
     async def _run_retroactive_analysis(
@@ -976,21 +976,31 @@ class AnalyzeChat(commands.Cog):
             )
 
             total_duration = asyncio.get_event_loop().time() - start_time
-            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {state.user_messages:,}, Words: {state.user_words:,}, Attachments: {state.user_attachments:,}, Emojis: {state.user_emojis:,})\n")
+            blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
+            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {state.user_messages:,}, Words: {state.user_words:,}, Attachments: {state.user_attachments:,}, Emojis: {state.user_emojis:,}){blank_notice}\n")
             fields = [
                 ("💬 Old Messages Added", f"**{state.user_messages:,}** *(of {total_historical_messages:,} indexed)*"),
                 ("📝 Words Found & Added", f"**{state.user_words:,}**"),
                 ("📎 Attachments Found & Added", f"**{state.user_attachments:,}**"),
                 ("😀 Emojis Found & Added", f"**{state.user_emojis:,}**"),
             ]
+            if state.blank_pages:
+                fields.append((
+                    "⚠️ Inaccessible / Empty Pages",
+                    f"**{len(state.blank_pages):,}** page(s) remained at 0 messages after 50 verification passes *(private channels, restricted threads, or deleted messages)*",
+                ))
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in state.user_keywords.items()]
                 fields.append(("🔑 Tracked Keywords Added", "\n".join(kw_lines)))
             fields.append(("⏱️ Total Duration", f"`{format_duration(total_duration)}`"))
 
+            desc = f"Successfully swept and added historical data for {target.mention} to the server database!"
+            if state.blank_pages:
+                desc += f"\n-# ⚠️ **Notice:** **{len(state.blank_pages):,}** page(s) returned 0 messages (typically messages in private channels or restricted threads the bot cannot view)."
+
             complete_view = create_v2_view(
                 title="✅ Retroactive Sync Complete",
-                description=f"Successfully swept and added historical data for {target.mention} to the server database!",
+                description=desc,
                 fields=fields,
                 thumbnail_url=avatar_url,
                 footer="Data retrieved via Discord Guild Search API • User marked as analyzed",
@@ -1051,6 +1061,7 @@ class AnalyzeChat(commands.Cog):
             grand_total_attachments = 0
             grand_total_emojis = 0
             grand_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
+            grand_total_blank_pages = 0
 
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
@@ -1277,6 +1288,7 @@ class AnalyzeChat(commands.Cog):
                 grand_total_messages += state.user_messages
                 grand_total_attachments += state.user_attachments
                 grand_total_emojis += state.user_emojis
+                grand_total_blank_pages += len(state.blank_pages)
                 for kw, cnt in state.user_keywords.items():
                     grand_keywords[kw] += cnt
 
@@ -1293,7 +1305,8 @@ class AnalyzeChat(commands.Cog):
                     total_pages_scanned=total_pages_scanned,
                     active_servers=active_servers,
                 )
-                print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' ({current_total_idx}/{total_eligible}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs, {grand_total_attachments:,} atts, {grand_total_emojis:,} emojis")
+                blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
+                print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' ({current_total_idx}/{total_eligible}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs, {grand_total_attachments:,} atts, {grand_total_emojis:,} emojis{blank_notice}")
                 prog_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                     description=(
@@ -1466,8 +1479,12 @@ class AnalyzeChat(commands.Cog):
                     grand_total_messages += state.user_messages
                     grand_total_attachments += state.user_attachments
                     grand_total_emojis += state.user_emojis
+                    grand_total_blank_pages += len(state.blank_pages)
                     for kw, cnt in state.user_keywords.items():
                         grand_keywords[kw] += cnt
+
+                    blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
+                    print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' [Pass {pass_num}] ({def_idx}/{len(retry_queue)}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs{blank_notice}")
 
                     await asyncio.sleep(self.get_search_sleep_delay())
 
@@ -1509,11 +1526,13 @@ class AnalyzeChat(commands.Cog):
                     grand_total_messages += remaining_state.user_messages
                     grand_total_attachments += remaining_state.user_attachments
                     grand_total_emojis += remaining_state.user_emojis
+                    grand_total_blank_pages += len(remaining_state.blank_pages)
                     for kw, cnt in remaining_state.user_keywords.items():
                         grand_keywords[kw] += cnt
 
             total_duration = asyncio.get_event_loop().time() - start_time
-            print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}\n")
+            blank_console = f" (Notice: {grand_total_blank_pages:,} page(s) remained at 0 messages across server members after verification)" if grand_total_blank_pages > 0 else ""
+            print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}{blank_console}\n")
             total_skipped = skipped_already_count + skipped_no_messages_count
             fields = [
                 (
@@ -1529,14 +1548,23 @@ class AnalyzeChat(commands.Cog):
                 ("📎 Historical Attachments Added", f"**{grand_total_attachments:,}**"),
                 ("😀 Historical Emojis Added", f"**{grand_total_emojis:,}**"),
             ]
+            if grand_total_blank_pages > 0:
+                fields.append((
+                    "⚠️ Inaccessible / Empty Pages",
+                    f"**{grand_total_blank_pages:,}** page(s) remained at 0 messages across server members after 50 verification passes *(private/restricted channels or deleted messages)*",
+                ))
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in grand_keywords.items()]
                 fields.append(("🔑 Tracked Keywords Added", "\n".join(kw_lines)))
             fields.append(("⏱️ Total Elapsed Time", f"`{format_duration(total_duration)}`"))
 
+            desc = "Successfully analyzed all server members and integrated historical data into the server database!"
+            if grand_total_blank_pages > 0:
+                desc += f"\n-# ⚠️ **Notice:** **{grand_total_blank_pages:,}** page(s) returned 0 messages across members (typically messages in private channels or restricted threads the bot cannot view)."
+
             complete_view = create_v2_view(
                 title="✅ Whole Server Retroactive Sync Complete",
-                description="Successfully analyzed all server members and integrated historical data into the server database!",
+                description=desc,
                 fields=fields,
                 footer="Data retrieved via Discord Guild Search API • All eligible members marked as analyzed",
                 color=SUCCESS_COLOR,
