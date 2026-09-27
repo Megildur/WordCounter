@@ -257,6 +257,9 @@ class MemberScanState:
         self.passes_attempted = 0
         self.completed = False
         self.seen_msg_ids: Set[int] = set()
+        self.deferred_empty_cursor: Optional[Tuple[int, int]] = None
+        self.allow_advancing_blanks: bool = False
+        self.consecutive_stalls: int = 0
 
 
 class AnalyzeChat(commands.Cog):
@@ -360,14 +363,6 @@ class AnalyzeChat(commands.Cog):
         total_user_messages = state.total_user_messages
         total_pages = state.total_pages
 
-        if state.passes_attempted > 0 and state.oldest_target_msg_id is not None:
-            new_max_id = state.oldest_target_msg_id - 1
-            state.last_shifted_max_id = new_max_id
-            state.current_max_id = new_max_id
-            state.offset = 0
-
-        consecutive_blanks = 0
-
         try:
             data = await self._fetch_search_page(
                 guild.id, target.id, state.current_max_id, offset=state.offset
@@ -384,56 +379,68 @@ class AnalyzeChat(commands.Cog):
             messages_array = data.get("messages", [])
 
             if not messages_array:
-                if state.offset < 5000 and consecutive_blanks < 20:
-                    consecutive_blanks += 1
-                    state.offset += 25
-                    state.page_num += 1
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Blank batch at offset {state.offset - 25} (possible archived thread). Advancing to next batch (offset {state.offset}, skip {consecutive_blanks}/20)...")
-                    if on_progress:
-                        await on_progress(state)
-                    await asyncio.sleep(self.get_search_sleep_delay())
-                    try:
-                        data = await self._fetch_search_page(
-                            guild.id, target.id, state.current_max_id, offset=state.offset
-                        )
-                    except Exception as e:
-                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {state.offset}: {e}")
-                        break
-                    continue
-
-                if state.oldest_target_msg_id is not None:
-                    new_max_id = state.oldest_target_msg_id - 1
-                    if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
-                        state.last_shifted_max_id = new_max_id
-                        state.current_max_id = new_max_id
-                        state.offset = 0
-                        consecutive_blanks = 0
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search offset limit or empty batch threshold. Shifting search window cursor backward (max_id {state.current_max_id})...")
-                        try:
-                            data = await self._fetch_search_page(
-                                guild.id, target.id, state.current_max_id, offset=0
-                            )
-                            messages_array = data.get("messages", [])
-                            if not messages_array:
-                                for probe in (25, 50, 75, 100, 150, 200, 250, 300, 400, 500):
-                                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Shifted offset 0 was blank. Probing offset {probe} to step past potential archived thread...")
-                                    await asyncio.sleep(self.get_search_sleep_delay())
-                                    probe_data = await self._fetch_search_page(guild.id, target.id, state.current_max_id, offset=probe)
-                                    probe_messages = probe_data.get("messages", [])
-                                    if probe_messages:
-                                        data = probe_data
-                                        messages_array = probe_messages
-                                        state.offset = probe
-                                        break
-                        except Exception as e:
-                            print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
-                            messages_array = []
-
-                if not messages_array:
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}). Pausing member sweep ({state.user_messages:,} messages counted).")
+                if state.page_num >= total_pages or (total_user_messages > 0 and state.user_messages >= total_user_messages):
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached completion ({state.page_num}/{total_pages} pages, {state.user_messages:,}/{total_user_messages:,} messages). Member sweep complete.")
                     break
 
-            consecutive_blanks = 0
+                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Received empty page at page {state.page_num + 1}/{total_pages} (offset {state.offset}). Requesting a second time to verify...")
+                await asyncio.sleep(self.get_search_sleep_delay())
+                try:
+                    retry_data = await self._fetch_search_page(
+                        guild.id, target.id, state.current_max_id, offset=state.offset
+                    )
+                    retry_messages = retry_data.get("messages", [])
+                except Exception as e:
+                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Second request failed at offset {state.offset}: {e}")
+                    retry_messages = []
+                    retry_data = {}
+
+                if retry_messages:
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Second request returned {len(retry_messages)} message batches for page {state.page_num + 1}. Resuming scan.")
+                    data = retry_data
+                    messages_array = retry_messages
+                    for th in data.get("threads", []):
+                        if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                            thread_parent_map[int(th["id"])] = int(th["parent_id"])
+                else:
+                    current_cursor = (state.current_max_id, state.offset)
+                    if state.allow_advancing_blanks or state.deferred_empty_cursor == current_cursor:
+                        state.allow_advancing_blanks = True
+                        state.deferred_empty_cursor = None
+                        state.offset += 25
+                        state.page_num += 1
+                        scanned_display = min(state.page_num * 25, total_user_messages)
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Page {state.page_num}/{total_pages} still empty. Advancing to next page (offset {state.offset})...")
+                        if on_progress:
+                            await on_progress(state)
+                        if state.page_num >= total_pages or (total_user_messages > 0 and state.user_messages >= total_user_messages):
+                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached completion ({state.page_num}/{total_pages} pages, {state.user_messages:,}/{total_user_messages:,} messages). Member sweep complete.")
+                            break
+                        if state.offset >= 5000:
+                            if state.oldest_target_msg_id is not None:
+                                new_max_id = state.oldest_target_msg_id - 1
+                                if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
+                                    state.last_shifted_max_id = new_max_id
+                                    state.current_max_id = new_max_id
+                                    state.offset = 0
+                                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit at page {state.page_num}/{total_pages}. Shifting search window cursor backward (max_id {state.current_max_id})...")
+                            else:
+                                break
+                        await asyncio.sleep(self.get_search_sleep_delay())
+                        try:
+                            data = await self._fetch_search_page(
+                                guild.id, target.id, state.current_max_id, offset=state.offset
+                            )
+                        except Exception as e:
+                            print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {state.offset}: {e}")
+                            break
+                        continue
+                    else:
+                        state.deferred_empty_cursor = current_cursor
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}) twice. Pausing member to circle back on next pass ({state.user_messages:,} messages counted).")
+                        break
+
+            found_any = False
             for hit in messages_array:
                 for msg in hit:
                     if msg.get("author", {}).get("id") == str(target.id):
@@ -451,6 +458,7 @@ class AnalyzeChat(commands.Cog):
                         if m_id_int in state.seen_msg_ids:
                             continue
                         state.seen_msg_ids.add(m_id_int)
+                        found_any = True
 
                         raw_channel_id = int(msg.get("channel_id", 0))
                         if raw_channel_id not in thread_parent_map:
@@ -529,6 +537,10 @@ class AnalyzeChat(commands.Cog):
                             state.channel_attachments[eff_channel_id] += msg_att_total
                             state.monthly_stats[m_key]["attachments"] += msg_att_total
 
+            if found_any:
+                state.allow_advancing_blanks = False
+                state.deferred_empty_cursor = None
+
             state.offset += 25
             state.page_num += 1
 
@@ -538,8 +550,11 @@ class AnalyzeChat(commands.Cog):
                     state.last_shifted_max_id = new_max_id
                     state.current_max_id = new_max_id
                     state.offset = 0
-                    consecutive_blanks = 0
                     print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {state.page_num}/{total_pages})...")
+
+            if state.page_num >= total_pages or (total_user_messages > 0 and state.user_messages >= total_user_messages):
+                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached completion ({state.page_num}/{total_pages} pages, {state.user_messages:,}/{total_user_messages:,} messages). Member sweep complete.")
+                break
 
             if on_progress and (state.page_num == 1 or state.page_num % 2 == 0 or total_pages <= 6):
                 await on_progress(state)
@@ -678,26 +693,21 @@ class AnalyzeChat(commands.Cog):
             )
 
             current_pass = 1
-            max_single_passes = 3
-            while current_pass < max_single_passes:
-                is_complete = (
-                    state.user_messages >= state.total_user_messages * 0.85
-                    or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
-                    or state.oldest_target_msg_id is None
-                )
-                if is_complete:
-                    break
+            consecutive_stalls = 0
+            while not (state.page_num >= state.total_pages or (state.total_user_messages > 0 and state.user_messages >= state.total_user_messages) or state.total_user_messages == 0):
+                prev_messages = state.user_messages
+                prev_pages = state.page_num
                 current_pass += 1
                 state.passes_attempted += 1
                 scanned_display = min(state.page_num * 25, state.total_user_messages)
-                print(f"[ANALYSIS RETRY] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages. Pausing 30s to allow Discord search index to settle before pass {current_pass}...")
+                print(f"[ANALYSIS RETRY] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages ({state.user_messages:,} counted). Pausing 30s before pass {current_pass}...")
                 pause_view = create_v2_view(
                     title=f"⏳ Retroactive Deep-Sweep — Retry Pass {current_pass} (Takes a Long Time)",
                     description=(
                         f"**Target:** {target.mention}\n"
                         f"**Progress:** `{scanned_display:,} / {state.total_user_messages:,}` messages scanned\n"
                         f"**Tallied So Far:** `{state.user_messages:,}` messages • `{state.user_words:,}` words • `{state.user_attachments:,}` attachments • `{state.user_emojis:,}` emojis\n\n"
-                        f"-# ⏳ Blank batch encountered with remaining messages. Pausing 30s before retry pass {current_pass}..."
+                        f"-# ⏳ Resuming search from cursor (page {state.page_num + 1}/{state.total_pages}) after cooldown..."
                     ),
                     thumbnail_url=avatar_url,
                     footer=f"Retry Pass {current_pass} • Pacing {self.get_search_sleep_delay():.1f}s",
@@ -716,6 +726,14 @@ class AnalyzeChat(commands.Cog):
                     unknown_channel_ids=unknown_channel_ids,
                     on_progress=on_single_progress,
                 )
+
+                if state.user_messages == prev_messages and state.page_num == prev_pages:
+                    consecutive_stalls += 1
+                    if consecutive_stalls >= 3:
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': No progress after 3 consecutive passes. Concluding scan with {state.user_messages:,} messages.")
+                        break
+                else:
+                    consecutive_stalls = 0
 
             await self.bot.db.save_retroactive_analysis(
                 guild_id=guild.id,
@@ -970,9 +988,9 @@ class AnalyzeChat(commands.Cog):
                 )
 
                 is_complete = (
-                    state.user_messages >= state.total_user_messages * 0.85
-                    or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
-                    or state.oldest_target_msg_id is None
+                    state.page_num >= state.total_pages
+                    or (state.total_user_messages > 0 and state.user_messages >= state.total_user_messages)
+                    or state.total_user_messages == 0
                 )
 
                 if not is_complete:
@@ -1063,8 +1081,7 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(self.get_search_sleep_delay())
 
             pass_num = 1
-            max_passes = 4
-            while deferred_members and pass_num < max_passes:
+            while deferred_members:
                 pass_num += 1
                 retry_queue = list(deferred_members)
                 deferred_members.clear()
@@ -1077,6 +1094,8 @@ class AnalyzeChat(commands.Cog):
                 for def_idx, state in enumerate(retry_queue, start=1):
                     state.passes_attempted += 1
                     target = state.target
+                    prev_messages = state.user_messages
+                    prev_pages = state.page_num
                     print(f"[ANALYSIS RETRY] '{guild.name}' -> Circling back to '{target.display_name}' (Pass {pass_num}, {def_idx}/{len(retry_queue)})...")
 
                     circle_view = create_v2_view(
@@ -1127,13 +1146,21 @@ class AnalyzeChat(commands.Cog):
                     )
 
                     is_complete = (
-                        state.user_messages >= state.total_user_messages * 0.85
-                        or (state.page_num * 25 >= state.total_user_messages and state.page_num > 0)
-                        or state.oldest_target_msg_id is None
+                        state.page_num >= state.total_pages
+                        or (state.total_user_messages > 0 and state.user_messages >= state.total_user_messages)
+                        or state.total_user_messages == 0
                     )
-                    if not is_complete and pass_num < max_passes:
-                        deferred_members.append(state)
-                        continue
+                    if not is_complete:
+                        if state.user_messages == prev_messages and state.page_num == prev_pages:
+                            state.consecutive_stalls += 1
+                        else:
+                            state.consecutive_stalls = 0
+
+                        if state.consecutive_stalls < 3:
+                            deferred_members.append(state)
+                            continue
+                        else:
+                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': No progress after 3 consecutive passes. Concluding analysis for this member.")
 
                     await self.bot.db.save_retroactive_analysis(
                         guild_id=guild.id,
