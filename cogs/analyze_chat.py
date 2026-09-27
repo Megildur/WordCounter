@@ -229,6 +229,35 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
         self.stop()
 
 
+class MemberScanState:
+
+    def __init__(self, target: discord.Member, total_user_messages: int, max_id: int) -> None:
+        self.target = target
+        self.total_user_messages = total_user_messages
+        self.current_max_id = max_id
+        self.oldest_target_msg_id: Optional[int] = None
+        self.last_shifted_max_id: Optional[int] = max_id
+        self.offset = 0
+        self.page_num = 0
+        self.total_pages = (total_user_messages + 24) // 25
+        self.user_words = 0
+        self.user_attachments = 0
+        self.user_emojis = 0
+        self.user_messages = 0
+        self.user_keywords: Dict[str, int] = defaultdict(int)
+        self.channel_words: Dict[int, int] = defaultdict(int)
+        self.channel_messages: Dict[int, int] = defaultdict(int)
+        self.channel_attachments: Dict[int, int] = defaultdict(int)
+        self.channel_emojis: Dict[int, int] = defaultdict(int)
+        self.channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
+        self.monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(
+            lambda: {"words": 0, "messages": 0, "attachments": 0, "emojis": 0}
+        )
+        self.monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
+        self.passes_attempted = 0
+        self.completed = False
+
+
 class AnalyzeChat(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -314,6 +343,194 @@ class AnalyzeChat(commands.Cog):
 
                 raise e
 
+    async def _execute_member_scan(
+        self,
+        guild: discord.Guild,
+        state: MemberScanState,
+        watched_ids: Set[int],
+        ignored_ids: Set[int],
+        keyword_list: List[str],
+        thread_parent_map: Dict[int, int],
+        on_progress: Optional[Any] = None,
+    ) -> None:
+        target = state.target
+        total_user_messages = state.total_user_messages
+        total_pages = state.total_pages
+
+        if state.passes_attempted > 0 and state.oldest_target_msg_id is not None:
+            new_max_id = state.oldest_target_msg_id - 1
+            if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
+                state.last_shifted_max_id = new_max_id
+                state.current_max_id = new_max_id
+                state.offset = 0
+
+        consecutive_blanks = 0
+
+        try:
+            data = await self._fetch_search_page(
+                guild.id, target.id, state.current_max_id, offset=state.offset
+            )
+        except Exception as e:
+            print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Initial search fetch failed: {e}")
+            return
+
+        while True:
+            for th in data.get("threads", []):
+                if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                    thread_parent_map[int(th["id"])] = int(th["parent_id"])
+
+            messages_array = data.get("messages", [])
+
+            if not messages_array:
+                if state.offset < 5000 and consecutive_blanks < 5:
+                    consecutive_blanks += 1
+                    state.offset += 25
+                    state.page_num += 1
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Blank batch at offset {state.offset - 25} (possible archived thread). Advancing to next batch (offset {state.offset}, skip {consecutive_blanks}/5)...")
+                    if on_progress:
+                        await on_progress(state)
+                    await asyncio.sleep(self.get_search_sleep_delay())
+                    try:
+                        data = await self._fetch_search_page(
+                            guild.id, target.id, state.current_max_id, offset=state.offset
+                        )
+                    except Exception as e:
+                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {state.offset}: {e}")
+                        break
+                    continue
+
+                if state.oldest_target_msg_id is not None:
+                    new_max_id = state.oldest_target_msg_id - 1
+                    if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
+                        state.last_shifted_max_id = new_max_id
+                        state.current_max_id = new_max_id
+                        state.offset = 0
+                        consecutive_blanks = 0
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search offset limit or empty batch threshold. Shifting search window cursor backward (max_id {state.current_max_id})...")
+                        try:
+                            data = await self._fetch_search_page(
+                                guild.id, target.id, state.current_max_id, offset=0
+                            )
+                            messages_array = data.get("messages", [])
+                            if not messages_array:
+                                for probe in (25, 50, 75, 100):
+                                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Shifted offset 0 was blank. Probing offset {probe} to step past potential archived thread...")
+                                    await asyncio.sleep(self.get_search_sleep_delay())
+                                    probe_data = await self._fetch_search_page(guild.id, target.id, state.current_max_id, offset=probe)
+                                    probe_messages = probe_data.get("messages", [])
+                                    if probe_messages:
+                                        data = probe_data
+                                        messages_array = probe_messages
+                                        state.offset = probe
+                                        break
+                        except Exception as e:
+                            print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
+                            messages_array = []
+
+                if not messages_array:
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}). Reached end of accessible search index ({state.user_messages:,} messages counted).")
+                    break
+
+            consecutive_blanks = 0
+            for hit in messages_array:
+                for msg in hit:
+                    if msg.get("author", {}).get("id") == str(target.id):
+                        m_id_str = msg.get("id")
+                        if m_id_str:
+                            try:
+                                m_id_int = int(m_id_str)
+                                if m_id_int > 0:
+                                    if state.oldest_target_msg_id is None or m_id_int < state.oldest_target_msg_id:
+                                        state.oldest_target_msg_id = m_id_int
+                            except Exception:
+                                pass
+
+                        raw_channel_id = int(msg.get("channel_id", 0))
+                        if watched_ids:
+                            is_watched, eff_channel_id = check_channel_with_config(
+                                guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
+                            )
+                            if not is_watched:
+                                continue
+                        else:
+                            eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
+
+                        ts_str = msg.get("timestamp")
+                        if ts_str:
+                            try:
+                                dt = datetime.fromisoformat(ts_str)
+                                msg_year = dt.year
+                                msg_month = dt.month
+                            except Exception:
+                                msg_year = 2024
+                                msg_month = 1
+                        else:
+                            msg_year = 2024
+                            msg_month = 1
+
+                        m_key = (eff_channel_id, msg_year, msg_month)
+                        content = msg.get("content", "") or ""
+                        state.user_messages += 1
+                        state.channel_messages[eff_channel_id] += 1
+                        state.monthly_stats[m_key]["messages"] += 1
+
+                        if content:
+                            words = content.split()
+                            w_len = len(words)
+                            state.user_words += w_len
+                            state.channel_words[eff_channel_id] += w_len
+                            state.monthly_stats[m_key]["words"] += w_len
+
+                            e_cnt = count_emojis(content)
+                            if e_cnt > 0:
+                                state.user_emojis += e_cnt
+                                state.channel_emojis[eff_channel_id] += e_cnt
+                                state.monthly_stats[m_key]["emojis"] += e_cnt
+
+                            content_lower = content.lower()
+                            for kw in keyword_list:
+                                matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
+                                if matches > 0:
+                                    state.user_keywords[kw] += matches
+                                    state.channel_keywords[(eff_channel_id, kw)] += matches
+                                    state.monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
+
+                        sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
+                        att_len = len(msg.get("attachments", [])) + sticker_len
+                        link_len = sum(
+                            1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
+                        )
+                        msg_att_total = att_len + link_len
+                        if msg_att_total > 0:
+                            state.user_attachments += msg_att_total
+                            state.channel_attachments[eff_channel_id] += msg_att_total
+                            state.monthly_stats[m_key]["attachments"] += msg_att_total
+
+            state.offset += 25
+            state.page_num += 1
+
+            if state.offset >= 5000 and state.oldest_target_msg_id is not None:
+                new_max_id = state.oldest_target_msg_id - 1
+                if state.last_shifted_max_id is None or new_max_id < state.last_shifted_max_id:
+                    state.last_shifted_max_id = new_max_id
+                    state.current_max_id = new_max_id
+                    state.offset = 0
+                    consecutive_blanks = 0
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {state.page_num}/{total_pages})...")
+
+            if on_progress and (state.page_num == 1 or state.page_num % 2 == 0 or total_pages <= 6):
+                await on_progress(state)
+
+            await asyncio.sleep(self.get_search_sleep_delay())
+
+            try:
+                data = await self._fetch_search_page(
+                    guild.id, target.id, state.current_max_id, offset=state.offset
+                )
+            except Exception as e:
+                print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {state.offset}: {e}")
+                break
+
     async def _run_retroactive_analysis(
         self,
         interaction: discord.Interaction,
@@ -378,7 +595,7 @@ class AnalyzeChat(commands.Cog):
             estimated_time = max(1, total_pages - 1) * (current_sleep + 0.5) if total_pages > 1 else current_sleep
             avatar_url = target.display_avatar.url if target.display_avatar else None
 
-            print(f"\n[ANALYSIS ACTIVE] ⚠️ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) — DO NOT RESTART BOT (Pacing: {current_sleep:.1f}s, Active Servers: {len(self.running_guilds)})")
+            print(f"\n[ANALYSIS ACTIVE] ⏳ Single-user analysis started in '{guild.name}' ({guild.id}) for '{target.display_name}' ({target.id}) (Pacing: {current_sleep:.1f}s, Active Servers: {len(self.running_guilds)})")
 
             status_view = create_v2_view(
                 title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
@@ -386,7 +603,7 @@ class AnalyzeChat(commands.Cog):
                     f"Found **{total_historical_messages:,}** historical messages for {target.mention} up to the command execution time.\n"
                     f"Sweeping history with strict **{current_sleep:.1f}s** anti-ratelimit pacing ({len(self.running_guilds)} active server(s))...\n\n"
                     f"**Estimated Remaining:** `{format_duration(estimated_time)}` ({total_pages} page(s))\n"
-                    f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
+                    f"-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
                 ),
                 thumbnail_url=avatar_url,
                 footer=f"Do not dismiss • Pacing {current_sleep:.1f}s per request • {len(self.running_guilds)} active server(s)",
@@ -394,202 +611,101 @@ class AnalyzeChat(commands.Cog):
             )
             await _safe_edit_message(status_msg, view=status_view)
 
-            total_words = 0
-            total_attachments = 0
-            total_emojis = 0
-            counted_messages = 0
-            keyword_counts: Dict[str, int] = {k: 0 for k in keyword_list}
-
-            channel_words: Dict[int, int] = defaultdict(int)
-            channel_messages: Dict[int, int] = defaultdict(int)
-            channel_attachments: Dict[int, int] = defaultdict(int)
-            channel_emojis: Dict[int, int] = defaultdict(int)
-            channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
-            monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0, "emojis": 0})
-            monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
-
-            offset = 0
-            page_num = 0
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
-            current_max_id = max_id_snowflake
-            oldest_target_msg_id: Optional[int] = None
-            last_shifted_max_id: Optional[int] = current_max_id
+            state = MemberScanState(target, total_historical_messages, max_id_snowflake)
 
-            while True:
-                for th in data.get("threads", []):
-                    if isinstance(th, dict) and "id" in th and "parent_id" in th:
-                        thread_parent_map[int(th["id"])] = int(th["parent_id"])
+            async def on_single_progress(s: MemberScanState) -> None:
+                current_pacing = self.get_search_sleep_delay()
+                active_servers = len(self.running_guilds)
+                elapsed = asyncio.get_event_loop().time() - start_time
+                remaining_pages = max(0, s.total_pages - s.page_num)
+                measured_sec_per_page = (elapsed / s.page_num) if s.page_num > 0 else (current_pacing + 0.5)
+                sec_per_page = max(current_pacing, min(current_pacing + 25.0, ((current_pacing + 0.5) * 0.3) + (measured_sec_per_page * 0.7)))
+                est_remaining = remaining_pages * sec_per_page
+                scanned_display = min(s.page_num * 25, s.total_user_messages)
+                print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {s.page_num}/{s.total_pages} (scanned {scanned_display:,}/{s.total_user_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
+                prog_view = create_v2_view(
+                    title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
+                    description=(
+                        f"**Target:** {target.mention}\n"
+                        f"**Progress:** `{scanned_display:,} / {s.total_user_messages:,}` messages scanned\n"
+                        f"**Tallied So Far:** `{s.user_messages:,}` messages • `{s.user_words:,}` words • `{s.user_attachments:,}` attachments • `{s.user_emojis:,}` emojis\n\n"
+                        f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
+                        f"-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
+                    ),
+                    thumbnail_url=avatar_url,
+                    footer=f"Page {s.page_num}/{s.total_pages} • Pacing {current_pacing:.1f}s per request ({active_servers} active server(s))",
+                    color=WARNING_COLOR,
+                )
+                await _safe_edit_message(status_msg, view=prog_view)
 
-                messages_array = data.get("messages", [])
-                if not messages_array:
-                    if offset > 0 and oldest_target_msg_id is not None:
-                        new_max_id = oldest_target_msg_id - 1
-                        if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
-                            last_shifted_max_id = new_max_id
-                            current_max_id = new_max_id
-                            offset = 0
-                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search window limit at offset {offset}. Shifting search cursor backward to older messages...")
-                            try:
-                                data = await self._fetch_search_page(
-                                    guild.id, target.id, current_max_id, offset=0
-                                )
-                                messages_array = data.get("messages", [])
-                            except Exception as e:
-                                print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
-                                messages_array = []
+            await self._execute_member_scan(
+                guild=guild,
+                state=state,
+                watched_ids=watched_ids,
+                ignored_ids=ignored_ids,
+                keyword_list=keyword_list,
+                thread_parent_map=thread_parent_map,
+                on_progress=on_single_progress,
+            )
 
-                    if not messages_array:
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({counted_messages:,} messages counted).")
-                        break
+            if state.page_num * 25 < state.total_user_messages * 0.85 and state.oldest_target_msg_id is not None:
+                state.passes_attempted += 1
+                scanned_display = min(state.page_num * 25, state.total_user_messages)
+                print(f"[ANALYSIS RETRY] '{guild.name}' -> '{target.display_name}': Scanned {scanned_display:,}/{state.total_user_messages:,} messages. Pausing 30s to allow Discord search index to settle before second pass...")
+                pause_view = create_v2_view(
+                    title="⏳ Retroactive Deep-Sweep — Retry Pass (Takes a Long Time)",
+                    description=(
+                        f"**Target:** {target.mention}\n"
+                        f"**Progress:** `{scanned_display:,} / {state.total_user_messages:,}` messages scanned\n"
+                        f"**Tallied So Far:** `{state.user_messages:,}` messages • `{state.user_words:,}` words • `{state.user_attachments:,}` attachments • `{state.user_emojis:,}` emojis\n\n"
+                        f"-# ⏳ Blank batch encountered with remaining messages. Pausing 30s before retry pass..."
+                    ),
+                    thumbnail_url=avatar_url,
+                    footer=f"Retry Pass 2 • Pacing {self.get_search_sleep_delay():.1f}s",
+                    color=WARNING_COLOR,
+                )
+                await _safe_edit_message(status_msg, view=pause_view)
+                await asyncio.sleep(30.0)
 
-                for hit in messages_array:
-                    for msg in hit:
-                        if msg.get("author", {}).get("id") == str(target.id):
-                            m_id_str = msg.get("id")
-                            if m_id_str:
-                                try:
-                                    m_id_int = int(m_id_str)
-                                    if m_id_int > 0:
-                                        if oldest_target_msg_id is None or m_id_int < oldest_target_msg_id:
-                                            oldest_target_msg_id = m_id_int
-                                except Exception:
-                                    pass
-
-                            raw_channel_id = int(msg.get("channel_id", 0))
-                            if watched_ids:
-                                is_watched, eff_channel_id = check_channel_with_config(
-                                    guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
-                                )
-                                if not is_watched:
-                                    continue
-                            else:
-                                eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
-
-                            ts_str = msg.get("timestamp")
-                            if ts_str:
-                                try:
-                                    dt = datetime.fromisoformat(ts_str)
-                                    msg_year = dt.year
-                                    msg_month = dt.month
-                                except Exception:
-                                    msg_year = 2024
-                                    msg_month = 1
-                            else:
-                                msg_year = 2024
-                                msg_month = 1
-
-                            m_key = (eff_channel_id, msg_year, msg_month)
-                            content = msg.get("content", "") or ""
-                            counted_messages += 1
-                            channel_messages[eff_channel_id] += 1
-                            monthly_stats[m_key]["messages"] += 1
-
-                            if content:
-                                words = content.split()
-                                w_len = len(words)
-                                total_words += w_len
-                                channel_words[eff_channel_id] += w_len
-                                monthly_stats[m_key]["words"] += w_len
-
-                                e_cnt = count_emojis(content)
-                                if e_cnt > 0:
-                                    total_emojis += e_cnt
-                                    channel_emojis[eff_channel_id] += e_cnt
-                                    monthly_stats[m_key]["emojis"] += e_cnt
-
-                                content_lower = content.lower()
-                                for kw in keyword_list:
-                                    matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
-                                    if matches > 0:
-                                        keyword_counts[kw] += matches
-                                        channel_keywords[(eff_channel_id, kw)] += matches
-                                        monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
-
-                            sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
-                            att_len = len(msg.get("attachments", [])) + sticker_len
-                            link_len = sum(
-                                1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
-                            )
-                            msg_att_total = att_len + link_len
-                            if msg_att_total > 0:
-                                total_attachments += msg_att_total
-                                channel_attachments[eff_channel_id] += msg_att_total
-                                monthly_stats[m_key]["attachments"] += msg_att_total
-
-                offset += 25
-                page_num += 1
-
-                if offset >= 5000 and oldest_target_msg_id is not None:
-                    new_max_id = oldest_target_msg_id - 1
-                    if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
-                        last_shifted_max_id = new_max_id
-                        current_max_id = new_max_id
-                        offset = 0
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {page_num}/{total_pages})...")
-
-                if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
-                    current_sleep = self.get_search_sleep_delay()
-                    active_servers = len(self.running_guilds)
-                    elapsed = asyncio.get_event_loop().time() - start_time
-                    remaining_pages = max(0, total_pages - page_num)
-                    measured_sec_per_page = (elapsed / page_num) if page_num > 0 else (current_sleep + 0.5)
-                    sec_per_page = max(current_sleep, min(current_sleep + 25.0, ((current_sleep + 0.5) * 0.3) + (measured_sec_per_page * 0.7)))
-                    est_remaining = remaining_pages * sec_per_page
-                    scanned_display = min(page_num * 25, total_historical_messages)
-                    print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {scanned_display:,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
-                    prog_view = create_v2_view(
-                        title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
-                        description=(
-                            f"**Target:** {target.mention}\n"
-                            f"**Progress:** `{scanned_display:,} / {total_historical_messages:,}` messages scanned\n"
-                            f"**Tallied So Far:** `{counted_messages:,}` messages • `{total_words:,}` words • `{total_attachments:,}` attachments • `{total_emojis:,}` emojis\n\n"
-                            f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
-                            f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is running."
-                        ),
-                        thumbnail_url=avatar_url,
-                        footer=f"Page {page_num}/{total_pages} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
-                        color=WARNING_COLOR,
-                    )
-                    await _safe_edit_message(status_msg, view=prog_view)
-
-                await asyncio.sleep(self.get_search_sleep_delay())
-
-                try:
-                    data = await self._fetch_search_page(
-                        guild.id, target.id, current_max_id, offset=offset
-                    )
-                except Exception as e:
-                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
-                    break
+                await self._execute_member_scan(
+                    guild=guild,
+                    state=state,
+                    watched_ids=watched_ids,
+                    ignored_ids=ignored_ids,
+                    keyword_list=keyword_list,
+                    thread_parent_map=thread_parent_map,
+                    on_progress=on_single_progress,
+                )
 
             await self.bot.db.save_retroactive_analysis(
                 guild_id=guild.id,
                 user_id=target.id,
-                total_words=total_words,
-                counted_messages=counted_messages,
-                total_attachments=total_attachments,
-                keyword_counts=keyword_counts,
-                channel_words=channel_words,
-                channel_messages=channel_messages,
-                channel_attachments=channel_attachments,
-                channel_keywords=channel_keywords,
-                monthly_stats=monthly_stats,
-                monthly_keywords=monthly_keywords,
-                channel_emojis=channel_emojis,
-                total_emojis=total_emojis,
+                total_words=state.user_words,
+                counted_messages=state.user_messages,
+                total_attachments=state.user_attachments,
+                keyword_counts=state.user_keywords,
+                channel_words=state.channel_words,
+                channel_messages=state.channel_messages,
+                channel_attachments=state.channel_attachments,
+                channel_keywords=state.channel_keywords,
+                monthly_stats=state.monthly_stats,
+                monthly_keywords=state.monthly_keywords,
+                channel_emojis=state.channel_emojis,
+                total_emojis=state.user_emojis,
             )
 
             total_duration = asyncio.get_event_loop().time() - start_time
-            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {counted_messages:,}, Words: {total_words:,}, Attachments: {total_attachments:,}, Emojis: {total_emojis:,})\n")
+            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {state.user_messages:,}, Words: {state.user_words:,}, Attachments: {state.user_attachments:,}, Emojis: {state.user_emojis:,})\n")
             fields = [
-                ("💬 Old Messages Added", f"**{counted_messages:,}** *(of {total_historical_messages:,} indexed)*"),
-                ("📝 Words Found & Added", f"**{total_words:,}**"),
-                ("📎 Attachments Found & Added", f"**{total_attachments:,}**"),
-                ("😀 Emojis Found & Added", f"**{total_emojis:,}**"),
+                ("💬 Old Messages Added", f"**{state.user_messages:,}** *(of {total_historical_messages:,} indexed)*"),
+                ("📝 Words Found & Added", f"**{state.user_words:,}**"),
+                ("📎 Attachments Found & Added", f"**{state.user_attachments:,}**"),
+                ("😀 Emojis Found & Added", f"**{state.user_emojis:,}**"),
             ]
             if keyword_list:
-                kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in keyword_counts.items()]
+                kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in state.user_keywords.items()]
                 fields.append(("🔑 Tracked Keywords Added", "\n".join(kw_lines)))
             fields.append(("⏱️ Total Duration", f"`{format_duration(total_duration)}`"))
 
@@ -662,7 +778,9 @@ class AnalyzeChat(commands.Cog):
 
             current_sleep = self.get_search_sleep_delay()
             active_servers = len(self.running_guilds)
-            print(f"\n[ANALYSIS ACTIVE] ⚠️ Whole-server analysis started in '{guild.name}' ({guild.id}) for {len(pending_members)} pending members ({total_eligible} total) — DO NOT RESTART BOT (Pacing: {current_sleep:.1f}s, Active Servers: {active_servers})")
+            print(f"\n[ANALYSIS ACTIVE] ⏳ Whole-server analysis started in '{guild.name}' ({guild.id}) for {len(pending_members)} pending members ({total_eligible} total) (Pacing: {current_sleep:.1f}s, Active Servers: {active_servers})")
+
+            deferred_members: List[MemberScanState] = []
 
             for idx, target in enumerate(pending_members, start=1):
                 current_total_idx = skipped_already_count + idx
@@ -695,7 +813,7 @@ class AnalyzeChat(commands.Cog):
                         f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
                         f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                         f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
-                        f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
+                        f"-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
                     footer=f"Member {current_total_idx}/{total_eligible} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
@@ -750,7 +868,7 @@ class AnalyzeChat(commands.Cog):
                             f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                             f"**Elapsed Time:** `{format_duration(elapsed)}`"
                             + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
-                            + "\n-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
+                            + "\n-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
                         ),
                         thumbnail_url=target.display_avatar.url if target.display_avatar else None,
                         footer=f"Member {current_total_idx}/{total_eligible} • Skipped (no prior messages) • Pacing {current_sleep:.1f}s",
@@ -760,210 +878,101 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(1.0)
                     continue
 
-                user_words = 0
-                user_attachments = 0
-                user_emojis = 0
-                user_messages = 0
-                user_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
+                state = MemberScanState(target, total_user_messages, max_id_snowflake)
 
-                channel_words: Dict[int, int] = defaultdict(int)
-                channel_messages: Dict[int, int] = defaultdict(int)
-                channel_attachments: Dict[int, int] = defaultdict(int)
-                channel_emojis: Dict[int, int] = defaultdict(int)
-                channel_keywords: Dict[Tuple[int, str], int] = defaultdict(int)
-                monthly_stats: Dict[Tuple[int, int, int], Dict[str, int]] = defaultdict(lambda: {"words": 0, "messages": 0, "attachments": 0, "emojis": 0})
-                monthly_keywords: Dict[Tuple[int, str, int, int], int] = defaultdict(int)
+                async def on_server_progress(s: MemberScanState) -> None:
+                    el = asyncio.get_event_loop().time() - start_time
+                    c_sleep = self.get_search_sleep_delay()
+                    act_serv = len(self.running_guilds)
+                    rem = compute_server_remaining_time(
+                        elapsed=el,
+                        idx=idx,
+                        page_num=s.page_num,
+                        total_pages=s.total_pages,
+                        total_pending=len(pending_members),
+                        analyzed_count=analyzed_count,
+                        total_pages_scanned=total_pages_scanned + s.page_num,
+                        active_servers=act_serv,
+                    )
+                    scanned = min(s.page_num * 25, s.total_user_messages)
+                    print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{s.target.display_name}' ({current_total_idx}/{total_eligible}): page {s.page_num}/{s.total_pages} (scanned {scanned:,}/{s.total_user_messages:,}, elapsed: {format_duration(el)}, est. remaining: {format_duration(rem)})")
+                    prog_v = create_v2_view(
+                        title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
+                        description=(
+                            f"**Current Member ({current_total_idx}/{total_eligible}):** {s.target.mention}\n"
+                            f"**Scanning Member Messages:** `{scanned:,} / {s.total_user_messages:,}` (Page {s.page_num}/{s.total_pages})\n"
+                            f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                            f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
+                            f"**Server Totals Added So Far:**\n"
+                            f"• 💬 Messages: `{grand_total_messages + s.user_messages:,}`\n"
+                            f"• 📝 Words: `{grand_total_words + s.user_words:,}`\n"
+                            f"• 📎 Attachments: `{grand_total_attachments + s.user_attachments:,}`\n"
+                            f"• 😀 Emojis: `{grand_total_emojis + s.user_emojis:,}`\n\n"
+                            f"**Elapsed Time:** `{format_duration(el)}` • **Estimated Remaining:** `{format_duration(rem)}`\n"
+                            f"-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
+                        ),
+                        thumbnail_url=s.target.display_avatar.url if s.target.display_avatar else None,
+                        footer=f"Member {current_total_idx}/{total_eligible} • Page {s.page_num}/{s.total_pages} • Pacing {c_sleep:.1f}s per request ({act_serv} active server(s))",
+                        color=WARNING_COLOR,
+                    )
+                    await _safe_edit_message(status_msg, view=prog_v)
 
-                offset = 0
-                page_num = 0
-                total_pages = (total_user_messages + 24) // 25
-                current_max_id = max_id_snowflake
-                oldest_target_msg_id: Optional[int] = None
-                last_shifted_max_id: Optional[int] = current_max_id
+                await self._execute_member_scan(
+                    guild=guild,
+                    state=state,
+                    watched_ids=watched_ids,
+                    ignored_ids=ignored_ids,
+                    keyword_list=keyword_list,
+                    thread_parent_map=thread_parent_map,
+                    on_progress=on_server_progress,
+                )
 
-                while True:
-                    for th in data.get("threads", []):
-                        if isinstance(th, dict) and "id" in th and "parent_id" in th:
-                            thread_parent_map[int(th["id"])] = int(th["parent_id"])
-
-                    messages_array = data.get("messages", [])
-                    if not messages_array:
-                        if offset > 0 and oldest_target_msg_id is not None:
-                            new_max_id = oldest_target_msg_id - 1
-                            if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
-                                last_shifted_max_id = new_max_id
-                                current_max_id = new_max_id
-                                offset = 0
-                                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search window limit at offset {offset}. Shifting search cursor backward to older messages...")
-                                try:
-                                    data = await self._fetch_search_page(
-                                        guild.id, target.id, current_max_id, offset=0
-                                    )
-                                    messages_array = data.get("messages", [])
-                                except Exception as e:
-                                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
-                                    messages_array = []
-
-                        if not messages_array:
-                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({user_messages:,} messages counted).")
-                            break
-
-                    for hit in messages_array:
-                        for msg in hit:
-                            if msg.get("author", {}).get("id") == str(target.id):
-                                m_id_str = msg.get("id")
-                                if m_id_str:
-                                    try:
-                                        m_id_int = int(m_id_str)
-                                        if m_id_int > 0:
-                                            if oldest_target_msg_id is None or m_id_int < oldest_target_msg_id:
-                                                oldest_target_msg_id = m_id_int
-                                    except Exception:
-                                        pass
-
-                                raw_channel_id = int(msg.get("channel_id", 0))
-                                if watched_ids:
-                                    is_watched, eff_channel_id = check_channel_with_config(
-                                        guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
-                                    )
-                                    if not is_watched:
-                                        continue
-                                else:
-                                    eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
-
-                                ts_str = msg.get("timestamp")
-                                if ts_str:
-                                    try:
-                                        dt = datetime.fromisoformat(ts_str)
-                                        msg_year = dt.year
-                                        msg_month = dt.month
-                                    except Exception:
-                                        msg_year = 2024
-                                        msg_month = 1
-                                else:
-                                    msg_year = 2024
-                                    msg_month = 1
-
-                                m_key = (eff_channel_id, msg_year, msg_month)
-                                content = msg.get("content", "") or ""
-                                user_messages += 1
-                                channel_messages[eff_channel_id] += 1
-                                monthly_stats[m_key]["messages"] += 1
-
-                                if content:
-                                    words = content.split()
-                                    w_len = len(words)
-                                    user_words += w_len
-                                    channel_words[eff_channel_id] += w_len
-                                    monthly_stats[m_key]["words"] += w_len
-
-                                    e_cnt = count_emojis(content)
-                                    if e_cnt > 0:
-                                        user_emojis += e_cnt
-                                        channel_emojis[eff_channel_id] += e_cnt
-                                        monthly_stats[m_key]["emojis"] += e_cnt
-
-                                    content_lower = content.lower()
-                                    for kw in keyword_list:
-                                        matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
-                                        if matches > 0:
-                                            user_keywords[kw] += matches
-                                            channel_keywords[(eff_channel_id, kw)] += matches
-                                            monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
-
-                                sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
-                                att_len = len(msg.get("attachments", [])) + sticker_len
-                                link_len = sum(
-                                    1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
-                                )
-                                msg_att_total = att_len + link_len
-                                if msg_att_total > 0:
-                                    user_attachments += msg_att_total
-                                    channel_attachments[eff_channel_id] += msg_att_total
-                                    monthly_stats[m_key]["attachments"] += msg_att_total
-
-                    offset += 25
-                    page_num += 1
-
-                    if offset >= 5000 and oldest_target_msg_id is not None:
-                        new_max_id = oldest_target_msg_id - 1
-                        if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
-                            last_shifted_max_id = new_max_id
-                            current_max_id = new_max_id
-                            offset = 0
-                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {page_num}/{total_pages})...")
-
-                    if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
-                        elapsed = asyncio.get_event_loop().time() - start_time
-                        current_sleep = self.get_search_sleep_delay()
-                        active_servers = len(self.running_guilds)
-                        est_remaining = compute_server_remaining_time(
-                            elapsed=elapsed,
-                            idx=idx,
-                            page_num=page_num,
-                            total_pages=total_pages,
-                            total_pending=len(pending_members),
-                            analyzed_count=analyzed_count,
-                            total_pages_scanned=total_pages_scanned + page_num,
-                            active_servers=active_servers,
-                        )
-                        scanned_display = min(page_num * 25, total_user_messages)
-                        print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}' ({current_total_idx}/{total_eligible}): page {page_num}/{total_pages} (scanned {scanned_display:,}/{total_user_messages:,}, elapsed: {format_duration(elapsed)}, est. remaining: {format_duration(est_remaining)})")
-                        prog_view = create_v2_view(
-                            title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
-                            description=(
-                                f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
-                                f"**Scanning Member Messages:** `{scanned_display:,} / {total_user_messages:,}` (Page {page_num}/{total_pages})\n"
-                                f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
-                                f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
-                                f"**Server Totals Added So Far:**\n"
-                                f"• 💬 Messages: `{grand_total_messages + user_messages:,}`\n"
-                                f"• 📝 Words: `{grand_total_words + user_words:,}`\n"
-                                f"• 📎 Attachments: `{grand_total_attachments + user_attachments:,}`\n"
-                                f"• 😀 Emojis: `{grand_total_emojis + user_emojis:,}`\n\n"
-                                f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
-                                f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
-                            ),
-                            thumbnail_url=target.display_avatar.url if target.display_avatar else None,
-                            footer=f"Member {current_total_idx}/{total_eligible} • Page {page_num}/{total_pages} • Pacing {current_sleep:.1f}s per request ({active_servers} active server(s))",
-                            color=WARNING_COLOR,
-                        )
-                        await _safe_edit_message(status_msg, view=prog_view)
-
+                if state.page_num * 25 < state.total_user_messages * 0.85:
+                    deferred_members.append(state)
+                    print(f"[ANALYSIS DEFERRED] '{guild.name}' -> '{target.display_name}': Scanned {min(state.page_num * 25, state.total_user_messages):,}/{state.total_user_messages:,} messages ({state.user_messages:,} counted) before reaching blank index. Putting user aside to continue other members, will circle back for pass 2!")
+                    def_view = create_v2_view(
+                        title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
+                        description=(
+                            f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention} *(Deferred for pass 2 — {state.total_user_messages - min(state.page_num * 25, state.total_user_messages):,} messages remain)*\n"
+                            f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}` | **Deferred:** `{len(deferred_members)}`\n\n"
+                            f"**Server Totals Added So Far:**\n"
+                            f"• 💬 Messages: `{grand_total_messages:,}`\n"
+                            f"• 📝 Words: `{grand_total_words:,}`\n\n"
+                            f"-# ⏳ Pausing this member to process others, then circling back to sweep remaining messages!"
+                        ),
+                        thumbnail_url=target.display_avatar.url if target.display_avatar else None,
+                        footer=f"Member {current_total_idx}/{total_eligible} • Putting aside for pass 2",
+                        color=WARNING_COLOR,
+                    )
+                    await _safe_edit_message(status_msg, view=def_view)
                     await asyncio.sleep(self.get_search_sleep_delay())
-
-                    try:
-                        data = await self._fetch_search_page(
-                            guild.id, target.id, current_max_id, offset=offset
-                        )
-                    except Exception as e:
-                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
-                        break
+                    continue
 
                 await self.bot.db.save_retroactive_analysis(
                     guild_id=guild.id,
                     user_id=target.id,
-                    total_words=user_words,
-                    counted_messages=user_messages,
-                    total_attachments=user_attachments,
-                    keyword_counts=user_keywords,
-                    channel_words=channel_words,
-                    channel_messages=channel_messages,
-                    channel_attachments=channel_attachments,
-                    channel_keywords=channel_keywords,
-                    monthly_stats=monthly_stats,
-                    monthly_keywords=monthly_keywords,
-                    channel_emojis=channel_emojis,
-                    total_emojis=user_emojis,
+                    total_words=state.user_words,
+                    counted_messages=state.user_messages,
+                    total_attachments=state.user_attachments,
+                    keyword_counts=state.user_keywords,
+                    channel_words=state.channel_words,
+                    channel_messages=state.channel_messages,
+                    channel_attachments=state.channel_attachments,
+                    channel_keywords=state.channel_keywords,
+                    monthly_stats=state.monthly_stats,
+                    monthly_keywords=state.monthly_keywords,
+                    channel_emojis=state.channel_emojis,
+                    total_emojis=state.user_emojis,
                 )
+                state.completed = True
 
                 analyzed_count += 1
-                total_pages_scanned += page_num
-                grand_total_words += user_words
-                grand_total_messages += user_messages
-                grand_total_attachments += user_attachments
-                grand_total_emojis += user_emojis
-                for kw, cnt in user_keywords.items():
+                total_pages_scanned += state.page_num
+                grand_total_words += state.user_words
+                grand_total_messages += state.user_messages
+                grand_total_attachments += state.user_attachments
+                grand_total_emojis += state.user_emojis
+                for kw, cnt in state.user_keywords.items():
                     grand_keywords[kw] += cnt
 
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -984,7 +993,7 @@ class AnalyzeChat(commands.Cog):
                     title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                     description=(
                         f"**Completed Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
-                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
+                        f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`" + (f" | **Deferred:** `{len(deferred_members)}`" if deferred_members else "") + "\n"
                         f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
                         f"**Server Totals Added:**\n"
                         f"• 💬 Messages: `{grand_total_messages:,}`\n"
@@ -992,17 +1001,140 @@ class AnalyzeChat(commands.Cog):
                         f"• 📎 Attachments: `{grand_total_attachments:,}`\n"
                         f"• 😀 Emojis: `{grand_total_emojis:,}`\n\n"
                         f"**Elapsed Time:** `{format_duration(elapsed)}`"
-                        + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if idx < len(pending_members) else "")
-                        + "\n-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is in progress."
+                        + (f" • **Estimated Remaining:** `{format_duration(est_remaining)}`" if (idx < len(pending_members) or deferred_members) else "")
+                        + "\n-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
                     ),
                     thumbnail_url=target.display_avatar.url if target.display_avatar else None,
                     footer=f"Overall Progress: {current_total_idx}/{total_eligible} members ({int(current_total_idx / total_eligible * 100)}%)" + (f" • Pacing {current_sleep:.1f}s to next member ({active_servers} active server(s))" if idx < len(pending_members) else ""),
-                    color=WARNING_COLOR if idx < len(pending_members) else SUCCESS_COLOR,
+                    color=WARNING_COLOR if (idx < len(pending_members) or deferred_members) else SUCCESS_COLOR,
                 )
                 await _safe_edit_message(status_msg, view=prog_view)
 
                 if idx < len(pending_members):
                     await asyncio.sleep(self.get_search_sleep_delay())
+
+            pass_num = 1
+            while deferred_members and pass_num < 3:
+                pass_num += 1
+                retry_queue = list(deferred_members)
+                deferred_members.clear()
+                print(f"\n[ANALYSIS PASS {pass_num}] '{guild.name}': Circling back to {len(retry_queue)} deferred member(s) with remaining messages...\n")
+
+                if len(pending_members) <= 1:
+                    print(f"[ANALYSIS NOTICE] Waiting 30s before circling back...")
+                    await asyncio.sleep(30.0)
+
+                for def_idx, state in enumerate(retry_queue, start=1):
+                    state.passes_attempted += 1
+                    target = state.target
+                    print(f"[ANALYSIS RETRY] '{guild.name}' -> Circling back to '{target.display_name}' (Pass {pass_num}, {def_idx}/{len(retry_queue)})...")
+
+                    circle_view = create_v2_view(
+                        title=f"⏳ Whole Server Deep-Sweep — Pass {pass_num} (Takes a Long Time)",
+                        description=(
+                            f"**Circling Back to Member ({def_idx}/{len(retry_queue)}):** {target.mention}\n"
+                            f"**Messages Scanned So Far:** `{min(state.page_num * 25, state.total_user_messages):,} / {state.total_user_messages:,}`\n"
+                            f"**Tallied So Far:** `{state.user_messages:,}` messages • `{state.user_words:,}` words\n\n"
+                            f"-# 🔄 Resuming deep search from updated cursor/offset after cooldown..."
+                        ),
+                        thumbnail_url=target.display_avatar.url if target.display_avatar else None,
+                        footer=f"Pass {pass_num} • Pacing {self.get_search_sleep_delay():.1f}s",
+                        color=WARNING_COLOR,
+                    )
+                    await _safe_edit_message(status_msg, view=circle_view)
+
+                    async def on_retry_progress(s: MemberScanState) -> None:
+                        el = asyncio.get_event_loop().time() - start_time
+                        c_sleep = self.get_search_sleep_delay()
+                        scanned = min(s.page_num * 25, s.total_user_messages)
+                        print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{s.target.display_name}' [Pass {pass_num}]: page {s.page_num}/{s.total_pages} (scanned {scanned:,}/{s.total_user_messages:,}, elapsed: {format_duration(el)})")
+                        prog_v = create_v2_view(
+                            title=f"⏳ Whole Server Deep-Sweep — Pass {pass_num}",
+                            description=(
+                                f"**Current Member ({def_idx}/{len(retry_queue)}):** {s.target.mention}\n"
+                                f"**Scanning Member Messages:** `{scanned:,} / {s.total_user_messages:,}` (Page {s.page_num}/{s.total_pages})\n"
+                                f"**Server Totals Added So Far:**\n"
+                                f"• 💬 Messages: `{grand_total_messages + s.user_messages:,}`\n"
+                                f"• 📝 Words: `{grand_total_words + s.user_words:,}`\n\n"
+                                f"**Elapsed Time:** `{format_duration(el)}`\n"
+                                f"-# ⏳ **Duration Notice:** Analysis runs with safety pacing to prevent Discord search rate limits."
+                            ),
+                            thumbnail_url=s.target.display_avatar.url if s.target.display_avatar else None,
+                            footer=f"Pass {pass_num} • Member {def_idx}/{len(retry_queue)} • Page {s.page_num}/{s.total_pages} • Pacing {c_sleep:.1f}s",
+                            color=WARNING_COLOR,
+                        )
+                        await _safe_edit_message(status_msg, view=prog_v)
+
+                    await self._execute_member_scan(
+                        guild=guild,
+                        state=state,
+                        watched_ids=watched_ids,
+                        ignored_ids=ignored_ids,
+                        keyword_list=keyword_list,
+                        thread_parent_map=thread_parent_map,
+                        on_progress=on_retry_progress,
+                    )
+
+                    if state.page_num * 25 < state.total_user_messages * 0.85 and pass_num < 2:
+                        deferred_members.append(state)
+                        continue
+
+                    await self.bot.db.save_retroactive_analysis(
+                        guild_id=guild.id,
+                        user_id=target.id,
+                        total_words=state.user_words,
+                        counted_messages=state.user_messages,
+                        total_attachments=state.user_attachments,
+                        keyword_counts=state.user_keywords,
+                        channel_words=state.channel_words,
+                        channel_messages=state.channel_messages,
+                        channel_attachments=state.channel_attachments,
+                        channel_keywords=state.channel_keywords,
+                        monthly_stats=state.monthly_stats,
+                        monthly_keywords=state.monthly_keywords,
+                        channel_emojis=state.channel_emojis,
+                        total_emojis=state.user_emojis,
+                    )
+                    state.completed = True
+
+                    analyzed_count += 1
+                    total_pages_scanned += state.page_num
+                    grand_total_words += state.user_words
+                    grand_total_messages += state.user_messages
+                    grand_total_attachments += state.user_attachments
+                    grand_total_emojis += state.user_emojis
+                    for kw, cnt in state.user_keywords.items():
+                        grand_keywords[kw] += cnt
+
+                    await asyncio.sleep(self.get_search_sleep_delay())
+
+            for remaining_state in deferred_members:
+                if not remaining_state.completed:
+                    await self.bot.db.save_retroactive_analysis(
+                        guild_id=guild.id,
+                        user_id=remaining_state.target.id,
+                        total_words=remaining_state.user_words,
+                        counted_messages=remaining_state.user_messages,
+                        total_attachments=remaining_state.user_attachments,
+                        keyword_counts=remaining_state.user_keywords,
+                        channel_words=remaining_state.channel_words,
+                        channel_messages=remaining_state.channel_messages,
+                        channel_attachments=remaining_state.channel_attachments,
+                        channel_keywords=remaining_state.channel_keywords,
+                        monthly_stats=remaining_state.monthly_stats,
+                        monthly_keywords=remaining_state.monthly_keywords,
+                        channel_emojis=remaining_state.channel_emojis,
+                        total_emojis=remaining_state.user_emojis,
+                    )
+                    remaining_state.completed = True
+                    analyzed_count += 1
+                    total_pages_scanned += remaining_state.page_num
+                    grand_total_words += remaining_state.user_words
+                    grand_total_messages += remaining_state.user_messages
+                    grand_total_attachments += remaining_state.user_attachments
+                    grand_total_emojis += remaining_state.user_emojis
+                    for kw, cnt in remaining_state.user_keywords.items():
+                        grand_keywords[kw] += cnt
 
             total_duration = asyncio.get_event_loop().time() - start_time
             print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}\n")
