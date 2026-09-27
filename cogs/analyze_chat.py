@@ -51,7 +51,7 @@ def compute_server_remaining_time(
     if total_pending <= 0 or idx > total_pending:
         return 0.0
 
-    current_sleep = 10.0 + (max(0, active_servers - 1) * 5.0)
+    current_sleep = 20.0 + (max(0, active_servers - 1) * 5.0)
     SEC_PER_PAGE = current_sleep + 0.5
     SEC_INTER_MEMBER = current_sleep
     SEC_ZERO_MEMBER = 2.0
@@ -275,7 +275,7 @@ class AnalyzeChat(commands.Cog):
 
     def get_search_sleep_delay(self) -> float:
         active_count = max(1, len(self.running_guilds))
-        return 10.0 + (max(0, active_count - 1) * 5.0)
+        return 20.0 + (max(0, active_count - 1) * 5.0)
 
     async def cog_load(self) -> None:
         await self.bot.db.ensure_connected()
@@ -944,7 +944,7 @@ class AnalyzeChat(commands.Cog):
                     consecutive_stalls = 0
 
             if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in 3 final verification passes...")
+                print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
                 await self._verify_blank_pages(
                     guild=guild,
                     state=state,
@@ -954,7 +954,7 @@ class AnalyzeChat(commands.Cog):
                     thread_parent_map=thread_parent_map,
                     unknown_channel_ids=unknown_channel_ids,
                     on_progress=on_single_progress,
-                    max_passes=3,
+                    max_passes=50,
                     pass_name="Final Blank Verification",
                 )
 
@@ -1239,7 +1239,7 @@ class AnalyzeChat(commands.Cog):
                     continue
 
                 if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                    print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in 3 final verification passes...")
+                    print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
                     await self._verify_blank_pages(
                         guild=guild,
                         state=state,
@@ -1249,7 +1249,7 @@ class AnalyzeChat(commands.Cog):
                         thread_parent_map=thread_parent_map,
                         unknown_channel_ids=unknown_channel_ids,
                         on_progress=on_server_progress,
-                        max_passes=3,
+                        max_passes=50,
                         pass_name="Final Blank Verification",
                     )
 
@@ -1428,7 +1428,7 @@ class AnalyzeChat(commands.Cog):
                             print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': No progress after 3 consecutive passes. Concluding analysis for this member.")
 
                     if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in 3 final verification passes...")
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
                         await self._verify_blank_pages(
                             guild=guild,
                             state=state,
@@ -1438,7 +1438,7 @@ class AnalyzeChat(commands.Cog):
                             thread_parent_map=thread_parent_map,
                             unknown_channel_ids=unknown_channel_ids,
                             on_progress=on_retry_progress,
-                            max_passes=3,
+                            max_passes=50,
                             pass_name="Final Blank Verification",
                         )
 
@@ -1474,7 +1474,7 @@ class AnalyzeChat(commands.Cog):
             for remaining_state in deferred_members:
                 if not remaining_state.completed:
                     if remaining_state.blank_pages and (remaining_state.total_user_messages == 0 or remaining_state.user_messages < remaining_state.total_user_messages):
-                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{remaining_state.target.display_name}': Re-checking {len(remaining_state.blank_pages)} blank page(s) in 3 final verification passes...")
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{remaining_state.target.display_name}': Re-checking {len(remaining_state.blank_pages)} blank page(s) in up to 50 final verification passes...")
                         await self._verify_blank_pages(
                             guild=guild,
                             state=remaining_state,
@@ -1483,7 +1483,7 @@ class AnalyzeChat(commands.Cog):
                             keyword_list=keyword_list,
                             thread_parent_map=thread_parent_map,
                             unknown_channel_ids=unknown_channel_ids,
-                            max_passes=3,
+                            max_passes=50,
                             pass_name="Final Blank Verification",
                         )
                     await self.bot.db.save_retroactive_analysis(
@@ -1549,13 +1549,13 @@ class AnalyzeChat(commands.Cog):
 
     analyze_chat = app_commands.Group(
         name="analyze_chat",
-        description="Retroactively analyze messages up to command execution (Takes a long time; 10s+ safety pacing)",
+        description="Retroactively analyze messages up to command execution (Takes a long time; 20s+ safety pacing)",
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @analyze_chat.command(
         name="single_user",
-        description="Analyze a member's chat history up to command execution (Takes a long time; 10s+ pacing)",
+        description="Analyze a member's chat history up to command execution (Takes a long time; 20s+ pacing)",
     )
     @app_commands.describe(target="The server member to retroactively analyze")
     async def single_user(self, interaction: discord.Interaction, target: discord.Member) -> None:
@@ -1616,7 +1616,7 @@ class AnalyzeChat(commands.Cog):
 
     @analyze_chat.command(
         name="whole_server",
-        description="Analyze all members' chat history up to command execution (Takes multiple hours; 10s+ pacing)",
+        description="Analyze all members' chat history up to command execution (Takes multiple hours; 20s+ pacing)",
     )
     async def whole_server(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:

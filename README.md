@@ -62,7 +62,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 | `/stats user <member>` | Everyone | Member stats with overall totals and monthly channel history navigation. |
 | `/keyword list` | Everyone | Lists all custom keywords currently watched in the server. |
 | `/settings` | Admins (`Manage Server`) | Interactive control dashboard for tracking rules, channels, keywords, and data resets. |
-| `/analyze_chat single_user <member>` | Admins (`Manage Server`) | Retroactively scans a member's chat history up to command execution (takes a long time; 10s+ safety pacing). |
+| `/analyze_chat single_user <member>` | Admins (`Manage Server`) | Retroactively scans a member's chat history up to command execution (takes a long time; 20s+ safety pacing). |
 | `/analyze_chat whole_server` | Admins (`Manage Server`) | Sweeps chat history for all eligible non-bot server members up to command execution with live progress & multi-server pacing (takes multiple hours). |
 
 ### Context Menus
