@@ -51,7 +51,7 @@ def compute_server_remaining_time(
     if total_pending <= 0 or idx > total_pending:
         return 0.0
 
-    current_sleep = 30.0 + (max(0, active_servers - 1) * 10.0)
+    current_sleep = 10.0 + (max(0, active_servers - 1) * 5.0)
     SEC_PER_PAGE = current_sleep + 0.5
     SEC_INTER_MEMBER = current_sleep
     SEC_ZERO_MEMBER = 2.0
@@ -87,7 +87,7 @@ def compute_server_remaining_time(
     active_member_time = (avg_pages_active * effective_sec_per_page) + SEC_INTER_MEMBER
     inactive_member_time = SEC_ZERO_MEMBER
     expected_sec_per_member = (p_active * active_member_time) + ((1.0 - p_active) * inactive_member_time)
-    expected_sec_per_member = max(5.0, expected_sec_per_member)
+    expected_sec_per_member = max(3.5, expected_sec_per_member)
 
     future_members_time = future_members_count * expected_sec_per_member
 
@@ -166,8 +166,8 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
 
         time_warning = (
             "⏳ **Duration Notice (Takes a Long Time):**\n"
-            "To prevent Discord search rate limits, this command uses strict safety pacing (30+ seconds per page of 25 messages, scaling to 40s/50s if other servers run sweeps concurrently). "
-            "Sweeping thousands of messages will take multiple hours."
+            "To prevent Discord search rate limits, this command uses safety pacing (10+ seconds per page of 25 messages, scaling by +5s per additional active server). "
+            "Sweeping thousands of messages will take time."
         )
 
         desc = (
@@ -240,7 +240,7 @@ class AnalyzeChat(commands.Cog):
 
     def get_search_sleep_delay(self) -> float:
         active_count = max(1, len(self.running_guilds))
-        return 30.0 + (max(0, active_count - 1) * 10.0)
+        return 10.0 + (max(0, active_count - 1) * 5.0)
 
     async def cog_load(self) -> None:
         await self.bot.db.ensure_connected()
@@ -1041,13 +1041,13 @@ class AnalyzeChat(commands.Cog):
 
     analyze_chat = app_commands.Group(
         name="analyze_chat",
-        description="Retroactively analyze messages up to command execution (Takes a long time; 30s+ safety pacing)",
+        description="Retroactively analyze messages up to command execution (Takes a long time; 10s+ safety pacing)",
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @analyze_chat.command(
         name="single_user",
-        description="Analyze a member's chat history up to command execution (Takes a long time; 30s+ pacing)",
+        description="Analyze a member's chat history up to command execution (Takes a long time; 10s+ pacing)",
     )
     @app_commands.describe(target="The server member to retroactively analyze")
     async def single_user(self, interaction: discord.Interaction, target: discord.Member) -> None:
@@ -1108,7 +1108,7 @@ class AnalyzeChat(commands.Cog):
 
     @analyze_chat.command(
         name="whole_server",
-        description="Analyze all members' chat history up to command execution (Takes multiple hours; 30s+ pacing)",
+        description="Analyze all members' chat history up to command execution (Takes multiple hours; 10s+ pacing)",
     )
     async def whole_server(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:

@@ -41,7 +41,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
   - Optional `channel` filter to view top 10 contributors in a specific channel plus a complete chronological monthly history breakdown (newest to oldest).
 - **🔍 Retroactive Chat Deep-Sweep (`/analyze_chat`)**:
   - Scan messages sent up to the command execution time via Discord's Guild Search API.
-  - Supports single-user analysis or whole-server sweeping with live progress tracking, dynamic multi-server scaled safety pacing (30.0s base delay per page, scaling to 40s/50s+ when multiple servers run sweeps concurrently to avoid rate limits), and adaptive ETA estimation.
+  - Supports single-user analysis or whole-server sweeping with live progress tracking, dynamic multi-server scaled safety pacing (10.0s base delay per page, scaling by +5s per additional active server to avoid rate limits), and adaptive ETA estimation.
   - ⏳ **Duration Notice**: Scanning large message histories takes a long time (potentially multiple hours for thousands of messages). Never restart the bot while an analysis is actively running.
 - **⚙️ Interactive Settings Dashboard (`/settings`)**:
   - Switch between **Whole Server Mode** (with ignore lists) or **Specific Channels/Categories Mode**.
@@ -62,7 +62,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 | `/stats user <member>` | Everyone | Member stats with overall totals and monthly channel history navigation. |
 | `/keyword list` | Everyone | Lists all custom keywords currently watched in the server. |
 | `/settings` | Admins (`Manage Server`) | Interactive control dashboard for tracking rules, channels, keywords, and data resets. |
-| `/analyze_chat single_user <member>` | Admins (`Manage Server`) | Retroactively scans a member's chat history up to command execution (takes a long time; 30s+ safety pacing). |
+| `/analyze_chat single_user <member>` | Admins (`Manage Server`) | Retroactively scans a member's chat history up to command execution (takes a long time; 10s+ safety pacing). |
 | `/analyze_chat whole_server` | Admins (`Manage Server`) | Sweeps chat history for all eligible non-bot server members up to command execution with live progress & multi-server pacing (takes multiple hours). |
 
 ### Context Menus
