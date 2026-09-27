@@ -42,7 +42,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 - **🔍 Retroactive Chat Deep-Sweep (`/analyze_chat`)**:
   - Scan messages sent up to the command execution time via Discord's Guild Search API.
   - Supports single-user analysis or whole-server sweeping with live progress tracking, dynamic multi-server scaled safety pacing (10.0s base delay per page, scaling by +5s per additional active server to avoid rate limits), and adaptive ETA estimation.
-  - ⏳ **Duration Notice**: Scanning large message histories takes a long time (potentially multiple hours for thousands of messages). Never restart the bot while an analysis is actively running.
+  - ⏳ **Duration Notice**: Scanning large message histories takes a long time (potentially multiple hours for thousands of messages).
 - **⚙️ Interactive Settings Dashboard (`/settings`)**:
   - Switch between **Whole Server Mode** (with ignore lists) or **Specific Channels/Categories Mode**.
   - Add, edit, or remove tracked keywords with instant regex matching.
