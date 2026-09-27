@@ -167,7 +167,7 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
         time_warning = (
             "⏳ **Duration Notice (Takes a Long Time):**\n"
             "To prevent Discord search rate limits, this command uses strict safety pacing (30+ seconds per page of 25 messages, scaling to 40s/50s if other servers run sweeps concurrently). "
-            "Sweeping thousands of messages will take multiple hours. **Do NOT restart the bot** while analysis is running."
+            "Sweeping thousands of messages will take multiple hours."
         )
 
         desc = (
