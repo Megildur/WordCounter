@@ -260,6 +260,8 @@ class MemberScanState:
         self.deferred_empty_cursor: Optional[Tuple[int, int]] = None
         self.allow_advancing_blanks: bool = False
         self.consecutive_stalls: int = 0
+        self.blank_pages: List[Tuple[int, int]] = []
+        self.recorded_blank_cursors: Set[Tuple[int, int]] = set()
 
 
 class AnalyzeChat(commands.Cog):
@@ -383,34 +385,43 @@ class AnalyzeChat(commands.Cog):
                     print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached completion ({state.page_num}/{total_pages} pages, {state.user_messages:,}/{total_user_messages:,} messages). Member sweep complete.")
                     break
 
-                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Received empty page at page {state.page_num + 1}/{total_pages} (offset {state.offset}). Requesting a second time to verify...")
-                await asyncio.sleep(self.get_search_sleep_delay())
-                try:
-                    retry_data = await self._fetch_search_page(
-                        guild.id, target.id, state.current_max_id, offset=state.offset
-                    )
-                    retry_messages = retry_data.get("messages", [])
-                except Exception as e:
-                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Second request failed at offset {state.offset}: {e}")
-                    retry_messages = []
-                    retry_data = {}
+                attempt = 1
+                while not messages_array and attempt < 4:
+                    attempt += 1
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Received empty page at page {state.page_num + 1}/{total_pages} (offset {state.offset}). Retrying ({attempt}/4)...")
+                    await asyncio.sleep(self.get_search_sleep_delay())
+                    try:
+                        retry_data = await self._fetch_search_page(
+                            guild.id, target.id, state.current_max_id, offset=state.offset
+                        )
+                        retry_messages = retry_data.get("messages", [])
+                    except Exception as e:
+                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Retry {attempt}/4 failed at offset {state.offset}: {e}")
+                        retry_messages = []
+                        retry_data = {}
 
-                if retry_messages:
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Second request returned {len(retry_messages)} message batches for page {state.page_num + 1}. Resuming scan.")
-                    data = retry_data
-                    messages_array = retry_messages
-                    for th in data.get("threads", []):
-                        if isinstance(th, dict) and "id" in th and "parent_id" in th:
-                            thread_parent_map[int(th["id"])] = int(th["parent_id"])
-                else:
+                    if retry_messages:
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Retry {attempt}/4 succeeded with {len(retry_messages)} message batches for page {state.page_num + 1}. Resuming scan.")
+                        data = retry_data
+                        messages_array = retry_messages
+                        for th in data.get("threads", []):
+                            if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                                thread_parent_map[int(th["id"])] = int(th["parent_id"])
+                        break
+
+                if not messages_array:
                     current_cursor = (state.current_max_id, state.offset)
+                    if current_cursor not in state.recorded_blank_cursors:
+                        state.recorded_blank_cursors.add(current_cursor)
+                        state.blank_pages.append(current_cursor)
+
                     if state.allow_advancing_blanks or state.deferred_empty_cursor == current_cursor:
                         state.allow_advancing_blanks = True
                         state.deferred_empty_cursor = None
                         state.offset += 25
                         state.page_num += 1
                         scanned_display = min(state.page_num * 25, total_user_messages)
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Page {state.page_num}/{total_pages} still empty. Advancing to next page (offset {state.offset})...")
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Page {state.page_num}/{total_pages} still empty after 4 tries. Advancing to next page (offset {state.offset})...")
                         if on_progress:
                             await on_progress(state)
                         if state.page_num >= total_pages or (total_user_messages > 0 and state.user_messages >= total_user_messages):
@@ -437,7 +448,7 @@ class AnalyzeChat(commands.Cog):
                         continue
                     else:
                         state.deferred_empty_cursor = current_cursor
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}) twice. Pausing member to circle back on next pass ({state.user_messages:,} messages counted).")
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}) after 4 tries. Pausing member to circle back on next pass ({state.user_messages:,} messages counted).")
                         break
 
             found_any = False
@@ -540,6 +551,11 @@ class AnalyzeChat(commands.Cog):
             if found_any:
                 state.allow_advancing_blanks = False
                 state.deferred_empty_cursor = None
+                current_cursor = (state.current_max_id, state.offset)
+                if current_cursor in state.recorded_blank_cursors:
+                    state.recorded_blank_cursors.discard(current_cursor)
+                    if current_cursor in state.blank_pages:
+                        state.blank_pages.remove(current_cursor)
 
             state.offset += 25
             state.page_num += 1
@@ -568,6 +584,148 @@ class AnalyzeChat(commands.Cog):
             except Exception as e:
                 print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {state.offset}: {e}")
                 break
+
+    async def _execute_final_blank_verification(
+        self,
+        guild: discord.Guild,
+        state: MemberScanState,
+        watched_ids: Set[int],
+        ignored_ids: Set[int],
+        keyword_list: List[str],
+        thread_parent_map: Dict[int, int],
+        unknown_channel_ids: Optional[Set[int]] = None,
+        on_progress: Optional[Any] = None,
+    ) -> None:
+        target = state.target
+        blank_list = list(state.blank_pages)
+        state.blank_pages.clear()
+        state.recorded_blank_cursors.clear()
+        recovered_count = 0
+
+        for b_idx, (b_max_id, b_offset) in enumerate(blank_list, start=1):
+            if state.total_user_messages > 0 and state.user_messages >= state.total_user_messages:
+                break
+
+            messages_array = []
+            data = {}
+            for attempt in range(1, 5):
+                await asyncio.sleep(self.get_search_sleep_delay())
+                try:
+                    data = await self._fetch_search_page(guild.id, target.id, b_max_id, offset=b_offset)
+                    messages_array = data.get("messages", [])
+                    if messages_array:
+                        break
+                except Exception as e:
+                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Final pass attempt {attempt}/4 failed at offset {b_offset}: {e}")
+
+            if not messages_array:
+                continue
+
+            for th in data.get("threads", []):
+                if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                    thread_parent_map[int(th["id"])] = int(th["parent_id"])
+
+            for hit in messages_array:
+                for msg in hit:
+                    if msg.get("author", {}).get("id") == str(target.id):
+                        m_id_str = msg.get("id")
+                        if not m_id_str:
+                            continue
+                        try:
+                            m_id_int = int(m_id_str)
+                        except Exception:
+                            continue
+                        if m_id_int <= 0:
+                            continue
+                        if state.oldest_target_msg_id is None or m_id_int < state.oldest_target_msg_id:
+                            state.oldest_target_msg_id = m_id_int
+                        if m_id_int in state.seen_msg_ids:
+                            continue
+                        state.seen_msg_ids.add(m_id_int)
+                        recovered_count += 1
+
+                        raw_channel_id = int(msg.get("channel_id", 0))
+                        if raw_channel_id not in thread_parent_map:
+                            ch_obj = guild.get_channel_or_thread(raw_channel_id)
+                            if ch_obj is not None:
+                                p_id = getattr(ch_obj, "parent_id", None)
+                                if p_id:
+                                    thread_parent_map[raw_channel_id] = p_id
+                            elif unknown_channel_ids is not None and raw_channel_id not in unknown_channel_ids:
+                                try:
+                                    fetched_ch = await guild.fetch_channel(raw_channel_id)
+                                    if fetched_ch is not None:
+                                        p_id = getattr(fetched_ch, "parent_id", None)
+                                        if p_id:
+                                            thread_parent_map[raw_channel_id] = p_id
+                                except Exception:
+                                    unknown_channel_ids.add(raw_channel_id)
+
+                        if watched_ids:
+                            is_watched, eff_channel_id = check_channel_with_config(
+                                guild, raw_channel_id, watched_ids, ignored_ids, thread_parent_map=thread_parent_map
+                            )
+                            if not is_watched:
+                                continue
+                        else:
+                            eff_channel_id = thread_parent_map.get(raw_channel_id, raw_channel_id)
+
+                        ts_str = msg.get("timestamp")
+                        if ts_str:
+                            try:
+                                dt = datetime.fromisoformat(ts_str)
+                                msg_year = dt.year
+                                msg_month = dt.month
+                            except Exception:
+                                msg_year = 2024
+                                msg_month = 1
+                        else:
+                            msg_year = 2024
+                            msg_month = 1
+
+                        m_key = (eff_channel_id, msg_year, msg_month)
+                        content = msg.get("content", "") or ""
+                        state.user_messages += 1
+                        state.channel_messages[eff_channel_id] += 1
+                        state.monthly_stats[m_key]["messages"] += 1
+
+                        if content:
+                            words = content.split()
+                            w_len = len(words)
+                            state.user_words += w_len
+                            state.channel_words[eff_channel_id] += w_len
+                            state.monthly_stats[m_key]["words"] += w_len
+
+                            e_cnt = count_emojis(content)
+                            if e_cnt > 0:
+                                state.user_emojis += e_cnt
+                                state.channel_emojis[eff_channel_id] += e_cnt
+                                state.monthly_stats[m_key]["emojis"] += e_cnt
+
+                            content_lower = content.lower()
+                            for kw in keyword_list:
+                                matches = len(re.findall(r"\b" + re.escape(kw.lower()) + r"\b", content_lower))
+                                if matches > 0:
+                                    state.user_keywords[kw] += matches
+                                    state.channel_keywords[(eff_channel_id, kw)] += matches
+                                    state.monthly_keywords[(eff_channel_id, kw, msg_year, msg_month)] += matches
+
+                        sticker_len = len(msg.get("sticker_items", [])) + len(msg.get("stickers", []))
+                        att_len = len(msg.get("attachments", [])) + sticker_len
+                        link_len = sum(
+                            1 for w in content.split() if w.strip('<>()"\'').startswith(("http://", "https://"))
+                        )
+                        msg_att_total = att_len + link_len
+                        if msg_att_total > 0:
+                            state.user_attachments += msg_att_total
+                            state.channel_attachments[eff_channel_id] += msg_att_total
+                            state.monthly_stats[m_key]["attachments"] += msg_att_total
+
+        if recovered_count > 0:
+            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Final verification pass recovered {recovered_count:,} additional messages ({state.user_messages:,} total counted)!")
+            if on_progress:
+                await on_progress(state)
+
 
     async def _run_retroactive_analysis(
         self,
@@ -734,6 +892,19 @@ class AnalyzeChat(commands.Cog):
                         break
                 else:
                     consecutive_stalls = 0
+
+            if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
+                print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in a final verification pass...")
+                await self._execute_final_blank_verification(
+                    guild=guild,
+                    state=state,
+                    watched_ids=watched_ids,
+                    ignored_ids=ignored_ids,
+                    keyword_list=keyword_list,
+                    thread_parent_map=thread_parent_map,
+                    unknown_channel_ids=unknown_channel_ids,
+                    on_progress=on_single_progress,
+                )
 
             await self.bot.db.save_retroactive_analysis(
                 guild_id=guild.id,
@@ -1015,6 +1186,19 @@ class AnalyzeChat(commands.Cog):
                     await asyncio.sleep(self.get_search_sleep_delay())
                     continue
 
+                if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
+                    print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in a final verification pass...")
+                    await self._execute_final_blank_verification(
+                        guild=guild,
+                        state=state,
+                        watched_ids=watched_ids,
+                        ignored_ids=ignored_ids,
+                        keyword_list=keyword_list,
+                        thread_parent_map=thread_parent_map,
+                        unknown_channel_ids=unknown_channel_ids,
+                        on_progress=on_server_progress,
+                    )
+
                 await self.bot.db.save_retroactive_analysis(
                     guild_id=guild.id,
                     user_id=target.id,
@@ -1162,6 +1346,19 @@ class AnalyzeChat(commands.Cog):
                         else:
                             print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': No progress after 3 consecutive passes. Concluding analysis for this member.")
 
+                    if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in a final verification pass...")
+                        await self._execute_final_blank_verification(
+                            guild=guild,
+                            state=state,
+                            watched_ids=watched_ids,
+                            ignored_ids=ignored_ids,
+                            keyword_list=keyword_list,
+                            thread_parent_map=thread_parent_map,
+                            unknown_channel_ids=unknown_channel_ids,
+                            on_progress=on_retry_progress,
+                        )
+
                     await self.bot.db.save_retroactive_analysis(
                         guild_id=guild.id,
                         user_id=target.id,
@@ -1193,6 +1390,17 @@ class AnalyzeChat(commands.Cog):
 
             for remaining_state in deferred_members:
                 if not remaining_state.completed:
+                    if remaining_state.blank_pages and (remaining_state.total_user_messages == 0 or remaining_state.user_messages < remaining_state.total_user_messages):
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{remaining_state.target.display_name}': Re-checking {len(remaining_state.blank_pages)} blank page(s) in a final verification pass...")
+                        await self._execute_final_blank_verification(
+                            guild=guild,
+                            state=remaining_state,
+                            watched_ids=watched_ids,
+                            ignored_ids=ignored_ids,
+                            keyword_list=keyword_list,
+                            thread_parent_map=thread_parent_map,
+                            unknown_channel_ids=unknown_channel_ids,
+                        )
                     await self.bot.db.save_retroactive_analysis(
                         guild_id=guild.id,
                         user_id=remaining_state.target.id,
