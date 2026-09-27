@@ -308,8 +308,8 @@ class AnalyzeChat(commands.Cog):
                         raise e
                     continue
 
-                if e.status == 400 and offset >= 5000:
-                    print(f"[ANALYSIS NOTICE] Reached Discord's hard search offset limit (5,000 messages) for member {author_id}.")
+                if e.status == 400 and offset >= 4000:
+                    print(f"[ANALYSIS NOTICE] Reached Discord search offset limit ({offset} messages) for member {author_id}.")
                     return {"messages": [], "total_results": offset}
 
                 raise e
@@ -412,6 +412,9 @@ class AnalyzeChat(commands.Cog):
             page_num = 0
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
+            current_max_id = max_id_snowflake
+            oldest_target_msg_id: Optional[int] = None
+            last_shifted_max_id: Optional[int] = current_max_id
 
             while True:
                 for th in data.get("threads", []):
@@ -420,12 +423,39 @@ class AnalyzeChat(commands.Cog):
 
                 messages_array = data.get("messages", [])
                 if not messages_array:
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({counted_messages:,} messages counted).")
-                    break
+                    if offset > 0 and oldest_target_msg_id is not None:
+                        new_max_id = oldest_target_msg_id - 1
+                        if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
+                            last_shifted_max_id = new_max_id
+                            current_max_id = new_max_id
+                            offset = 0
+                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search window limit at offset {offset}. Shifting search cursor backward to older messages...")
+                            try:
+                                data = await self._fetch_search_page(
+                                    guild.id, target.id, current_max_id, offset=0
+                                )
+                                messages_array = data.get("messages", [])
+                            except Exception as e:
+                                print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
+                                messages_array = []
+
+                    if not messages_array:
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({counted_messages:,} messages counted).")
+                        break
 
                 for hit in messages_array:
                     for msg in hit:
                         if msg.get("author", {}).get("id") == str(target.id):
+                            m_id_str = msg.get("id")
+                            if m_id_str:
+                                try:
+                                    m_id_int = int(m_id_str)
+                                    if m_id_int > 0:
+                                        if oldest_target_msg_id is None or m_id_int < oldest_target_msg_id:
+                                            oldest_target_msg_id = m_id_int
+                                except Exception:
+                                    pass
+
                             raw_channel_id = int(msg.get("channel_id", 0))
                             if watched_ids:
                                 is_watched, eff_channel_id = check_channel_with_config(
@@ -489,8 +519,14 @@ class AnalyzeChat(commands.Cog):
 
                 offset += 25
                 page_num += 1
-                if offset >= total_historical_messages:
-                    break
+
+                if offset >= 5000 and oldest_target_msg_id is not None:
+                    new_max_id = oldest_target_msg_id - 1
+                    if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
+                        last_shifted_max_id = new_max_id
+                        current_max_id = new_max_id
+                        offset = 0
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {page_num}/{total_pages})...")
 
                 if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                     current_sleep = self.get_search_sleep_delay()
@@ -500,12 +536,13 @@ class AnalyzeChat(commands.Cog):
                     measured_sec_per_page = (elapsed / page_num) if page_num > 0 else (current_sleep + 0.5)
                     sec_per_page = max(current_sleep, min(current_sleep + 25.0, ((current_sleep + 0.5) * 0.3) + (measured_sec_per_page * 0.7)))
                     est_remaining = remaining_pages * sec_per_page
-                    print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {min(offset, total_historical_messages):,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
+                    scanned_display = min(page_num * 25, total_historical_messages)
+                    print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}': page {page_num}/{total_pages} (scanned {scanned_display:,}/{total_historical_messages:,}, elapsed: {format_duration(elapsed)}, remaining: {format_duration(est_remaining)})")
                     prog_view = create_v2_view(
                         title="⏳ Retroactive Deep-Sweep in Progress (Takes a Long Time)",
                         description=(
                             f"**Target:** {target.mention}\n"
-                            f"**Progress:** `{min(offset, total_historical_messages):,} / {total_historical_messages:,}` messages scanned\n"
+                            f"**Progress:** `{scanned_display:,} / {total_historical_messages:,}` messages scanned\n"
                             f"**Tallied So Far:** `{counted_messages:,}` messages • `{total_words:,}` words • `{total_attachments:,}` attachments • `{total_emojis:,}` emojis\n\n"
                             f"**Elapsed Time:** `{format_duration(elapsed)}` • **Estimated Remaining:** `{format_duration(est_remaining)}`\n"
                             f"-# ⚠️ **Takes a long time:** Do NOT restart the bot while analysis is running."
@@ -520,7 +557,7 @@ class AnalyzeChat(commands.Cog):
 
                 try:
                     data = await self._fetch_search_page(
-                        guild.id, target.id, max_id_snowflake, offset=offset
+                        guild.id, target.id, current_max_id, offset=offset
                     )
                 except Exception as e:
                     print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
@@ -740,6 +777,9 @@ class AnalyzeChat(commands.Cog):
                 offset = 0
                 page_num = 0
                 total_pages = (total_user_messages + 24) // 25
+                current_max_id = max_id_snowflake
+                oldest_target_msg_id: Optional[int] = None
+                last_shifted_max_id: Optional[int] = current_max_id
 
                 while True:
                     for th in data.get("threads", []):
@@ -748,12 +788,39 @@ class AnalyzeChat(commands.Cog):
 
                     messages_array = data.get("messages", [])
                     if not messages_array:
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({user_messages:,} messages counted).")
-                        break
+                        if offset > 0 and oldest_target_msg_id is not None:
+                            new_max_id = oldest_target_msg_id - 1
+                            if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
+                                last_shifted_max_id = new_max_id
+                                current_max_id = new_max_id
+                                offset = 0
+                                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached search window limit at offset {offset}. Shifting search cursor backward to older messages...")
+                                try:
+                                    data = await self._fetch_search_page(
+                                        guild.id, target.id, current_max_id, offset=0
+                                    )
+                                    messages_array = data.get("messages", [])
+                                except Exception as e:
+                                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search window shift: {e}")
+                                    messages_array = []
+
+                        if not messages_array:
+                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {page_num + 1} (offset {offset}). Reached end of historical search index. Tally complete ({user_messages:,} messages counted).")
+                            break
 
                     for hit in messages_array:
                         for msg in hit:
                             if msg.get("author", {}).get("id") == str(target.id):
+                                m_id_str = msg.get("id")
+                                if m_id_str:
+                                    try:
+                                        m_id_int = int(m_id_str)
+                                        if m_id_int > 0:
+                                            if oldest_target_msg_id is None or m_id_int < oldest_target_msg_id:
+                                                oldest_target_msg_id = m_id_int
+                                    except Exception:
+                                        pass
+
                                 raw_channel_id = int(msg.get("channel_id", 0))
                                 if watched_ids:
                                     is_watched, eff_channel_id = check_channel_with_config(
@@ -817,8 +884,14 @@ class AnalyzeChat(commands.Cog):
 
                     offset += 25
                     page_num += 1
-                    if offset >= total_user_messages:
-                        break
+
+                    if offset >= 5000 and oldest_target_msg_id is not None:
+                        new_max_id = oldest_target_msg_id - 1
+                        if last_shifted_max_id is None or new_max_id < last_shifted_max_id:
+                            last_shifted_max_id = new_max_id
+                            current_max_id = new_max_id
+                            offset = 0
+                            print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached 5,000 message offset limit. Shifting search window backward in time (page {page_num}/{total_pages})...")
 
                     if page_num == 1 or page_num % 2 == 0 or total_pages <= 6:
                         elapsed = asyncio.get_event_loop().time() - start_time
@@ -834,12 +907,13 @@ class AnalyzeChat(commands.Cog):
                             total_pages_scanned=total_pages_scanned + page_num,
                             active_servers=active_servers,
                         )
-                        print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}' ({current_total_idx}/{total_eligible}): page {page_num}/{total_pages} (scanned {min(offset, total_user_messages):,}/{total_user_messages:,}, elapsed: {format_duration(elapsed)}, est. remaining: {format_duration(est_remaining)})")
+                        scanned_display = min(page_num * 25, total_user_messages)
+                        print(f"[ANALYSIS IN PROGRESS] '{guild.name}' -> '{target.display_name}' ({current_total_idx}/{total_eligible}): page {page_num}/{total_pages} (scanned {scanned_display:,}/{total_user_messages:,}, elapsed: {format_duration(elapsed)}, est. remaining: {format_duration(est_remaining)})")
                         prog_view = create_v2_view(
                             title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
                             description=(
                                 f"**Current Member ({current_total_idx}/{total_eligible}):** {target.mention}\n"
-                                f"**Scanning Member Messages:** `{min(offset, total_user_messages):,} / {total_user_messages:,}` (Page {page_num}/{total_pages})\n"
+                                f"**Scanning Member Messages:** `{scanned_display:,} / {total_user_messages:,}` (Page {page_num}/{total_pages})\n"
                                 f"**Members Analyzed:** `{analyzed_count}` | **Skipped:** `{total_skipped}`\n"
                                 f"-# ⏩ Skipped breakdown: {skipped_no_messages_count} had no prior messages • {skipped_already_count} previously analyzed\n\n"
                                 f"**Server Totals Added So Far:**\n"
@@ -860,7 +934,7 @@ class AnalyzeChat(commands.Cog):
 
                     try:
                         data = await self._fetch_search_page(
-                            guild.id, target.id, max_id_snowflake, offset=offset
+                            guild.id, target.id, current_max_id, offset=offset
                         )
                     except Exception as e:
                         print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Failed search query at offset {offset}: {e}")
