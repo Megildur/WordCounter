@@ -107,7 +107,7 @@ class HelpView(discord.ui.LayoutView):
                 ),
                 (
                     "⏳ Rate Limiting & Safety Pacing (Takes a Long Time)",
-                    "To prevent Discord rate limits, searches run with strict safety pacing (10s+ per page of 25 messages, scaling by +5s per additional active server). Sweeping thousands of messages takes time.",
+                    "To prevent Discord rate limits, searches run with strict safety pacing (20s+ per page of 25 messages, scaling by +5s per additional active server). Sweeping thousands of messages takes time.",
                 ),
                 (
                     "⚠️ Important Note on Keywords",
@@ -247,7 +247,7 @@ class AdvertisementView(discord.ui.LayoutView):
             (
                 "🔍 Retroactive History Deep-Sweep",
                 "• ⏳ Scan your server's chat history up to the command execution time!\n"
-                "• 🌐 Single user or whole-server deep scans with 10s+ multi-server safety pacing & live ETA.\n"
+                "• 🌐 Single user or whole-server deep scans with 20s+ multi-server safety pacing & live ETA.\n"
                 "• ⚠️ Deep sweeps take time to prevent Discord rate limits.",
             ),
             (

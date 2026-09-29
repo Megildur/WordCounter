@@ -166,7 +166,7 @@ class AnalyzeConfirmView(discord.ui.LayoutView):
 
         time_warning = (
             "⏳ **Duration Notice (Takes a Long Time):**\n"
-            "To prevent Discord search rate limits, this command uses safety pacing (10+ seconds per page of 25 messages, scaling by +5s per additional active server). "
+            "To prevent Discord search rate limits, this command uses safety pacing (20+ seconds per page of 25 messages, scaling by +5s per additional active server). "
             "Sweeping thousands of messages will take time."
         )
 
@@ -388,29 +388,25 @@ class AnalyzeChat(commands.Cog):
                     print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Reached completion ({state.page_num}/{total_pages} pages, {state.user_messages:,}/{total_user_messages:,} messages). Member sweep complete.")
                     break
 
-                attempt = 1
-                while not messages_array and attempt < 4:
-                    attempt += 1
-                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Received empty page at page {state.page_num + 1}/{total_pages} (offset {state.offset}). Retrying ({attempt}/4)...")
-                    await asyncio.sleep(self.get_search_sleep_delay())
-                    try:
-                        retry_data = await self._fetch_search_page(
-                            guild.id, target.id, state.current_max_id, offset=state.offset
-                        )
-                        retry_messages = retry_data.get("messages", [])
-                    except Exception as e:
-                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Retry {attempt}/4 failed at offset {state.offset}: {e}")
-                        retry_messages = []
-                        retry_data = {}
+                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Received empty page at page {state.page_num + 1}/{total_pages} (offset {state.offset}). Retrying (retry 1/1)...")
+                await asyncio.sleep(self.get_search_sleep_delay())
+                try:
+                    retry_data = await self._fetch_search_page(
+                        guild.id, target.id, state.current_max_id, offset=state.offset
+                    )
+                    retry_messages = retry_data.get("messages", [])
+                except Exception as e:
+                    print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': Retry failed at offset {state.offset}: {e}")
+                    retry_messages = []
+                    retry_data = {}
 
-                    if retry_messages:
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Retry {attempt}/4 succeeded with {len(retry_messages)} message batches for page {state.page_num + 1}. Resuming scan.")
-                        data = retry_data
-                        messages_array = retry_messages
-                        for th in data.get("threads", []):
-                            if isinstance(th, dict) and "id" in th and "parent_id" in th:
-                                thread_parent_map[int(th["id"])] = int(th["parent_id"])
-                        break
+                if retry_messages:
+                    print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Retry succeeded with {len(retry_messages)} message batches for page {state.page_num + 1}. Resuming scan.")
+                    data = retry_data
+                    messages_array = retry_messages
+                    for th in data.get("threads", []):
+                        if isinstance(th, dict) and "id" in th and "parent_id" in th:
+                            thread_parent_map[int(th["id"])] = int(th["parent_id"])
 
                 if not messages_array:
                     current_cursor = (state.current_max_id, state.offset)
@@ -424,7 +420,7 @@ class AnalyzeChat(commands.Cog):
                         state.offset += 25
                         state.page_num += 1
                         scanned_display = min(state.page_num * 25, total_user_messages)
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Page {state.page_num}/{total_pages} still empty after 4 tries. Advancing to next page (offset {state.offset})...")
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Page {state.page_num}/{total_pages} still empty after 1 retry. Advancing to next page (offset {state.offset})...")
                         if on_progress:
                             await on_progress(state)
                         if state.page_num >= total_pages or (total_user_messages > 0 and state.user_messages >= total_user_messages):
@@ -451,7 +447,7 @@ class AnalyzeChat(commands.Cog):
                         continue
                     else:
                         state.deferred_empty_cursor = current_cursor
-                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}) after 4 tries. Pausing member to circle back on next pass ({state.user_messages:,} messages counted).")
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': Discord returned 0 messages at page {state.page_num + 1} (offset {state.offset}) after 1 retry. Pausing member to circle back on next pass ({state.user_messages:,} messages counted).")
                         break
 
             found_any = False
@@ -624,15 +620,19 @@ class AnalyzeChat(commands.Cog):
 
                 messages_array = []
                 data = {}
-                for attempt in range(1, 5):
+                for attempt in range(1, 3):
+                    if attempt > 1:
+                        print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': {pass_name} (Pass {current_v_pass}/{max_passes}) received empty page at offset {b_offset}. Retrying (retry 1/1)...")
                     await asyncio.sleep(self.get_search_sleep_delay())
                     try:
                         data = await self._fetch_search_page(guild.id, target.id, b_max_id, offset=b_offset)
                         messages_array = data.get("messages", [])
                         if messages_array:
+                            if attempt > 1:
+                                print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': {pass_name} (Pass {current_v_pass}/{max_passes}) retry succeeded with {len(messages_array)} message batches at offset {b_offset}!")
                             break
                     except Exception as e:
-                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': {pass_name} (Pass {current_v_pass}/{max_passes}) attempt {attempt}/4 failed at offset {b_offset}: {e}")
+                        print(f"[ANALYSIS ERROR] '{guild.name}' -> '{target.display_name}': {pass_name} (Pass {current_v_pass}/{max_passes}) attempt {attempt}/2 failed at offset {b_offset}: {e}")
 
                 if not messages_array:
                     continue
@@ -915,11 +915,12 @@ class AnalyzeChat(commands.Cog):
                         max_passes=1,
                         pass_name=f"Preemptive Blank Check [Pass {current_pass}]",
                     )
-                    if state.deferred_empty_cursor and state.deferred_empty_cursor not in state.recorded_blank_cursors:
+                    if state.deferred_empty_cursor:
                         if state.current_max_id == state.deferred_empty_cursor[0] and state.offset == state.deferred_empty_cursor[1]:
                             state.offset += 25
                             state.page_num += 1
-                            state.deferred_empty_cursor = None
+                        state.deferred_empty_cursor = None
+                        state.allow_advancing_blanks = True
 
                     if state.page_num >= state.total_pages or (state.total_user_messages > 0 and state.user_messages >= state.total_user_messages):
                         break
@@ -944,7 +945,7 @@ class AnalyzeChat(commands.Cog):
                     consecutive_stalls = 0
 
             if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
+                print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 3 final verification passes...")
                 await self._verify_blank_pages(
                     guild=guild,
                     state=state,
@@ -954,7 +955,7 @@ class AnalyzeChat(commands.Cog):
                     thread_parent_map=thread_parent_map,
                     unknown_channel_ids=unknown_channel_ids,
                     on_progress=on_single_progress,
-                    max_passes=50,
+                    max_passes=3,
                     pass_name="Final Blank Verification",
                 )
 
@@ -976,8 +977,8 @@ class AnalyzeChat(commands.Cog):
             )
 
             total_duration = asyncio.get_event_loop().time() - start_time
-            blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
-            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {state.user_messages:,}, Words: {state.user_words:,}, Attachments: {state.user_attachments:,}, Emojis: {state.user_emojis:,}){blank_notice}\n")
+            blank_count = len(state.blank_pages)
+            print(f"[ANALYSIS COMPLETED] ✅ Single-user analysis finished in '{guild.name}' for '{target.display_name}' in {format_duration(total_duration)} (Messages: {state.user_messages:,}, Words: {state.user_words:,}, Attachments: {state.user_attachments:,}, Emojis: {state.user_emojis:,}, Blank Pages: {blank_count})\n")
             fields = [
                 ("💬 Old Messages Added", f"**{state.user_messages:,}** *(of {total_historical_messages:,} indexed)*"),
                 ("📝 Words Found & Added", f"**{state.user_words:,}**"),
@@ -987,7 +988,12 @@ class AnalyzeChat(commands.Cog):
             if state.blank_pages:
                 fields.append((
                     "⚠️ Inaccessible / Empty Pages",
-                    f"**{len(state.blank_pages):,}** page(s) remained at 0 messages after 50 verification passes *(private channels, restricted threads, or deleted messages)*",
+                    f"**{len(state.blank_pages):,}** page(s) remained at 0 messages after 3 verification passes *(private channels, restricted threads, or deleted messages)*",
+                ))
+            else:
+                fields.append((
+                    "📄 Inaccessible / Empty Pages",
+                    f"**0** blank pages for {target.mention}",
                 ))
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in state.user_keywords.items()]
@@ -996,7 +1002,9 @@ class AnalyzeChat(commands.Cog):
 
             desc = f"Successfully swept and added historical data for {target.mention} to the server database!"
             if state.blank_pages:
-                desc += f"\n-# ⚠️ **Notice:** **{len(state.blank_pages):,}** page(s) returned 0 messages (typically messages in private channels or restricted threads the bot cannot view)."
+                desc += f"\n-# ⚠️ **Notice:** **{len(state.blank_pages):,}** page(s) returned 0 messages for {target.mention} (typically messages in private channels or restricted threads the bot cannot view)."
+            else:
+                desc += f"\n-# 📄 **Blank Pages:** **0** blank pages encountered for {target.mention}."
 
             complete_view = create_v2_view(
                 title="✅ Retroactive Sync Complete",
@@ -1062,6 +1070,7 @@ class AnalyzeChat(commands.Cog):
             grand_total_emojis = 0
             grand_keywords: Dict[str, int] = {k: 0 for k in keyword_list}
             grand_total_blank_pages = 0
+            analyzed_members_state: List[MemberScanState] = []
 
             start_time = asyncio.get_event_loop().time()
             thread_parent_map: Dict[int, int] = {}
@@ -1250,7 +1259,7 @@ class AnalyzeChat(commands.Cog):
                     continue
 
                 if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                    print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
+                    print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 3 final verification passes...")
                     await self._verify_blank_pages(
                         guild=guild,
                         state=state,
@@ -1260,7 +1269,7 @@ class AnalyzeChat(commands.Cog):
                         thread_parent_map=thread_parent_map,
                         unknown_channel_ids=unknown_channel_ids,
                         on_progress=on_server_progress,
-                        max_passes=50,
+                        max_passes=3,
                         pass_name="Final Blank Verification",
                     )
 
@@ -1291,6 +1300,7 @@ class AnalyzeChat(commands.Cog):
                 grand_total_blank_pages += len(state.blank_pages)
                 for kw, cnt in state.user_keywords.items():
                     grand_keywords[kw] += cnt
+                analyzed_members_state.append(state)
 
                 elapsed = asyncio.get_event_loop().time() - start_time
                 current_sleep = self.get_search_sleep_delay()
@@ -1305,7 +1315,8 @@ class AnalyzeChat(commands.Cog):
                     total_pages_scanned=total_pages_scanned,
                     active_servers=active_servers,
                 )
-                blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
+                blank_count = len(state.blank_pages)
+                blank_notice = f" [Blank Pages: {blank_count}]"
                 print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' ({current_total_idx}/{total_eligible}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs, {grand_total_attachments:,} atts, {grand_total_emojis:,} emojis{blank_notice}")
                 prog_view = create_v2_view(
                     title="⏳ Whole Server Retroactive Deep-Sweep (Takes a Long Time)",
@@ -1398,11 +1409,12 @@ class AnalyzeChat(commands.Cog):
                             max_passes=1,
                             pass_name=f"Preemptive Blank Check [Pass {pass_num}]",
                         )
-                        if state.deferred_empty_cursor and state.deferred_empty_cursor not in state.recorded_blank_cursors:
+                        if state.deferred_empty_cursor:
                             if state.current_max_id == state.deferred_empty_cursor[0] and state.offset == state.deferred_empty_cursor[1]:
                                 state.offset += 25
                                 state.page_num += 1
-                                state.deferred_empty_cursor = None
+                            state.deferred_empty_cursor = None
+                            state.allow_advancing_blanks = True
 
                     is_complete = (
                         state.page_num >= state.total_pages
@@ -1441,7 +1453,7 @@ class AnalyzeChat(commands.Cog):
                             print(f"[ANALYSIS NOTICE] '{guild.name}' -> '{target.display_name}': No progress after 3 consecutive passes. Concluding analysis for this member.")
 
                     if state.blank_pages and (state.total_user_messages == 0 or state.user_messages < state.total_user_messages):
-                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 50 final verification passes...")
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{target.display_name}': Re-checking {len(state.blank_pages)} blank page(s) in up to 3 final verification passes...")
                         await self._verify_blank_pages(
                             guild=guild,
                             state=state,
@@ -1451,7 +1463,7 @@ class AnalyzeChat(commands.Cog):
                             thread_parent_map=thread_parent_map,
                             unknown_channel_ids=unknown_channel_ids,
                             on_progress=on_retry_progress,
-                            max_passes=50,
+                            max_passes=3,
                             pass_name="Final Blank Verification",
                         )
 
@@ -1482,8 +1494,10 @@ class AnalyzeChat(commands.Cog):
                     grand_total_blank_pages += len(state.blank_pages)
                     for kw, cnt in state.user_keywords.items():
                         grand_keywords[kw] += cnt
+                    analyzed_members_state.append(state)
 
-                    blank_notice = f" [Notice: {len(state.blank_pages)} page(s) remained empty at 0 messages]" if state.blank_pages else ""
+                    blank_count = len(state.blank_pages)
+                    blank_notice = f" [Blank Pages: {blank_count}]"
                     print(f"[ANALYSIS MEMBER DONE] '{guild.name}' -> Finished '{target.display_name}' [Pass {pass_num}] ({def_idx}/{len(retry_queue)}) — Total so far: {grand_total_words:,} words, {grand_total_messages:,} msgs{blank_notice}")
 
                     await asyncio.sleep(self.get_search_sleep_delay())
@@ -1491,7 +1505,7 @@ class AnalyzeChat(commands.Cog):
             for remaining_state in deferred_members:
                 if not remaining_state.completed:
                     if remaining_state.blank_pages and (remaining_state.total_user_messages == 0 or remaining_state.user_messages < remaining_state.total_user_messages):
-                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{remaining_state.target.display_name}': Re-checking {len(remaining_state.blank_pages)} blank page(s) in up to 50 final verification passes...")
+                        print(f"[ANALYSIS FINAL PASS] '{guild.name}' -> '{remaining_state.target.display_name}': Re-checking {len(remaining_state.blank_pages)} blank page(s) in up to 3 final verification passes...")
                         await self._verify_blank_pages(
                             guild=guild,
                             state=remaining_state,
@@ -1500,7 +1514,7 @@ class AnalyzeChat(commands.Cog):
                             keyword_list=keyword_list,
                             thread_parent_map=thread_parent_map,
                             unknown_channel_ids=unknown_channel_ids,
-                            max_passes=50,
+                            max_passes=3,
                             pass_name="Final Blank Verification",
                         )
                     await self.bot.db.save_retroactive_analysis(
@@ -1529,10 +1543,17 @@ class AnalyzeChat(commands.Cog):
                     grand_total_blank_pages += len(remaining_state.blank_pages)
                     for kw, cnt in remaining_state.user_keywords.items():
                         grand_keywords[kw] += cnt
+                    analyzed_members_state.append(remaining_state)
 
             total_duration = asyncio.get_event_loop().time() - start_time
-            blank_console = f" (Notice: {grand_total_blank_pages:,} page(s) remained at 0 messages across server members after verification)" if grand_total_blank_pages > 0 else ""
-            print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}{blank_console}\n")
+            print(f"\n[ANALYSIS COMPLETED] ✅ Whole-server analysis finished in '{guild.name}' in {format_duration(total_duration)}! Analyzed: {analyzed_count}, Skipped: {total_skipped}, Words: {grand_total_words:,}, Messages: {grand_total_messages:,}, Attachments: {grand_total_attachments:,}, Emojis: {grand_total_emojis:,}, Blank Pages: {grand_total_blank_pages:,}\n")
+            print(f"[ANALYSIS BLANK PAGES PER USER] '{guild.name}':")
+            if analyzed_members_state:
+                for s in analyzed_members_state:
+                    print(f"  • {s.target.display_name} ({s.target.id}): {len(s.blank_pages)} blank page(s)")
+            else:
+                print("  (No members analyzed)")
+
             total_skipped = skipped_already_count + skipped_no_messages_count
             fields = [
                 (
@@ -1548,11 +1569,36 @@ class AnalyzeChat(commands.Cog):
                 ("📎 Historical Attachments Added", f"**{grand_total_attachments:,}**"),
                 ("😀 Historical Emojis Added", f"**{grand_total_emojis:,}**"),
             ]
+
+            users_with_blanks = [s for s in analyzed_members_state if len(s.blank_pages) > 0]
             if grand_total_blank_pages > 0:
+                bp_lines = [f"• {s.target.mention}: **{len(s.blank_pages):,}** blank page(s)" for s in users_with_blanks]
+                clean_count = len(analyzed_members_state) - len(users_with_blanks)
+                if clean_count > 0:
+                    bp_lines.append(f"• *{clean_count} other member(s) had 0 blank pages*")
+
+                if len(bp_lines) > 20:
+                    bp_text = "\n".join(bp_lines[:20]) + f"\n*...and {len(bp_lines) - 20} more member(s)*"
+                else:
+                    bp_text = "\n".join(bp_lines)
+
                 fields.append((
-                    "⚠️ Inaccessible / Empty Pages",
-                    f"**{grand_total_blank_pages:,}** page(s) remained at 0 messages across server members after 50 verification passes *(private/restricted channels or deleted messages)*",
+                    "⚠️ Blank Pages Per User",
+                    f"**{grand_total_blank_pages:,}** total page(s) remained at 0 messages after 3 verification passes *(private/restricted channels or deleted messages)*:\n{bp_text}",
                 ))
+            else:
+                if len(analyzed_members_state) <= 10 and analyzed_members_state:
+                    bp_lines = [f"• {s.target.mention}: **0** blank pages" for s in analyzed_members_state]
+                    fields.append((
+                        "📄 Blank Pages Per User",
+                        "\n".join(bp_lines),
+                    ))
+                else:
+                    fields.append((
+                        "📄 Blank Pages Per User",
+                        f"**0** blank pages across all {len(analyzed_members_state):,} analyzed member(s)",
+                    ))
+
             if keyword_list:
                 kw_lines = [f"• **{kw}**: `{cnt:,}`" for kw, cnt in grand_keywords.items()]
                 fields.append(("🔑 Tracked Keywords Added", "\n".join(kw_lines)))
@@ -1561,6 +1607,8 @@ class AnalyzeChat(commands.Cog):
             desc = "Successfully analyzed all server members and integrated historical data into the server database!"
             if grand_total_blank_pages > 0:
                 desc += f"\n-# ⚠️ **Notice:** **{grand_total_blank_pages:,}** page(s) returned 0 messages across members (typically messages in private channels or restricted threads the bot cannot view)."
+            else:
+                desc += f"\n-# 📄 **Blank Pages:** **0** blank pages across all {len(analyzed_members_state)} analyzed member(s)."
 
             complete_view = create_v2_view(
                 title="✅ Whole Server Retroactive Sync Complete",
