@@ -98,7 +98,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 
 3. **Install dependencies**:
    ```bash
-   pip install discord.py aiosqlite python-dotenv
+   pip install -r requirements.txt
    ```
 
 4. **Environment Variables**:
