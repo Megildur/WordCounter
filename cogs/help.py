@@ -298,8 +298,8 @@ class HelpCog(commands.Cog, name="Help"):
         name="help",
         description="View guide to WordCounter commands and features",
     )
-    @app_commands.allowed_installs(guilds=True, users=False)
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(ephemeral="Whether to show the help menu privately (default: False)")
     async def help_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
         view = HelpView(self.bot, interaction.user.id)
@@ -309,8 +309,8 @@ class HelpCog(commands.Cog, name="Help"):
         name="advertisement",
         description="Show an overview card of WordCounter features and links",
     )
-    @app_commands.allowed_installs(guilds=True, users=False)
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
         view = AdvertisementView(self.bot)
         await interaction.response.send_message(view=view)

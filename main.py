@@ -19,6 +19,8 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        self.tree.allowed_installs = discord.app_commands.AppInstallationType(guild=True, user=False)
+        self.tree.allowed_contexts = discord.app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False)
         await self.load_extension('Quicksync')
         await self.load_extension('Status')
         await self.load_extension('Errors')
