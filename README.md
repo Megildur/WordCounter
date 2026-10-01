@@ -5,7 +5,7 @@
     <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
-  <a href="https://discord.gg/Hr595Zk2tr">
+  <a href="https://discord.gg/prUsgFHvRS">
     <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-57F287?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
@@ -23,7 +23,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 | Link | Description | URL |
 | :--- | :--- | :--- |
 | 🤖 **Invite WordCounter** | Add the bot directly to your Discord server | [**Add Bot to Server**](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
-| 💬 **Discord Support Server** | Get help, report bugs, and suggest features | [**Join Community Server**](https://discord.gg/Hr595Zk2tr) |
+| 💬 **Discord Support Server** | Get help, report bugs, and suggest features | [**Join Community Server**](https://discord.gg/prUsgFHvRS) |
 | 📦 **GitHub Repository** | View source code and release notes | [**Megildur/WordCounter**](https://github.com/Megildur/WordCounter) |
 
 ---
@@ -57,7 +57,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 | Command | Scope | Description |
 | :--- | :--- | :--- |
 | `/help [ephemeral]` | Everyone | Comprehensive command guide, tips, and invite links. |
-| `/advertisement` | Everyone | Quick feature summary card with community and invite links. |
+| `/advertisement`, `/ad` | Everyone | Share a showcase card of WordCounter features and invite links. |
 | `/leaderboard [channel]` | Everyone | Interactive leaderboard for Words, Messages, Attachments, Emojis, and Keywords. When filtering by channel, shows top 10 plus channel monthly history. |
 | `/stats user <member>` | Everyone | Member stats with overall totals and monthly channel history navigation. |
 | `/keyword list` | Everyone | Lists all custom keywords currently watched in the server. |
@@ -108,7 +108,7 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
    API_TOKEN=your_bot_token_here
 
    # Support server invite link
-   BOT_SERVER=https://discord.gg/Hr595Zk2tr
+   BOT_SERVER=https://discord.gg/prUsgFHvRS
 
    # Webhook URL for server join/leave logging
    BOT_WEBHOOK_URL=https://discord.com/api/webhooks/...
@@ -161,5 +161,5 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
 ## 🛡️ Support & Community
 
 Need assistance, found an issue, or want to suggest new features?
-- **Join our Discord**: [https://discord.gg/Hr595Zk2tr](https://discord.gg/Hr595Zk2tr)
+- **Join our Discord**: [https://discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS)
 - **Invite WordCounter**: [https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0)

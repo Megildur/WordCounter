@@ -16,7 +16,7 @@ load_dotenv()
 
 def get_support_server_url() -> str:
     url = os.getenv("BOT_SERVER", "").strip()
-    return url if url else "https://discord.gg/Hr595Zk2tr"
+    return url if url else "https://discord.gg/prUsgFHvRS"
 
 
 def get_bot_invite_url(bot: commands.Bot) -> str:
@@ -129,8 +129,8 @@ class HelpView(discord.ui.LayoutView):
                     "Stay tuned! A **Swear Jar** feature will be added in an upcoming update to track foul language and see who owes the server jar the most!",
                 ),
                 (
-                    "📢 /advertisement",
-                    "Post an attractive feature summary card with invite links.",
+                    "📢 /advertisement (or /ad)",
+                    "Share a showcase card of WordCounter features and invite links.",
                 ),
                 (
                     "🔗 Quick Links",
@@ -221,48 +221,43 @@ class AdvertisementView(discord.ui.LayoutView):
         avatar_url = bot_user.display_avatar.url if bot_user and bot_user.display_avatar else None
 
         desc = (
-            "🚀 **Supercharge your Discord server with WordCounter!**\n\n"
-            "The all-in-one chat analytics & activity tracking powerhouse. Count words, messages, attachments, Discord stickers, Unicode & custom emojis, and custom keywords with pinpoint accuracy, retroactive past-message deep sweeps, and gorgeous interactive leaderboards!"
+            "Ever wonder who *actually* sends the most messages, who lives in `#general`, or who spams that one inside joke non-stop?\n\n"
+            "**WordCounter** tracks your server's activity in real time and turns everyday chatter into fun leaderboards, member stats cards, and monthly rankings for your community."
         )
 
         fields = [
             (
-                "⚡ Real-Time Tracking Engine",
-                "• 📝 **Words & Messages**: Instant counting with seamless edit and deletion handling.\n"
-                "• 📎 **Attachments & Stickers**: Counts image/file uploads and Discord stickers as attachments.\n"
-                "• 😀 **Emoji Tracking**: Counts both native Unicode emojis and custom Discord emojis.\n"
-                "• 🔑 **Keyword Watchlist**: Custom regex tracking for phrases and catchphrases.",
+                "🏆 5-in-1 Live Leaderboards (`/leaderboard`)",
+                "Compete for the top spot across **Words**, **Messages**, **Memes & Attachments**, **Emojis**, and **Keywords**.\n"
+                "• Filter by channel to see who runs `#general` or who's dominating `#media`!",
             ),
             (
-                "📅 Chronological Monthly Analytics",
-                "• 🗓️ **Month & Year Grouping**: View activity timelines from newest to oldest.\n"
-                "• 📺 **Channel-by-Channel Breakdown**: See exactly where members chat the most.\n"
-                "• 👤 **Interactive User Stats**: `/stats user` with dropdown timeline navigation.",
+                "👤 Personal Chat Profiles (`/stats user`)",
+                "Check your own stats or view a friend's card.\n"
+                "• Browse interactive monthly history with quick dropdowns and see your most active channels at a glance.",
             ),
             (
-                "🏆 5-in-1 Interactive Leaderboard",
-                "• 🥇 Dynamic switcher: **Words**, **Messages**, **Attachments**, **Emojis**, and **Keywords**!\n"
-                "• 📍 Filter by channel to uncover top 10 local legends and channel monthly histories.",
+                "💬 Inside Jokes & Catchphrases (`/settings`)",
+                "Got an iconic server meme, quote, or catchphrase?\n"
+                "• Add custom keywords to the tracker and watch an instant race unfold for who repeats it the most.",
             ),
             (
-                "🔍 Retroactive History Deep-Sweep",
-                "• ⏳ Scan your server's chat history up to the command execution time!\n"
-                "• 🌐 Single user or whole-server deep scans with 20s+ multi-server safety pacing & live ETA.\n"
-                "• ⚠️ Deep sweeps take time to prevent Discord rate limits.",
+                "📜 Catch Up on Past Messages (`/analyze_chat`)",
+                "Added WordCounter to an existing server?\n"
+                "• Run a historical chat sweep so nobody loses credit for conversations sent before the bot joined.",
             ),
             (
-                "🔮 Coming Soon: 💰 Swear Jar Feature!",
-                "• 🪙 Keep chat clean or see who owes the jar the most pennies!\n"
-                "• 🤫 Track profanities and curse words with an interactive server swear jar!",
+                "🪙 Coming Soon: The Swear Jar!",
+                "A playful way to track curse words in chat and see who owes the server jar the most pennies!",
             ),
         ]
 
         container = create_v2_container(
-            title="✨ 📊 WordCounter — Server Chat & Activity Analytics",
+            title="📊 WordCounter — Who Talks the Most in Your Server?",
             description=desc,
             fields=fields,
             thumbnail_url=avatar_url,
-            footer="WordCounter • Level Up Your Community Analytics",
+            footer="Ready out of the box • Use /help to get started",
             color=BRAND_COLOR,
         )
 
@@ -271,16 +266,16 @@ class AdvertisementView(discord.ui.LayoutView):
 
         link_buttons = [
             discord.ui.Button(
-                label="Support Server",
-                style=discord.ButtonStyle.link,
-                url=support_url,
-                emoji="🌐",
-            ),
-            discord.ui.Button(
-                label="Add to Server",
+                label="Add to Your Server",
                 style=discord.ButtonStyle.link,
                 url=invite_url,
                 emoji="➕",
+            ),
+            discord.ui.Button(
+                label="Join Community Server",
+                style=discord.ButtonStyle.link,
+                url=support_url,
+                emoji="💬",
             ),
         ]
         container.add_item(discord.ui.Separator())
@@ -307,13 +302,22 @@ class HelpCog(commands.Cog, name="Help"):
 
     @app_commands.command(
         name="advertisement",
-        description="Show an overview card of WordCounter features and links",
+        description="Share a showcase card of WordCounter features and invite links",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
         view = AdvertisementView(self.bot)
         await interaction.response.send_message(view=view)
+
+    @app_commands.command(
+        name="ad",
+        description="Share a showcase card of WordCounter features and invite links",
+    )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    async def ad_command(self, interaction: discord.Interaction) -> None:
+        await self.advertisement_command(interaction)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -14,7 +14,7 @@ log = logging.getLogger("Errors")
 
 load_dotenv()
 
-bot_server = str(os.getenv("BOT_SERVER", ""))
+bot_server = os.getenv("BOT_SERVER", "").strip() or "https://discord.gg/prUsgFHvRS"
 
 
 class ErrorDisplayView(LayoutView):
