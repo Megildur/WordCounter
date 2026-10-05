@@ -1,5 +1,7 @@
 from __future__ import annotations
+import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
 from typing import List, Optional
 from dotenv import load_dotenv
 
@@ -16,6 +18,11 @@ DEFAULT_CLIENT_ID = 1551875701748277299
 INVITE_PERMISSIONS = 1126177200925776
 PRIVACY_URL = "https://github.com/Megildur/WordCounter/blob/main/PRIVACY.md"
 TERMS_URL = "https://github.com/Megildur/WordCounter/blob/main/TERMS.md"
+LOG_RETENTION_DAYS = 90
+
+
+def daily_log_handler(filename: str) -> logging.Handler:
+    return TimedRotatingFileHandler(filename, when="midnight", backupCount=LOG_RETENTION_DAYS - 1, encoding="utf-8")
 
 
 def invite_url(client_id: Optional[int] = None) -> str:

@@ -4,7 +4,7 @@ import os
 import sys
 import discord
 from discord.ext import commands
-from cogs.utils.config import API_TOKEN
+from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import WordCounterDatabase
 
 for stream in (sys.stdout, sys.stderr):
@@ -12,7 +12,7 @@ for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
 
 formatter = logging.Formatter(fmt="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
+file_handler = daily_log_handler("discord.log")
 console_handler = logging.StreamHandler(sys.stdout)
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)

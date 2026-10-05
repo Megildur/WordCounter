@@ -4,7 +4,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from cogs.utils.components import ERROR_COLOR, SUCCESS_COLOR, create_v2_view
-from cogs.utils.config import WEBHOOK_URL
+from cogs.utils.config import WEBHOOK_URL, daily_log_handler
 
 
 def guild_log_view(bot: commands.Bot, guild: discord.Guild, joined: bool) -> discord.ui.LayoutView:
@@ -24,7 +24,7 @@ class ServerJoinLogger(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger("bot_server_joins")
         self.logger.setLevel(logging.INFO)
-        self.handler = logging.FileHandler(filename="bot_server_joins.log", encoding="utf-8", mode="a")
+        self.handler = daily_log_handler("bot_server_joins.log")
         self.handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
         self.logger.addHandler(self.handler)
         self.session = aiohttp.ClientSession()
