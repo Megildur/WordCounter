@@ -317,7 +317,7 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def ad_command(self, interaction: discord.Interaction) -> None:
-        await self.advertisement_command(interaction)
+        await self.advertisement_command.callback(self, interaction)
 
 
 async def setup(bot: commands.Bot) -> None:
