@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Awaitable, Callable, Dict, Iterable, Optional, Sequence, Set, Tuple, Union
 import discord
-from cogs.utils.counting import count_emojis
 
 BRAND_COLOR = discord.Colour(0xB62402)
 WARNING_COLOR = discord.Colour(0xD26B42)
