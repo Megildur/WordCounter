@@ -1,39 +1,26 @@
-import discord
-from discord.ext import commands
+from __future__ import annotations
 import logging
 import aiohttp
-import os
-from dotenv import load_dotenv
+import discord
+from discord.ext import commands
+from cogs.utils.components import ERROR_COLOR, SUCCESS_COLOR, create_v2_view
+from cogs.utils.config import WEBHOOK_URL
 
-load_dotenv()
 
-class webhook_container(discord.ui.LayoutView):
-    def __init__(self, bot, guild, action: str):
-        super().__init__()
-        self.bot = bot
-        
-        if guild.icon:
-            icon = guild.icon.url
-        else:
-            icon = None
+def guild_log_view(bot: commands.Bot, guild: discord.Guild, joined: bool) -> discord.ui.LayoutView:
+    owner = guild.owner.name if guild.owner else f"<@{guild.owner_id}>"
+    return create_v2_view(
+        "Joined server" if joined else "Left server",
+        f"**{guild.name}**\n-# {guild.id}",
+        fields=[("Owner", owner), ("Members", f"{guild.member_count or 0:,}")],
+        footer=f"Now in {len(bot.guilds):,} servers",
+        thumbnail_url=guild.icon.url if guild.icon else None,
+        color=SUCCESS_COLOR if joined else ERROR_COLOR,
+    )
 
-        color = discord.Colour.green() if action == "Joined Server" else discord.Colour.red()
-
-        container = discord.ui.Container(
-            discord.ui.Section(
-                discord.ui.TextDisplay(content=f"### **{action}:** \n**{guild.name}** \n*({guild.id})*"),
-                accessory=discord.ui.Thumbnail(media=icon)
-            ),
-            discord.ui.Separator(),
-            discord.ui.TextDisplay(content=f"**Owner:** {guild.owner.name} \n**Member Count:** {guild.member_count}"),
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
-            discord.ui.TextDisplay(f"-# Total Guilds: {len(self.bot.guilds)}"),
-            accent_colour=color
-        )
-        self.add_item(container)
 
 class ServerJoinLogger(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.logger = logging.getLogger("bot_server_joins")
         self.logger.setLevel(logging.INFO)
@@ -42,30 +29,29 @@ class ServerJoinLogger(commands.Cog):
         self.logger.addHandler(self.handler)
         self.session = aiohttp.ClientSession()
 
-    async def send_webhook_message(self, webhook_url, view: discord.ui.LayoutView):
-        webhook = discord.Webhook.from_url(webhook_url, session=self.session)
-        try:
-            await webhook.send(view=view)
-            self.logger.info("Webhook message sent successfully")
-        except Exception as e:
-            self.logger.error(f"Exception occurred: {str(e)}")
-      
-    @commands.Cog.listener()
-    async def on_guild_join(self, guild):
-        self.logger.info(f"Guild Join: {guild.name} ({guild.id})\nOwner: {guild.owner.name} ({guild.owner.id})")
-        webhook_url = str(os.getenv('BOT_WEBHOOK_URL'))
-        view = webhook_container(self.bot, guild, "Joined Server")
-        await self.send_webhook_message(webhook_url, view)
-
-    @commands.Cog.listener()
-    async def on_guild_remove(self, guild):
-        self.logger.info(f"Guild Remove: {guild.name} ({guild.id})")
-        webhook_url = str(os.getenv('BOT_WEBHOOK_URL'))
-        view = webhook_container(self.bot, guild, "Left Server")
-        await self.send_webhook_message(webhook_url, view)
-
-    async def cog_unload(self):
+    async def cog_unload(self) -> None:
+        self.logger.removeHandler(self.handler)
+        self.handler.close()
         await self.session.close()
 
-async def setup(bot):
+    async def send_webhook_message(self, view: discord.ui.LayoutView) -> None:
+        if not WEBHOOK_URL:
+            return
+        try:
+            await discord.Webhook.from_url(WEBHOOK_URL, session=self.session).send(view=view)
+        except (discord.HTTPException, ValueError) as error:
+            self.logger.error("Webhook message failed: %s", error)
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        self.logger.info("Guild join: %s (%s), owner %s (%s)", guild.name, guild.id, guild.owner, guild.owner_id)
+        await self.send_webhook_message(guild_log_view(self.bot, guild, joined=True))
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        self.logger.info("Guild remove: %s (%s)", guild.name, guild.id)
+        await self.send_webhook_message(guild_log_view(self.bot, guild, joined=False))
+
+
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(ServerJoinLogger(bot))
