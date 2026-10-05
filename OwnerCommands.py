@@ -16,7 +16,7 @@ ALLOWED_GUILDS = [
 
 def get_all_extensions() -> list[str]:
     extensions = []
-    for root, dirs, files in os.walk('Source'):
+    for root, dirs, files in os.walk('cogs'):
         dirs[:] = [d for d in dirs if d not in ['__pycache__', 'Utils', 'utils']]
             
         if '__init__.py' in files:
@@ -218,7 +218,7 @@ class OwnerCog(commands.GroupCog, group_name='owner'):
             for ext in extensions if current.lower() in ext.lower()
         ][:25]
 
-    @app_commands.command(name="cogs", description="Walks through Source to load or reload all cogs and packages")
+    @app_commands.command(name="cogs", description="Walks through cogs to load or reload all cogs and packages")
     async def cogs(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=False)
         
