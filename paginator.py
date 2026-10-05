@@ -1,24 +1,22 @@
 from __future__ import annotations
 from typing import (
+    Any,
     Dict,
     Generic,
     List,
     Optional,
-    TypeVar,
-    Any,
     TYPE_CHECKING,
     Sequence,
+    TypeVar,
     Union,
 )
 
 import discord
 from discord.abc import Messageable
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, create_v2_container
+from cogs.utils.components import BRAND_COLOR, AuthorOnlyView, make_button
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
-
     Interaction = discord.Interaction[Any]
     Context = commands.Context[Any]
 
@@ -37,9 +35,10 @@ Page = Union[
 PageT_co = TypeVar("PageT_co", bound=Page, covariant=True)
 
 
-class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
-
+class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
     message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
+    previous_label = "Previous"
+    next_label = "Next"
 
     def __init__(
         self,
@@ -51,62 +50,49 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         loop: bool = False,
         custom_buttons: Optional[List[discord.ui.Button]] = None,
     ) -> None:
-        super().__init__(timeout=timeout)
-        self.author_id: Optional[int] = author_id
+        super().__init__(
+            author_id=author_id,
+            denied_message="Only the person who opened this can use these buttons.",
+            timeout=timeout,
+        )
         self.current_page: int = 0
         self.per_page: int = per_page
-        self.pages: Any = pages
         self.loop: bool = loop
         self.custom_buttons: Optional[List[discord.ui.Button]] = custom_buttons
+        self.set_pages(pages)
 
-        total_pages, left_over = divmod(len(self.pages), self.per_page)
-        if left_over:
-            total_pages += 1
+    def set_pages(self, pages: Sequence[PageT_co]) -> None:
+        self.pages: Any = pages
+        total_pages, left_over = divmod(len(pages), self.per_page)
+        self.max_pages: int = max(1, total_pages + bool(left_over))
+        self.current_page = min(self.current_page, self.max_pages - 1)
 
-        self.max_pages: int = max(1, total_pages)
-        self._files: List[discord.File] = []
+    def extra_rows(self) -> List[discord.ui.ActionRow]:
+        if not self.custom_buttons:
+            return []
+        return [discord.ui.ActionRow(*self.custom_buttons[:5])]
 
-    def _create_previous_button(self) -> discord.ui.Button:
-        button = discord.ui.Button(
-            label="◀️ Previous",
-            style=discord.ButtonStyle.secondary,
-            disabled=not self.loop and self.current_page == 0,
+    def _navigation_row(self) -> discord.ui.ActionRow:
+        at_start = not self.loop and self.current_page == 0
+        at_end = not self.loop and self.current_page >= self.max_pages - 1
+        return discord.ui.ActionRow(
+            make_button(self.previous_label, callback=self._previous_callback, disabled=at_start),
+            make_button(f"{self.current_page + 1}/{self.max_pages}", callback=self._indicator_callback, disabled=True),
+            make_button(self.next_label, callback=self._next_callback, disabled=at_end),
         )
-        button.callback = self._previous_callback
-        return button
-
-    def _create_next_button(self) -> discord.ui.Button:
-        button = discord.ui.Button(
-            label="Next ▶️",
-            style=discord.ButtonStyle.secondary,
-            disabled=not self.loop and self.current_page >= self.max_pages - 1,
-        )
-        button.callback = self._next_callback
-        return button
-
-    def _create_page_indicator(self) -> discord.ui.Button:
-        button = discord.ui.Button(
-            label=f"Page {self.current_page + 1}/{self.max_pages}",
-            style=discord.ButtonStyle.primary,
-            disabled=True,
-        )
-        button.callback = self._indicator_callback
-        return button
 
     async def _previous_callback(self, interaction: Interaction) -> None:
         if self.loop:
             self.current_page = self.max_pages - 1 if self.current_page <= 0 else self.current_page - 1
         else:
-            if self.current_page > 0:
-                self.current_page -= 1
+            self.current_page = max(0, self.current_page - 1)
         await self.update_page(interaction)
 
     async def _next_callback(self, interaction: Interaction) -> None:
         if self.loop:
             self.current_page = 0 if self.current_page >= self.max_pages - 1 else self.current_page + 1
         else:
-            if self.current_page < self.max_pages - 1:
-                self.current_page += 1
+            self.current_page = min(self.max_pages - 1, self.current_page + 1)
         await self.update_page(interaction)
 
     async def _indicator_callback(self, interaction: Interaction) -> None:
@@ -116,38 +102,22 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         self.message = None
         super().stop()
 
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        if not self.author_id:
-            return True
-
-        if self.author_id != interaction.user.id:
-            await interaction.response.send_message(
-                view=create_v2_container_view("You cannot interact with this menu."),
-                ephemeral=True,
-            )
-            return False
-
-        return True
-
     def get_page(self, page_number: int) -> Union[PageT_co, Sequence[PageT_co]]:
         if page_number < 0 or page_number >= self.max_pages:
             self.current_page = 0
-            return self.pages[self.current_page]
-
+            page_number = 0
+        if not self.pages:
+            return []
         if self.per_page == 1:
             return self.pages[page_number]
-        else:
-            base = page_number * self.per_page
-            return self.pages[base : base + self.per_page]
+        base = page_number * self.per_page
+        return self.pages[base : base + self.per_page]
 
     def format_page(self, page: Union[PageT_co, Sequence[PageT_co]]) -> Union[PageT_co, Sequence[PageT_co]]:
         return page
 
     def _clone_container(self, container: discord.ui.Container) -> discord.ui.Container:
-        cloned = discord.ui.Container(
-            accent_colour=container.accent_colour,
-            spoiler=container.spoiler,
-        )
+        cloned = discord.ui.Container(accent_colour=container.accent_colour, spoiler=container.spoiler)
         for child in container.children:
             cloned.add_item(child.copy())
         return cloned
@@ -158,12 +128,7 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         if isinstance(page_item, discord.ui.Container):
             containers.append(self._clone_container(page_item))
         elif isinstance(page_item, str):
-            containers.append(
-                discord.ui.Container(
-                    discord.ui.TextDisplay(page_item),
-                    accent_colour=BRAND_COLOR,
-                )
-            )
+            containers.append(discord.ui.Container(discord.ui.TextDisplay(page_item), accent_colour=BRAND_COLOR))
         elif isinstance(page_item, (discord.File, discord.Attachment)):
             if isinstance(page_item, discord.Attachment):
                 page_item = await page_item.to_file()
@@ -179,11 +144,7 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
     async def get_page_kwargs(
         self, page: Union[PageT_co, Sequence[PageT_co]], skip_formatting: bool = False
     ) -> Dict[str, Any]:
-        if not skip_formatting:
-            formatted_page = await discord.utils.maybe_coroutine(self.format_page, page)
-        else:
-            formatted_page = page
-
+        formatted_page = page if skip_formatting else await discord.utils.maybe_coroutine(self.format_page, page)
         if isinstance(formatted_page, dict):
             return formatted_page
 
@@ -191,33 +152,21 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         containers: List[discord.ui.Container] = []
         files: List[discord.File] = []
         await self._extract_containers_and_files(formatted_page, containers, files)
-
         if not containers:
             containers.append(
-                discord.ui.Container(
-                    discord.ui.TextDisplay("No content to display."),
-                    accent_colour=BRAND_COLOR,
-                )
+                discord.ui.Container(discord.ui.TextDisplay("Nothing to show."), accent_colour=BRAND_COLOR)
             )
 
+        rows = [self._navigation_row()] if self.max_pages > 1 else []
+        rows.extend(self.extra_rows())
         target_container = containers[-1]
-        if self.max_pages > 1 or self.custom_buttons:
+        if rows:
             target_container.add_item(discord.ui.Separator())
+            for row in rows:
+                target_container.add_item(row)
 
-        if self.max_pages > 1:
-            nav_row = discord.ui.ActionRow(
-                self._create_previous_button(),
-                self._create_page_indicator(),
-                self._create_next_button(),
-            )
-            target_container.add_item(nav_row)
-
-        if self.custom_buttons:
-            custom_row = discord.ui.ActionRow(*self.custom_buttons[:5])
-            target_container.add_item(custom_row)
-
-        for c in containers:
-            self.add_item(c)
+        for container in containers:
+            self.add_item(container)
 
         kwargs: Dict[str, Any] = {"view": self}
         if files:
@@ -235,28 +184,23 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         await interaction.response.edit_message(**kwargs)
 
     def reset_files(self, page_kwargs: dict[str, Any]) -> None:
-        files: List[discord.File] = page_kwargs.get("files", [])
-        if not files:
-            return
-
-        for file in files:
+        for file in page_kwargs.get("files", []):
             file.reset()
 
     async def start(
         self, obj: Union[Interaction, Messageable], **send_kwargs: Any
     ) -> Optional[Union[discord.Message, discord.WebhookMessage]]:
         kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
-        if self.max_pages < 2 and not self.custom_buttons:
+        if self.max_pages < 2 and not self.extra_rows():
             self.stop()
 
         self.reset_files(kwargs)
         if isinstance(obj, discord.Interaction):
             if obj.response.is_done():
-                self.message = await obj.followup.send(**kwargs, **send_kwargs)
+                self.message = await obj.followup.send(**kwargs, **send_kwargs, wait=True)
             else:
                 await obj.response.send_message(**kwargs, **send_kwargs)
                 self.message = await obj.original_response()
-
         elif isinstance(obj, Messageable):
             self.message = await obj.send(**kwargs, **send_kwargs)
         else:
@@ -273,18 +217,5 @@ class ButtonPaginator(Generic[PageT_co], discord.ui.LayoutView):
         timeout: Optional[float] = 180.0,
         per_page: int = 1,
         loop: bool = False,
-    ) -> "ButtonPaginator":
-        return cls(
-            pages,
-            author_id=author_id,
-            timeout=timeout,
-            per_page=per_page,
-            loop=loop,
-        )
-
-
-def create_v2_container_view(message: str) -> discord.ui.LayoutView:
-    v = discord.ui.LayoutView()
-    v.add_item(create_v2_container("❌ Notice", message))
-    v.stop()
-    return v
+    ) -> ButtonPaginator:
+        return cls(pages, author_id=author_id, timeout=timeout, per_page=per_page, loop=loop)
