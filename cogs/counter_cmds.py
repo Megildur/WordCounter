@@ -5,107 +5,134 @@ from typing import Dict, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
-from paginator import ButtonPaginator
-from cogs.utils.database import WordCounterDatabase
 from cogs.utils.components import (
     BRAND_COLOR,
+    NEUTRAL_COLOR,
+    SERVER_ONLY_MESSAGE,
     SUCCESS_COLOR,
+    TRACKING_OFF_MESSAGE,
     WARNING_COLOR,
+    AuthorOnlyView,
+    Callback,
+    activity_line,
     create_v2_container,
+    create_v2_view,
     error_view,
     format_channel_or_category,
+    make_button,
+    manager_check_error,
+)
+from paginator import ButtonPaginator
+
+ANALYSIS_BUSY_MESSAGE = "An analysis is running in this server. Try again once it finishes."
+
+SECTIONS = (
+    ("overview", "Overview", "Turn tracking on or off and pick a mode"),
+    ("channels", "Channels & Categories", "Choose what to track or ignore"),
+    ("keywords", "Keywords", "Add, edit or remove keywords"),
+    ("reset", "Data & Reset Tools", "Reset counts or allow re-analysis"),
 )
 
+LEADERBOARDS = {
+    "words": "Words",
+    "messages": "Messages",
+    "attachments": "Attachments",
+    "emojis": "Emojis",
+    "keywords": "Keywords",
+}
 
-class AddKeywordModal(discord.ui.Modal, title="Add Tracked Keywords"):
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+TRACKABLE_CHANNEL_TYPES = [
+    discord.ChannelType.text,
+    discord.ChannelType.news,
+    discord.ChannelType.forum,
+    discord.ChannelType.voice,
+]
+
+
+def parse_keywords(raw: str) -> List[str]:
+    parts = [part.strip().lower() for line in raw.splitlines() for part in line.split(",") if part.strip()]
+    return list(dict.fromkeys(parts))
+
+
+def rank_prefix(rank: int) -> str:
+    return MEDALS.get(rank, f"**{rank}.**")
+
+
+class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
     keywords_input = discord.ui.TextInput(
-        label="Keyword(s) to Watch",
-        placeholder="Enter a keyword, or multiple separated by commas (e.g. hello, gg, nice)",
+        label="Keywords",
+        placeholder="One keyword, or several separated by commas (hello, gg, nice)",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=1000,
     )
 
-    def __init__(self, menu_view: "SettingsMenuView") -> None:
+    def __init__(self, menu_view: SettingsMenuView) -> None:
         super().__init__()
         self.menu_view = menu_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = self.keywords_input.value
-        parts = [p.strip().lower() for chunk in raw.splitlines() for p in chunk.split(",") if p.strip()]
-        unique_new = list(dict.fromkeys(parts))
-
-        if not unique_new:
-            self.menu_view.status_banner = ("⚠️ No valid keywords were entered.", WARNING_COLOR)
+        keywords = parse_keywords(self.keywords_input.value)
+        if not keywords:
+            self.menu_view.status_banner = ("No keywords were entered.", WARNING_COLOR)
             await self.menu_view.refresh_and_edit(interaction)
             return
 
-        added, skipped = await self.menu_view.bot.db.add_keywords(interaction.guild_id, unique_new)
-
-        msg_parts = []
+        added, skipped = await self.menu_view.bot.db.add_keywords(interaction.guild_id, keywords)
+        lines = []
         if added:
-            msg_parts.append(f"✅ Added **{len(added)}** keyword(s): `{', '.join(added[:10])}`")
+            lines.append(f"Added {len(added)} keyword(s): `{', '.join(added[:10])}`")
         if skipped:
-            msg_parts.append(f"ℹ️ Already existed: `{', '.join(skipped[:10])}`")
-
-        self.menu_view.status_banner = ("\n".join(msg_parts), SUCCESS_COLOR if added else WARNING_COLOR)
+            lines.append(f"Already tracked: `{', '.join(skipped[:10])}`")
+        self.menu_view.status_banner = ("\n".join(lines), SUCCESS_COLOR if added else WARNING_COLOR)
         await self.menu_view.refresh_and_edit(interaction)
 
 
-class BulkEditKeywordsModal(discord.ui.Modal, title="Bulk Edit Tracked Keywords"):
+class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
     keywords_input = discord.ui.TextInput(
-        label="Comma-separated list of all watched keywords",
-        placeholder="Leave blank to clear all keywords, or edit the comma-separated list",
+        label="All tracked keywords, separated by commas",
+        placeholder="Leave empty to remove every keyword",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=2000,
     )
 
-    def __init__(self, menu_view: "SettingsMenuView", current_keywords: List[str]) -> None:
+    def __init__(self, menu_view: SettingsMenuView, current_keywords: List[str]) -> None:
         super().__init__()
         self.menu_view = menu_view
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = self.keywords_input.value or ""
-        parts = [p.strip().lower() for chunk in raw.splitlines() for p in chunk.split(",") if p.strip()]
-        new_set = list(dict.fromkeys(parts))
-
-        await self.menu_view.bot.db.replace_keywords(interaction.guild_id, new_set)
-
-        self.menu_view.status_banner = (
-            f"✅ Updated keyword watch list! Now tracking **{len(new_set)}** keyword(s).",
-            SUCCESS_COLOR,
-        )
+        keywords = parse_keywords(self.keywords_input.value or "")
+        await self.menu_view.bot.db.replace_keywords(interaction.guild_id, keywords)
+        self.menu_view.status_banner = (f"Keyword list saved. Tracking {len(keywords)} keyword(s).", SUCCESS_COLOR)
         await self.menu_view.refresh_and_edit(interaction)
 
 
-class SettingsMenuView(discord.ui.LayoutView):
-
+class SettingsMenuView(AuthorOnlyView):
     def __init__(self, bot: commands.Bot, guild: discord.Guild, author_id: int) -> None:
-        super().__init__(timeout=300.0)
+        super().__init__(
+            author_id=author_id,
+            denied_message="Only the admin who opened these settings can use them.",
+            timeout=300.0,
+        )
         self.bot = bot
         self.guild = guild
-        self.author_id = author_id
-        self.active_tab: str = "overview"
+        self.active_tab = "overview"
         self.pending_confirmation: Optional[str] = None
         self.status_banner: Optional[Tuple[str, discord.Colour]] = None
-
         self.selected_reset_user_id: Optional[int] = None
         self.selected_reset_channel_id: Optional[int] = None
-
         self.watched_ids: Set[int] = set()
         self.ignored_ids: Set[int] = set()
         self.keywords: List[str] = []
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                view=error_view("Only the administrator who opened this settings menu can interact with it."),
-                ephemeral=True,
-            )
-            return False
-        return True
+    async def _analysis_state(self) -> Tuple[bool, bool]:
+        cog = self.bot.get_cog("AnalyzeChat")
+        running = cog is not None and self.guild.id in cog.running_guilds
+        return running, running or await self.bot.db.has_analysis_run(self.guild.id)
 
     async def load_state(self) -> None:
         self.watched_ids, self.ignored_ids = await self.bot.db.get_guild_tracking_config(self.guild.id)
@@ -117,256 +144,156 @@ class SettingsMenuView(discord.ui.LayoutView):
 
     @property
     def is_enabled(self) -> bool:
-        return len(self.watched_ids) > 0
+        return bool(self.watched_ids)
 
-    def _build_navigation_row(self) -> discord.ui.ActionRow:
-        select = discord.ui.Select(
-            placeholder="📂 Navigate Settings Sections...",
-            options=[
-                discord.SelectOption(
-                    label="Overview & Tracking Mode",
-                    value="overview",
-                    emoji="🏠",
-                    description="Enable/disable tracking or switch Whole Server vs Specific mode",
-                    default=self.active_tab == "overview",
-                ),
-                discord.SelectOption(
-                    label="Channels & Categories",
-                    value="channels",
-                    emoji="📺",
-                    description="Choose which channels and/or categories to watch or ignore",
-                    default=self.active_tab == "channels",
-                ),
-                discord.SelectOption(
-                    label="Keywords Watchlist",
-                    value="keywords",
-                    emoji="🔑",
-                    description="Add, bulk edit, or remove tracked keywords via modals & dropdowns",
-                    default=self.active_tab == "keywords",
-                ),
-                discord.SelectOption(
-                    label="Data & Reset Tools",
-                    value="reset",
-                    emoji="🛠️",
-                    description="Reset word counts for users/channels or unlock user re-analysis",
-                    default=self.active_tab == "reset",
-                ),
-            ],
+    def _confirmation(
+        self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback
+    ) -> None:
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(text))
+        container.add_item(
+            discord.ui.ActionRow(
+                make_button(confirm_label, style, on_confirm),
+                make_button("Cancel", discord.ButtonStyle.secondary, self._cancel_confirmation),
+            )
         )
-        select.callback = self._on_tab_select
-        return discord.ui.ActionRow(select)
-
-    async def _on_tab_select(self, interaction: discord.Interaction) -> None:
-        select: discord.ui.Select = interaction.data.get("values", ["overview"])
-        self.active_tab = select[0] if select else "overview"
-        self.pending_confirmation = None
-        self.status_banner = None
-        await self.refresh_and_edit(interaction)
 
     def build_ui(self) -> None:
         self.clear_items()
-        accent = self.status_banner[1] if self.status_banner else BRAND_COLOR
-        container = discord.ui.Container(accent_colour=accent)
+        container = discord.ui.Container(accent_colour=self.status_banner[1] if self.status_banner else BRAND_COLOR)
 
-        icon_url = self.guild.icon.url if self.guild.icon else None
-        header_md = (
-            f"## ⚙️ Server Word Counter Settings\n"
-            f"Configure tracking mode, watched/ignored channels & categories, keywords, and data resets for **{self.guild.name}**."
-        )
-        if icon_url:
-            container.add_item(
-                discord.ui.Section(
-                    discord.ui.TextDisplay(header_md),
-                    accessory=discord.ui.Thumbnail(icon_url),
-                )
-            )
+        header = discord.ui.TextDisplay(f"### Settings\nTracking, channels, keywords and resets for **{self.guild.name}**.")
+        if self.guild.icon:
+            container.add_item(discord.ui.Section(header, accessory=discord.ui.Thumbnail(self.guild.icon.url)))
         else:
-            container.add_item(discord.ui.TextDisplay(header_md))
+            container.add_item(header)
 
         if self.status_banner:
             container.add_item(discord.ui.Separator())
             container.add_item(discord.ui.TextDisplay(self.status_banner[0]))
 
-        container.add_item(discord.ui.Separator())
-        container.add_item(self._build_navigation_row())
-        container.add_item(discord.ui.Separator())
-
-        if self.active_tab == "overview":
-            self._populate_overview_tab(container)
-        elif self.active_tab == "channels":
-            self._populate_channels_tab(container)
-        elif self.active_tab == "keywords":
-            self._populate_keywords_tab(container)
-        elif self.active_tab == "reset":
-            self._populate_reset_tab(container)
-
-        container.add_item(discord.ui.Separator())
-        container.add_item(
-            discord.ui.TextDisplay(
-                f"-# Word Counter V2 Settings Dashboard • Active Tab: {self.active_tab.title()}"
-            )
+        navigation = discord.ui.Select(
+            placeholder="Go to a section",
+            options=[
+                discord.SelectOption(label=label, value=value, description=description, default=self.active_tab == value)
+                for value, label, description in SECTIONS
+            ],
         )
-        bottom_buttons = []
+        navigation.callback = self._on_tab_select
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.ActionRow(navigation))
+        container.add_item(discord.ui.Separator())
+
+        {
+            "overview": self._populate_overview_tab,
+            "channels": self._populate_channels_tab,
+            "keywords": self._populate_keywords_tab,
+            "reset": self._populate_reset_tab,
+        }[self.active_tab](container)
+
+        bottom = []
         if self.active_tab != "overview":
-            back_btn = discord.ui.Button(
-                label="⬅️ Back to Overview",
-                style=discord.ButtonStyle.primary,
-            )
-            back_btn.callback = self._on_back_to_overview
-            bottom_buttons.append(back_btn)
-
-        close_btn = discord.ui.Button(
-            label="✖️ Close Menu",
-            style=discord.ButtonStyle.secondary,
-        )
-        close_btn.callback = self._on_close_menu
-        bottom_buttons.append(close_btn)
-
-        container.add_item(discord.ui.ActionRow(*bottom_buttons))
+            bottom.append(make_button("Back to overview", discord.ButtonStyle.primary, self._on_back_to_overview))
+        bottom.append(make_button("Close", discord.ButtonStyle.secondary, self._on_close_menu))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.ActionRow(*bottom))
         self.add_item(container)
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         if not self.is_enabled:
-            mode_str = "🔴 **Disabled** *(No messages are currently being counted)*"
-            scope_title = "📋 Watched Channels & Categories"
-            scope_value = "*None configured*"
+            mode = "Off. Nothing is being counted."
+            scope_title, scope_value = "Tracked channels and categories", "None"
         elif self.is_whole_server:
-            mode_str = "🌐 **Whole Server Mode** *(All channels & categories counted except ignored)*"
-            scope_title = "🚫 Ignored Channels & Categories"
-            if self.ignored_ids:
-                scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in sorted(self.ignored_ids))
-            else:
-                scope_value = "*None (Counting every channel & category in the server)*"
-        else:
-            mode_str = "📋 **Specific Channels & Categories Mode**"
-            scope_title = "📺 Watched Channels & Categories"
-            specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
+            mode = "Whole server. Every channel is counted except ignored ones."
+            scope_title = "Ignored"
             scope_value = (
-                ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids)
-                if specific_ids
-                else "*None selected*"
+                ", ".join(format_channel_or_category(self.guild, cid) for cid in sorted(self.ignored_ids))
+                if self.ignored_ids
+                else "Nothing ignored"
             )
+        else:
+            mode = "Specific channels. Only the channels and categories you pick are counted."
+            scope_title = "Tracked channels and categories"
+            specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
+            scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids) or "None picked yet"
 
-        kw_preview = (
-            ", ".join(f"`{k}`" for k in self.keywords[:20])
-            + (f" *...and {len(self.keywords) - 20} more*" if len(self.keywords) > 20 else "")
-            if self.keywords
-            else "*No keywords configured*"
-        )
+        keyword_preview = ", ".join(f"`{k}`" for k in self.keywords[:20]) or "None"
+        if len(self.keywords) > 20:
+            keyword_preview += f" and {len(self.keywords) - 20} more"
 
-        overview_md = (
-            f"### 🏠 Current Configuration Summary\n"
-            f"**Tracking Mode:** {mode_str}\n\n"
-            f"**{scope_title}:**\n{scope_value}\n\n"
-            f"**🔑 Tracked Keywords ({len(self.keywords)}):**\n{kw_preview}"
+        container.add_item(
+            discord.ui.TextDisplay(
+                f"**Mode:** {mode}\n\n**{scope_title}:** {scope_value}\n\n"
+                f"**Keywords ({len(self.keywords)}):** {keyword_preview}"
+            )
         )
-        container.add_item(discord.ui.TextDisplay(overview_md))
 
         if self.pending_confirmation == "whole_server":
-            container.add_item(discord.ui.Separator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    "⚠️ **Confirm Mode Switch**\n"
-                    "Word count is currently set to specific channels/categories. Switching to **Whole Server Mode** will replace your specific channel list with server-wide tracking. Proceed?"
-                )
+            self._confirmation(
+                container,
+                "**Switch to whole server?**\nThis replaces your list of specific channels with server-wide tracking.",
+                "Switch",
+                discord.ButtonStyle.success,
+                self._confirm_whole_server,
             )
-            confirm_btn = discord.ui.Button(label="✅ Confirm Whole Server", style=discord.ButtonStyle.success)
-            cancel_btn = discord.ui.Button(label="✖️ Cancel", style=discord.ButtonStyle.secondary)
-            confirm_btn.callback = self._confirm_whole_server
-            cancel_btn.callback = self._cancel_confirmation
-            container.add_item(discord.ui.ActionRow(confirm_btn, cancel_btn))
             return
-
         if self.pending_confirmation == "disable_server":
-            container.add_item(discord.ui.Separator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    "⚠️ **Confirm Disable Tracking**\n"
-                    "Are you sure you want to stop recording word counts in this server? (Existing leaderboard stats will be preserved)."
-                )
+            self._confirmation(
+                container,
+                "**Turn off tracking?**\nNew messages won't be counted. Existing stats stay.",
+                "Turn off",
+                discord.ButtonStyle.danger,
+                self._confirm_disable_server,
             )
-            confirm_btn = discord.ui.Button(label="🔴 Confirm Disable", style=discord.ButtonStyle.danger)
-            cancel_btn = discord.ui.Button(label="✖️ Cancel", style=discord.ButtonStyle.secondary)
-            confirm_btn.callback = self._confirm_disable_server
-            cancel_btn.callback = self._cancel_confirmation
-            container.add_item(discord.ui.ActionRow(confirm_btn, cancel_btn))
             return
 
-        btn_whole = discord.ui.Button(
-            label="🌐 Enable Whole Server",
-            style=discord.ButtonStyle.success if not self.is_whole_server else discord.ButtonStyle.secondary,
-            disabled=self.is_whole_server,
+        container.add_item(
+            discord.ui.ActionRow(
+                make_button(
+                    "Track whole server",
+                    discord.ButtonStyle.secondary if self.is_whole_server else discord.ButtonStyle.success,
+                    self._btn_enable_whole_server,
+                    disabled=self.is_whole_server,
+                ),
+                make_button("Channels", discord.ButtonStyle.primary, self._goto("channels")),
+                make_button("Keywords", discord.ButtonStyle.primary, self._goto("keywords")),
+            )
         )
-        btn_whole.callback = self._btn_enable_whole_server
-
-        btn_specific = discord.ui.Button(
-            label="📋 Manage Channels / Categories",
-            style=discord.ButtonStyle.primary,
+        container.add_item(
+            discord.ui.ActionRow(
+                make_button("Data & resets", discord.ButtonStyle.primary, self._goto("reset")),
+                make_button("Turn off tracking", discord.ButtonStyle.danger, self._btn_disable_tracking, disabled=not self.is_enabled),
+            )
         )
-        btn_specific.callback = self._btn_goto_channels
-
-        btn_keywords = discord.ui.Button(
-            label="🔑 Manage Keywords",
-            style=discord.ButtonStyle.primary,
-        )
-        btn_keywords.callback = self._btn_goto_keywords
-
-        btn_reset = discord.ui.Button(
-            label="🛠️ Data & Reset Tools",
-            style=discord.ButtonStyle.primary,
-        )
-        btn_reset.callback = self._btn_goto_reset
-
-        btn_disable = discord.ui.Button(
-            label="🔴 Disable Tracking",
-            style=discord.ButtonStyle.danger,
-            disabled=not self.is_enabled,
-        )
-        btn_disable.callback = self._btn_disable_tracking
-
-        row1 = discord.ui.ActionRow(btn_whole, btn_specific, btn_keywords)
-        row2 = discord.ui.ActionRow(btn_reset, btn_disable)
-        container.add_item(row1)
-        container.add_item(row2)
 
     def _populate_channels_tab(self, container: discord.ui.Container) -> None:
         if self.is_whole_server:
             header = (
-                "### 🚫 Manage Ignored Channels & Categories *(Whole Server Mode)*\n"
-                "Since **Whole Server Mode** is active, every channel is tracked by default. "
-                "Select any **Text Channels** or **Categories** below to **ignore** them (ignoring a category automatically ignores all channels inside it)."
+                "### Ignored channels\n"
+                "Whole server mode is on, so everything is counted unless you ignore it here. "
+                "Ignoring a category ignores every channel in it."
             )
             active_list = sorted(self.ignored_ids)
-            list_label = "Currently Ignored Channels & Categories"
-            placeholder_add = "➕ Select Channels or Categories to Ignore..."
-            placeholder_rem = "➖ Select Ignored Channels/Categories to Remove..."
+            list_label = "Ignored"
+            add_placeholder = "Add channels or categories to ignore"
+            remove_placeholder = "Remove from the ignore list"
         else:
             header = (
-                "### 📺 Manage Watched Channels & Categories *(Specific Mode)*\n"
-                "Select which **Text Channels** and/or **Categories** the bot should actively watch. "
-                "Selecting a **Category** automatically watches every channel and thread inside that category!"
+                "### Tracked channels\n"
+                "Only these channels and categories are counted. "
+                "Picking a category includes every channel and thread inside it."
             )
             active_list = [cid for cid in sorted(self.watched_ids) if cid != 1]
-            list_label = "Currently Watched Channels & Categories"
-            placeholder_add = "➕ Select Channels or Categories to Watch..."
-            placeholder_rem = "➖ Select Watched Channels/Categories to Remove..."
+            list_label = "Tracked"
+            add_placeholder = "Add channels or categories to track"
+            remove_placeholder = "Remove from the tracked list"
 
-        formatted_items = (
-            "\n".join(f"• {format_channel_or_category(self.guild, cid)}" for cid in active_list)
-            if active_list
-            else "*None selected yet.*"
-        )
-        container.add_item(discord.ui.TextDisplay(f"{header}\n\n**{list_label} ({len(active_list)}):**\n{formatted_items}"))
+        listed = "\n".join(f"- {format_channel_or_category(self.guild, cid)}" for cid in active_list) or "None yet."
+        container.add_item(discord.ui.TextDisplay(f"{header}\n\n**{list_label} ({len(active_list)}):**\n{listed}"))
 
         channel_select = discord.ui.ChannelSelect(
-            placeholder=placeholder_add,
-            channel_types=[
-                discord.ChannelType.text,
-                discord.ChannelType.category,
-                discord.ChannelType.news,
-                discord.ChannelType.forum,
-                discord.ChannelType.voice,
-            ],
+            placeholder=add_placeholder,
+            channel_types=[*TRACKABLE_CHANNEL_TYPES, discord.ChannelType.category],
             min_values=1,
             max_values=10,
         )
@@ -374,165 +301,152 @@ class SettingsMenuView(discord.ui.LayoutView):
         container.add_item(discord.ui.ActionRow(channel_select))
 
         if active_list:
-            remove_options = []
+            options = []
             for cid in active_list[:25]:
-                ch = self.guild.get_channel(cid)
-                if isinstance(ch, discord.CategoryChannel):
-                    label = f"📁 {ch.name} (Category)"[:100]
-                elif ch is not None:
-                    label = f"#{ch.name}"[:100]
+                channel = self.guild.get_channel(cid)
+                if isinstance(channel, discord.CategoryChannel):
+                    label = f"{channel.name} (category)"
+                elif channel is not None:
+                    label = f"#{channel.name}"
                 else:
-                    label = f"ID: {cid}"
-                remove_options.append(discord.SelectOption(label=label, value=str(cid)))
-
-            rem_select = discord.ui.Select(
-                placeholder=placeholder_rem,
-                options=remove_options,
-                min_values=1,
-                max_values=len(remove_options),
+                    label = f"Deleted channel {cid}"
+                options.append(discord.SelectOption(label=label[:100], value=str(cid)))
+            remove_select = discord.ui.Select(
+                placeholder=remove_placeholder, options=options, min_values=1, max_values=len(options)
             )
-            rem_select.callback = self._on_channels_removed
-            container.add_item(discord.ui.ActionRow(rem_select))
+            remove_select.callback = self._on_channels_removed
+            container.add_item(discord.ui.ActionRow(remove_select))
 
         if self.is_whole_server:
-            switch_btn = discord.ui.Button(
-                label="📋 Switch to Specific Channels/Categories Mode",
-                style=discord.ButtonStyle.primary,
-            )
-            switch_btn.callback = self._switch_to_specific_mode
+            switch = make_button("Switch to specific channels", discord.ButtonStyle.primary, self._switch_to_specific_mode)
         else:
-            switch_btn = discord.ui.Button(
-                label="🌐 Switch to Whole Server Mode",
-                style=discord.ButtonStyle.success,
+            switch = make_button("Switch to whole server", discord.ButtonStyle.success, self._confirm_whole_server)
+        container.add_item(
+            discord.ui.ActionRow(
+                switch,
+                make_button("Clear list", discord.ButtonStyle.danger, self._clear_all_channels, disabled=not active_list),
             )
-            switch_btn.callback = self._confirm_whole_server
-
-        clear_btn = discord.ui.Button(
-            label="🗑️ Clear All Listed Channels/Categories",
-            style=discord.ButtonStyle.danger,
-            disabled=len(active_list) == 0,
         )
-        clear_btn.callback = self._clear_all_channels
-        container.add_item(discord.ui.ActionRow(switch_btn, clear_btn))
 
     def _populate_keywords_tab(self, container: discord.ui.Container) -> None:
-        kw_display = (
-            "\n".join(f"• `{kw}`" for kw in self.keywords[:30])
-            + (f"\n*...and {len(self.keywords) - 30} more*" if len(self.keywords) > 30 else "")
-            if self.keywords
-            else "*No keywords are currently being watched.*"
-        )
+        listed = "\n".join(f"- `{kw}`" for kw in self.keywords[:30]) or "None yet."
+        if len(self.keywords) > 30:
+            listed += f"\n…and {len(self.keywords) - 30} more"
         container.add_item(
             discord.ui.TextDisplay(
-                f"### 🔑 Tracked Keywords Management\n"
-                f"Keywords are counted whenever a user says them inside a watched channel or category.\n\n"
-                f"**Currently Watched Keywords ({len(self.keywords)}):**\n{kw_display}"
+                "### Keywords\nA keyword is counted every time someone says it in a tracked channel.\n\n"
+                f"**Tracked ({len(self.keywords)}):**\n{listed}"
             )
         )
 
         if self.keywords:
-            kw_options = [
-                discord.SelectOption(label=kw[:100], value=kw[:100], emoji="🔑")
-                for kw in self.keywords[:25]
-            ]
-            rem_kw_select = discord.ui.Select(
-                placeholder="➖ Select Keyword(s) to Remove...",
-                options=kw_options,
-                min_values=1,
-                max_values=len(kw_options),
+            options = [discord.SelectOption(label=kw[:100], value=kw[:100]) for kw in self.keywords[:25]]
+            remove_select = discord.ui.Select(
+                placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
             )
-            rem_kw_select.callback = self._on_keywords_removed
-            container.add_item(discord.ui.ActionRow(rem_kw_select))
-
-        add_kw_btn = discord.ui.Button(label="➕ Add Keyword(s)", style=discord.ButtonStyle.success)
-        add_kw_btn.callback = self._open_add_keyword_modal
-
-        bulk_kw_btn = discord.ui.Button(label="✏️ Bulk Edit List", style=discord.ButtonStyle.primary)
-        bulk_kw_btn.callback = self._open_bulk_keyword_modal
-
-        clear_kw_btn = discord.ui.Button(
-            label="🗑️ Clear All Keywords",
-            style=discord.ButtonStyle.danger,
-            disabled=len(self.keywords) == 0,
-        )
-        clear_kw_btn.callback = self._clear_all_keywords
-
-        container.add_item(discord.ui.ActionRow(add_kw_btn, bulk_kw_btn, clear_kw_btn))
-
-    def _populate_reset_tab(self, container: discord.ui.Container) -> None:
-        selected_user_str = f"<@{self.selected_reset_user_id}>" if self.selected_reset_user_id else "*All Users (None selected)*"
-        selected_chan_str = f"<#{self.selected_reset_channel_id}>" if self.selected_reset_channel_id else "*Entire Server (None selected)*"
+            remove_select.callback = self._on_keywords_removed
+            container.add_item(discord.ui.ActionRow(remove_select))
 
         container.add_item(
+            discord.ui.ActionRow(
+                make_button("Add", discord.ButtonStyle.success, self._open_add_keyword_modal),
+                make_button("Edit list", discord.ButtonStyle.primary, self._open_bulk_keyword_modal),
+                make_button("Remove all", discord.ButtonStyle.danger, self._clear_all_keywords, disabled=not self.keywords),
+            )
+        )
+
+    def _populate_reset_tab(self, container: discord.ui.Container) -> None:
+        member = f"<@{self.selected_reset_user_id}>" if self.selected_reset_user_id else "Everyone"
+        channel = f"<#{self.selected_reset_channel_id}>" if self.selected_reset_channel_id else "Whole server"
+        container.add_item(
             discord.ui.TextDisplay(
-                f"### 🛠️ Data & Reset Management\n"
-                f"Use the selectors below to target a specific **User** and/or **Channel**, then choose a reset action.\n\n"
-                f"**Selected User Target:** {selected_user_str}\n"
-                f"**Selected Channel Scope:** {selected_chan_str}"
+                "### Data & resets\nPick a member, a channel, or both, then choose what to do.\n\n"
+                f"**Member:** {member}\n**Channel:** {channel}"
             )
         )
 
         if self.pending_confirmation == "wipe_server":
-            container.add_item(discord.ui.Separator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    "⚠️ **DANGER: Confirm Full Server Fresh Restart**\n"
-                    "This will completely reset **EVERYTHING** for this server:\n"
-                    "• **All Statistics**: Words, messages, attachments, emojis, and keywords reset to `0`\n"
-                    "• **Chat Analysis**: History cleared (all members can be retroactively analyzed again)\n"
-                    "• **Settings**: Tracking mode, watched/ignored channels, and keywords reset\n\n"
-                    "Are you sure you want to perform a fresh restart?"
-                )
+            self._confirmation(
+                container,
+                "**Reset everything?**\n"
+                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), "
+                "clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
+                "Reset everything",
+                discord.ButtonStyle.danger,
+                self._confirm_wipe_server,
             )
-            confirm_btn = discord.ui.Button(label="⚠️ Yes, Reset Everything (Fresh Restart)", style=discord.ButtonStyle.danger)
-            cancel_btn = discord.ui.Button(label="✖️ Cancel", style=discord.ButtonStyle.secondary)
-            confirm_btn.callback = self._confirm_wipe_server
-            cancel_btn.callback = self._cancel_confirmation
-            container.add_item(discord.ui.ActionRow(confirm_btn, cancel_btn))
+            return
+        if self.pending_confirmation == "scoped_reset":
+            self._confirmation(
+                container,
+                f"**Reset all counts for {self._reset_scope_text()}?**\n"
+                "Words, messages, attachments, emojis, keywords and monthly history are deleted for this scope. "
+                "It can't be undone.",
+                "Reset all counts",
+                discord.ButtonStyle.danger,
+                self._execute_scoped_reset,
+            )
+            return
+        if self.pending_confirmation == "reanalysis":
+            if self.selected_reset_user_id is not None:
+                question = (
+                    f"**Re-analyze <@{self.selected_reset_user_id}> from scratch?**\n"
+                    "Their counts are cleared now. The next `/analyze_chat single_user` rebuilds their full history, "
+                    "so nothing is counted twice."
+                )
+            else:
+                question = (
+                    "**Re-analyze everyone from scratch?**\n"
+                    "Every member's counts are cleared now (settings and keywords stay). The next "
+                    "`/analyze_chat whole_server` rebuilds the full history, so nothing is counted twice."
+                )
+            self._confirmation(container, question, "Clear and allow re-analysis", discord.ButtonStyle.danger, self._execute_reanalysis)
             return
 
-        user_select = discord.ui.UserSelect(
-            placeholder="👤 Select a User to Reset or Unlock Re-Analyze...",
-            min_values=0,
-            max_values=1,
-        )
+        user_select = discord.ui.UserSelect(placeholder="Pick a member", min_values=0, max_values=1)
         user_select.callback = self._on_reset_user_selected
         container.add_item(discord.ui.ActionRow(user_select))
 
-        chan_select = discord.ui.ChannelSelect(
-            placeholder="📺 Optional: Select a Channel Scope for Reset...",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum, discord.ChannelType.voice],
+        channel_select = discord.ui.ChannelSelect(
+            placeholder="Pick a channel (optional)",
+            channel_types=TRACKABLE_CHANNEL_TYPES,
             min_values=0,
             max_values=1,
         )
-        chan_select.callback = self._on_reset_channel_selected
-        container.add_item(discord.ui.ActionRow(chan_select))
+        channel_select.callback = self._on_reset_channel_selected
+        container.add_item(discord.ui.ActionRow(channel_select))
 
-        btn_exec_reset = discord.ui.Button(
-            label="🔄 Reset Word Count (Selected Scope)",
-            style=discord.ButtonStyle.primary,
-            disabled=(self.selected_reset_user_id is None and self.selected_reset_channel_id is None),
+        nothing_selected = self.selected_reset_user_id is None and self.selected_reset_channel_id is None
+        container.add_item(
+            discord.ui.ActionRow(
+                make_button("Reset all counts", discord.ButtonStyle.primary, self._prompt_scoped_reset, disabled=nothing_selected),
+                make_button(
+                    "Allow re-analysis" if self.selected_reset_user_id else "Allow re-analysis for everyone",
+                    discord.ButtonStyle.secondary,
+                    self._prompt_reanalysis,
+                ),
+                make_button("Reset everything", discord.ButtonStyle.danger, self._prompt_wipe_server),
+            )
         )
-        btn_exec_reset.callback = self._execute_scoped_reset
 
-        unlock_label = "🔓 Unlock User Re-Analyze" if self.selected_reset_user_id else "🔓 Unlock All Re-Analyze"
-        btn_unlock_analyze = discord.ui.Button(
-            label=unlock_label,
-            style=discord.ButtonStyle.secondary,
-        )
-        btn_unlock_analyze.callback = self._unlock_user_analyze
+    def _goto(self, tab: str) -> Callback:
+        async def callback(interaction: discord.Interaction) -> None:
+            self.active_tab = tab
+            self.pending_confirmation = None
+            self.status_banner = None
+            await self.refresh_and_edit(interaction)
 
-        btn_wipe_all = discord.ui.Button(
-            label="⚠️ Reset Entire Server (Fresh Restart)",
-            style=discord.ButtonStyle.danger,
-        )
-        btn_wipe_all.callback = self._prompt_wipe_server
+        return callback
 
-        container.add_item(discord.ui.ActionRow(btn_exec_reset, btn_unlock_analyze, btn_wipe_all))
+    async def _on_tab_select(self, interaction: discord.Interaction) -> None:
+        values = interaction.data.get("values") or ["overview"]
+        await self._goto(values[0])(interaction)
+
+    async def _on_back_to_overview(self, interaction: discord.Interaction) -> None:
+        await self._goto("overview")(interaction)
 
     async def _btn_enable_whole_server(self, interaction: discord.Interaction) -> None:
-        specific_ids = [cid for cid in self.watched_ids if cid != 1]
-        if specific_ids:
+        if any(cid != 1 for cid in self.watched_ids):
             self.pending_confirmation = "whole_server"
             await self.refresh_and_edit(interaction)
         else:
@@ -541,15 +455,12 @@ class SettingsMenuView(discord.ui.LayoutView):
     async def _confirm_whole_server(self, interaction: discord.Interaction) -> None:
         await self.bot.db.enable_whole_server(self.guild.id)
         self.pending_confirmation = None
-        self.status_banner = ("✅ **Whole Server Mode Enabled!** Word counts are now recorded across the entire server.", SUCCESS_COLOR)
+        self.status_banner = ("Whole server mode is on. Every channel is counted now.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _switch_to_specific_mode(self, interaction: discord.Interaction) -> None:
         await self.bot.db.switch_to_specific_mode(self.guild.id)
-        self.status_banner = (
-            "📋 Switched to **Specific Channels & Categories Mode**! Select the channels or categories you want to watch below.",
-            SUCCESS_COLOR,
-        )
+        self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _btn_disable_tracking(self, interaction: discord.Interaction) -> None:
@@ -559,67 +470,46 @@ class SettingsMenuView(discord.ui.LayoutView):
     async def _confirm_disable_server(self, interaction: discord.Interaction) -> None:
         await self.bot.db.disable_server_tracking(self.guild.id)
         self.pending_confirmation = None
-        self.status_banner = ("🔴 Word counting has been **disabled** for this server.", WARNING_COLOR)
+        self.status_banner = ("Tracking is off.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _cancel_confirmation(self, interaction: discord.Interaction) -> None:
         self.pending_confirmation = None
-        self.status_banner = ("ℹ️ Action cancelled.", BRAND_COLOR)
+        self.status_banner = ("Cancelled.", NEUTRAL_COLOR)
         await self.refresh_and_edit(interaction)
 
-    async def _btn_goto_channels(self, interaction: discord.Interaction) -> None:
-        self.active_tab = "channels"
-        self.status_banner = None
-        await self.refresh_and_edit(interaction)
-
-    async def _btn_goto_keywords(self, interaction: discord.Interaction) -> None:
-        self.active_tab = "keywords"
-        self.status_banner = None
-        await self.refresh_and_edit(interaction)
-
-    async def _btn_goto_reset(self, interaction: discord.Interaction) -> None:
-        self.active_tab = "reset"
-        self.status_banner = None
-        await self.refresh_and_edit(interaction)
+    def _selected_ids(self, interaction: discord.Interaction) -> List[int]:
+        return [int(value) for value in interaction.data.get("values", [])]
 
     async def _on_channels_added(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])
-        selected_ids = [int(v) for v in raw_values]
-
+        selected = self._selected_ids(interaction)
+        listed = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected)
         if self.is_whole_server:
-            await self.bot.db.add_ignored_channels(self.guild.id, selected_ids)
-            formatted = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected_ids)
-            self.status_banner = (f"🚫 Added to **Ignored** list: {formatted}", SUCCESS_COLOR)
+            await self.bot.db.add_ignored_channels(self.guild.id, selected)
+            self.status_banner = (f"Now ignoring: {listed}", SUCCESS_COLOR)
         else:
-            await self.bot.db.add_watched_channels(self.guild.id, selected_ids)
-            formatted = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected_ids)
-            self.status_banner = (f"✅ Added to **Watched** list: {formatted}", SUCCESS_COLOR)
-
+            await self.bot.db.add_watched_channels(self.guild.id, selected)
+            self.status_banner = (f"Now tracking: {listed}", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_removed(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])
-        selected_ids = [int(v) for v in raw_values]
-
+        selected = self._selected_ids(interaction)
+        listed = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected)
         if self.is_whole_server:
-            await self.bot.db.remove_ignored_channels(self.guild.id, selected_ids)
-            formatted = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected_ids)
-            self.status_banner = (f"✅ Removed from **Ignored** list: {formatted}", SUCCESS_COLOR)
+            await self.bot.db.remove_ignored_channels(self.guild.id, selected)
+            self.status_banner = (f"No longer ignoring: {listed}", SUCCESS_COLOR)
         else:
-            await self.bot.db.remove_watched_channels(self.guild.id, selected_ids)
-            formatted = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected_ids)
-            self.status_banner = (f"🗑️ Removed from **Watched** list: {formatted}", SUCCESS_COLOR)
-
+            await self.bot.db.remove_watched_channels(self.guild.id, selected)
+            self.status_banner = (f"No longer tracking: {listed}", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_channels(self, interaction: discord.Interaction) -> None:
         if self.is_whole_server:
             await self.bot.db.clear_ignored_channels(self.guild.id)
-            self.status_banner = ("✅ Cleared all ignored channels and categories.", SUCCESS_COLOR)
+            self.status_banner = ("Ignore list cleared.", SUCCESS_COLOR)
         else:
             await self.bot.db.clear_watched_channels(self.guild.id)
-            self.status_banner = ("🗑️ Cleared all watched channels and categories.", WARNING_COLOR)
-
+            self.status_banner = ("Tracked list cleared.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _open_add_keyword_modal(self, interaction: discord.Interaction) -> None:
@@ -629,54 +519,72 @@ class SettingsMenuView(discord.ui.LayoutView):
         await interaction.response.send_modal(BulkEditKeywordsModal(self, self.keywords))
 
     async def _on_keywords_removed(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])
-        await self.bot.db.remove_keywords(self.guild.id, raw_values)
-        self.status_banner = (f"🗑️ Removed **{len(raw_values)}** keyword(s): `{', '.join(raw_values)}`", SUCCESS_COLOR)
+        removed = interaction.data.get("values", [])
+        await self.bot.db.remove_keywords(self.guild.id, removed)
+        self.status_banner = (f"Removed {len(removed)} keyword(s): `{', '.join(removed)}`", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_keywords(self, interaction: discord.Interaction) -> None:
         await self.bot.db.clear_keywords(self.guild.id)
-        self.status_banner = ("🗑️ All tracked keywords have been removed from the server.", WARNING_COLOR)
+        self.status_banner = ("All keywords removed.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _on_reset_user_selected(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])
-        self.selected_reset_user_id = int(raw_values[0]) if raw_values else None
+        selected = self._selected_ids(interaction)
+        self.selected_reset_user_id = selected[0] if selected else None
         self.status_banner = None
         await self.refresh_and_edit(interaction)
 
     async def _on_reset_channel_selected(self, interaction: discord.Interaction) -> None:
-        raw_values = interaction.data.get("values", [])
-        self.selected_reset_channel_id = int(raw_values[0]) if raw_values else None
+        selected = self._selected_ids(interaction)
+        self.selected_reset_channel_id = selected[0] if selected else None
         self.status_banner = None
         await self.refresh_and_edit(interaction)
 
-    async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
-        uid = self.selected_reset_user_id
-        cid = self.selected_reset_channel_id
+    def _reset_scope_text(self) -> str:
+        uid, cid = self.selected_reset_user_id, self.selected_reset_channel_id
+        if uid is not None and cid is not None:
+            return f"<@{uid}> in <#{cid}>"
+        if uid is not None:
+            return f"<@{uid}> across the server"
+        return f"everyone in <#{cid}>"
 
-        if uid is not None and cid is None:
-            await self.bot.db.reset_user_server_counts(self.guild.id, uid)
-            self.status_banner = (f"✅ Reset server-wide word counts for <@{uid}>!", SUCCESS_COLOR)
-
-        elif uid is not None and cid is not None:
-            await self.bot.db.reset_user_channel_counts(self.guild.id, uid, cid)
-            self.status_banner = (f"✅ Reset word count for <@{uid}> in <#{cid}>!", SUCCESS_COLOR)
-
-        elif uid is None and cid is not None:
-            await self.bot.db.reset_channel_counts(self.guild.id, cid)
-            self.status_banner = (f"✅ Reset word counts for all users in <#{cid}>!", SUCCESS_COLOR)
-
+    async def _prompt_scoped_reset(self, interaction: discord.Interaction) -> None:
+        self.pending_confirmation = "scoped_reset"
         await self.refresh_and_edit(interaction)
 
-    async def _unlock_user_analyze(self, interaction: discord.Interaction) -> None:
+    async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
+        self.pending_confirmation = None
+        _, busy = await self._analysis_state()
+        if busy:
+            self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+        elif self.selected_reset_user_id is not None or self.selected_reset_channel_id is not None:
+            await self.bot.db.reset_counts(self.guild.id, self.selected_reset_user_id, self.selected_reset_channel_id)
+            self.status_banner = (f"Reset all counts for {self._reset_scope_text()}.", SUCCESS_COLOR)
+        await self.refresh_and_edit(interaction)
+
+    async def _prompt_reanalysis(self, interaction: discord.Interaction) -> None:
+        self.pending_confirmation = "reanalysis"
+        await self.refresh_and_edit(interaction)
+
+    async def _execute_reanalysis(self, interaction: discord.Interaction) -> None:
+        self.pending_confirmation = None
         uid = self.selected_reset_user_id
-        if uid is not None:
-            await self.bot.db.unlock_user_analyzed(self.guild.id, uid)
-            self.status_banner = (f"🔓 Unlocked retroactive chat analysis for <@{uid}>!", SUCCESS_COLOR)
+        _, busy = await self._analysis_state()
+        if busy:
+            self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
         else:
-            await self.bot.db.unlock_all_analyzed(self.guild.id)
-            self.status_banner = ("🔓 Unlocked retroactive chat analysis for **all members** in the server!", SUCCESS_COLOR)
+            await self.bot.db.allow_reanalysis(self.guild.id, uid)
+            if uid is not None:
+                self.status_banner = (
+                    f"Cleared <@{uid}>'s counts. Run `/analyze_chat single_user` to rebuild them.",
+                    SUCCESS_COLOR,
+                )
+            else:
+                self.status_banner = (
+                    "Cleared every member's counts. Run `/analyze_chat whole_server` to rebuild them.",
+                    SUCCESS_COLOR,
+                )
         await self.refresh_and_edit(interaction)
 
     async def _prompt_wipe_server(self, interaction: discord.Interaction) -> None:
@@ -684,16 +592,17 @@ class SettingsMenuView(discord.ui.LayoutView):
         await self.refresh_and_edit(interaction)
 
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
-        await self.bot.db.reset_entire_server(self.guild.id)
         self.pending_confirmation = None
+        running, _ = await self._analysis_state()
+        if running:
+            self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+            await self.refresh_and_edit(interaction)
+            return
+        await self.bot.db.reset_entire_server(self.guild.id)
         self.selected_reset_user_id = None
         self.selected_reset_channel_id = None
         self.active_tab = "overview"
-        self.status_banner = (
-            "✅ **Server Reset Complete!** All counts (words, messages, attachments, emojis, keywords), "
-            "chat analysis history, channels, and keywords have been reset to a fresh restart.",
-            SUCCESS_COLOR,
-        )
+        self.status_banner = ("Server reset. All stats, analysis history, channels and keywords were cleared.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
@@ -701,373 +610,127 @@ class SettingsMenuView(discord.ui.LayoutView):
         self.build_ui()
         await interaction.response.edit_message(view=self)
 
-    async def _on_back_to_overview(self, interaction: discord.Interaction) -> None:
-        self.active_tab = "overview"
-        self.pending_confirmation = None
-        self.status_banner = None
-        await self.refresh_and_edit(interaction)
-
     async def _on_close_menu(self, interaction: discord.Interaction) -> None:
         self.stop()
+        await interaction.response.defer()
         try:
-            await interaction.response.defer()
             await interaction.delete_original_response()
-        except Exception:
-            try:
-                await interaction.edit_original_response(
-                    view=create_v2_view(
-                        title="⚙️ Settings Closed",
-                        description="The settings menu has been closed.",
-                        color=BRAND_COLOR,
-                    )
-                )
-            except Exception:
-                pass
+        except discord.HTTPException:
+            await interaction.edit_original_response(
+                view=create_v2_view("Settings closed", "Run /settings to open them again.", color=NEUTRAL_COLOR)
+            )
 
 
-class UnifiedLeaderboardView(discord.ui.LayoutView):
-
+class LeaderboardPaginator(ButtonPaginator):
     def __init__(
         self,
         bot: commands.Bot,
         guild: discord.Guild,
         author_id: int,
         channel: Optional[discord.TextChannel] = None,
-        initial_category: str = "words",
     ) -> None:
-        super().__init__(timeout=180.0)
+        super().__init__([], author_id=author_id)
+        self.denied_message = "Only the person who ran /leaderboard can use these buttons."
         self.bot = bot
         self.guild = guild
-        self.author_id = author_id
         self.channel = channel
-        self.active_category: str = initial_category
-        self.current_page: int = 0
-        self.total_pages: int = 1
+        self.category = "words"
+        self.entry_count = 0
+        self.history: List[Tuple[str, str]] = []
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                view=error_view("Only the person who used `/leaderboard` can interact with these buttons."),
-                ephemeral=True,
-            )
-            return False
-        return True
+    def _name(self, user_id: int) -> str:
+        member = self.guild.get_member(user_id)
+        return member.display_name if member else f"<@{user_id}>"
 
-    async def build(self) -> None:
-        self.clear_items()
-        cid = self.channel.id if self.channel else None
-        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    async def load(self, category: str) -> None:
+        self.category = category
+        self.current_page = 0
+        channel_id = self.channel.id if self.channel else None
 
-        if self.active_category == "words":
-            title = "📝 Word Count Leaderboard"
-            unit = "words"
-            subtitle = f"Top word contributors in {self.channel.mention}" if self.channel else "Top word contributors in the server"
-            empty_msg = f"No words recorded yet in {self.channel.mention}." if self.channel else "No words recorded yet in this server."
-            results = await self.bot.db.get_word_leaderboard(self.guild.id, cid)
-            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
-
-        elif self.active_category == "messages":
-            title = "💬 Message Leaderboard"
-            unit = "messages"
-            subtitle = f"Top message contributors in {self.channel.mention}" if self.channel else "Top message contributors in the server"
-            empty_msg = f"No messages recorded yet in {self.channel.mention}." if self.channel else "No messages recorded yet in this server."
-            results = await self.bot.db.get_message_leaderboard(self.guild.id, cid)
-            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
-
-        elif self.active_category == "attachments":
-            title = "📎 Attachment Leaderboard"
-            unit = "attachments"
-            subtitle = f"Top attachment contributors in {self.channel.mention}" if self.channel else "Top attachment contributors in the server"
-            empty_msg = f"No attachments recorded yet in {self.channel.mention}." if self.channel else "No attachments recorded yet in this server."
-            results = await self.bot.db.get_attachment_leaderboard(self.guild.id, cid)
-            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
-
-        elif self.active_category == "emojis":
-            title = "😀 Emoji Leaderboard"
-            unit = "emojis"
-            subtitle = f"Top emoji contributors in {self.channel.mention}" if self.channel else "Top emoji contributors in the server"
-            empty_msg = f"No emojis recorded yet in {self.channel.mention}." if self.channel else "No emojis recorded yet in this server."
-            results = await self.bot.db.get_emoji_leaderboard(self.guild.id, cid)
-            await self._render_standard_leaderboard(title, unit, subtitle, empty_msg, results, medals)
-
-        elif self.active_category == "keywords":
-            await self._render_keywords_leaderboard(cid, medals)
-
-    async def _render_standard_leaderboard(
-        self,
-        title: str,
-        unit: str,
-        subtitle: str,
-        empty_msg: str,
-        results: List[Tuple[int, int]],
-        medals: Dict[int, str],
-    ) -> None:
-        valid_results = []
-        for uid, count in results:
-            member = self.guild.get_member(uid)
-            name = member.display_name if member else f"<@{uid}>"
-            valid_results.append((name, count))
-
-        per_page = 10
-        self.total_pages = max(1, (len(valid_results) + per_page - 1) // per_page)
-        if self.current_page >= self.total_pages:
-            self.current_page = 0
-
-        if not valid_results:
-            desc = f"{subtitle}\n\n*{empty_msg}*"
-            footer_text = "Page 1/1 • Total users: 0"
-        else:
-            start_idx = self.current_page * per_page
-            end_idx = min(start_idx + per_page, len(valid_results))
-            page_slice = valid_results[start_idx:end_idx]
-
-            lines = []
-            for rank, (name, count) in enumerate(page_slice, start=start_idx + 1):
-                prefix = medals.get(rank, f"**{rank}.**")
-                lines.append(f"{prefix} **{name}** - {count:,} {unit}")
-
-            desc = f"{subtitle}\n\n" + "\n".join(lines)
-            footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total users: {len(valid_results)}"
-
-        fields: Optional[List[Tuple[str, str]]] = None
+        self.history = []
         if self.channel is not None:
-            monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
-            if monthly_data:
-                m_lines = [
-                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments • {emo_cnt:,} emojis"
-                    for y, m, w, msg_cnt, att_cnt, emo_cnt in monthly_data
+            rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
+            if rows:
+                lines = [
+                    f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
+                    for year, month, words, messages, attachments, emojis in rows
                 ]
-                fields = [("📅 Monthly Channel History (Newest to Oldest)", "\n".join(m_lines))]
+                self.history = [("Monthly history, newest first", "\n".join(lines))]
 
-        container = create_v2_container(
-            title=title,
-            description=desc,
-            fields=fields,
-            footer=footer_text,
+        if category == "keywords":
+            per_keyword: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+            for keyword, count, user_id in await self.bot.db.get_keyword_leaderboard(self.guild.id, channel_id):
+                per_keyword[keyword][user_id] += count
+            entries: List = sorted(per_keyword.items())
+            size = 5
+        else:
+            entries = await self.bot.db.get_leaderboard(category, self.guild.id, channel_id)
+            size = 10
+        self.entry_count = len(entries)
+        self.set_pages([entries[i:i + size] for i in range(0, len(entries), size)] or [[]])
+
+    def format_page(self, chunk: List) -> discord.ui.Container:
+        where = self.channel.mention if self.channel else "this server"
+        fields: List[Tuple[str, str]] = []
+        if self.category == "keywords":
+            description = f"Who says each keyword most in {where}"
+            if not chunk:
+                description += "\n\nNo keyword use recorded yet."
+            for keyword, users in chunk:
+                top = sorted(users.items(), key=lambda item: item[1], reverse=True)[:10]
+                fields.append((
+                    f'"{keyword}"',
+                    "\n".join(f"{rank_prefix(rank)} **{self._name(uid)}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
+                ))
+            footer = f"{self.entry_count} keyword(s)"
+        else:
+            start = self.current_page * 10 + 1
+            lines = [
+                f"{rank_prefix(rank)} **{self._name(uid)}** · {count:,} {self.category}"
+                for rank, (uid, count) in enumerate(chunk, start=start)
+            ]
+            description = f"Top members in {where}\n\n" + ("\n".join(lines) or "Nothing recorded yet.")
+            footer = f"{self.entry_count} member(s)"
+
+        return create_v2_container(
+            title=f"{LEADERBOARDS[self.category]} leaderboard",
+            description=description,
+            fields=(fields + self.history) or None,
+            footer=footer,
             color=BRAND_COLOR,
         )
 
-        container.add_item(discord.ui.Separator())
-        container.add_item(self._build_category_row())
+    def extra_rows(self) -> List[discord.ui.ActionRow]:
+        return [
+            discord.ui.ActionRow(*(
+                make_button(
+                    label,
+                    discord.ButtonStyle.primary if key == self.category else discord.ButtonStyle.secondary,
+                    self._switch_to(key),
+                    disabled=key == self.category,
+                )
+                for key, label in LEADERBOARDS.items()
+            ))
+        ]
 
-        if self.total_pages > 1:
-            container.add_item(self._build_pagination_row())
+    def _switch_to(self, category: str) -> Callback:
+        async def callback(interaction: discord.Interaction) -> None:
+            await self.load(category)
+            await self.update_page(interaction)
 
-        self.add_item(container)
-
-    async def _render_keywords_leaderboard(
-        self,
-        cid: Optional[int],
-        medals: Dict[int, str],
-    ) -> None:
-        subtitle = f"Top keyword usage in {self.channel.mention}" if self.channel else "Top keyword usage in the server"
-        raw_results = await self.bot.db.get_keyword_leaderboard(self.guild.id, cid)
-
-        kw_map: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
-        for kw, cnt, uid in raw_results:
-            kw_map[kw][uid] += cnt
-
-        keyword_data = []
-        for kw in sorted(kw_map.keys()):
-            users_sorted = sorted(kw_map[kw].items(), key=lambda x: x[1], reverse=True)
-            valid_users = []
-            for uid, count in users_sorted:
-                member = self.guild.get_member(uid)
-                name = member.display_name if member else f"<@{uid}>"
-                valid_users.append((name, count))
-            if valid_users:
-                keyword_data.append((kw, valid_users))
-
-        per_page = 5
-        self.total_pages = max(1, (len(keyword_data) + per_page - 1) // per_page)
-        if self.current_page >= self.total_pages:
-            self.current_page = 0
-
-        fields: Optional[List[Tuple[str, str]]] = None
-        if not keyword_data:
-            desc = f"{subtitle}\n\n*No keyword usage has been recorded yet.*"
-            footer_text = "Page 1/1 • Total keywords: 0"
-        else:
-            desc = subtitle
-            start_idx = self.current_page * per_page
-            end_idx = min(start_idx + per_page, len(keyword_data))
-            page_slice = keyword_data[start_idx:end_idx]
-
-            fields = []
-            for kw, users in page_slice:
-                user_lines = []
-                for i, (name, count) in enumerate(users[:10], start=1):
-                    prefix = medals.get(i, f"**{i}.**")
-                    user_lines.append(f"{prefix} **{name}**: {count:,}")
-                fields.append((f'🔑 Keyword: "{kw}"', "\n".join(user_lines)))
-
-            footer_text = f"Page {self.current_page + 1}/{self.total_pages} • Total keywords: {len(keyword_data)}"
-
-        if self.channel is not None:
-            monthly_data = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
-            if monthly_data:
-                m_lines = [
-                    f"• **{calendar.month_name[m]} {y}**: {w:,} words • {msg_cnt:,} msgs • {att_cnt:,} attachments • {emo_cnt:,} emojis"
-                    for y, m, w, msg_cnt, att_cnt, emo_cnt in monthly_data
-                ]
-                if fields is None:
-                    fields = []
-                fields.append(("📅 Monthly Channel History (Newest to Oldest)", "\n".join(m_lines)))
-
-        container = create_v2_container(
-            title="🔑 Keyword Leaderboard",
-            description=desc,
-            fields=fields,
-            footer=footer_text,
-            color=BRAND_COLOR,
-        )
-
-        container.add_item(discord.ui.Separator())
-        container.add_item(self._build_category_row())
-
-        if self.total_pages > 1:
-            container.add_item(self._build_pagination_row())
-
-        self.add_item(container)
-
-    def _build_category_row(self) -> discord.ui.ActionRow:
-        btn_words = discord.ui.Button(
-            label="Words",
-            emoji="📝",
-            style=discord.ButtonStyle.primary if self.active_category == "words" else discord.ButtonStyle.secondary,
-            disabled=self.active_category == "words",
-        )
-        btn_words.callback = self._on_switch_words
-
-        btn_messages = discord.ui.Button(
-            label="Messages",
-            emoji="💬",
-            style=discord.ButtonStyle.primary if self.active_category == "messages" else discord.ButtonStyle.secondary,
-            disabled=self.active_category == "messages",
-        )
-        btn_messages.callback = self._on_switch_messages
-
-        btn_attachments = discord.ui.Button(
-            label="Attachments",
-            emoji="📎",
-            style=discord.ButtonStyle.primary if self.active_category == "attachments" else discord.ButtonStyle.secondary,
-            disabled=self.active_category == "attachments",
-        )
-        btn_attachments.callback = self._on_switch_attachments
-
-        btn_emojis = discord.ui.Button(
-            label="Emojis",
-            emoji="😀",
-            style=discord.ButtonStyle.primary if self.active_category == "emojis" else discord.ButtonStyle.secondary,
-            disabled=self.active_category == "emojis",
-        )
-        btn_emojis.callback = self._on_switch_emojis
-
-        btn_keywords = discord.ui.Button(
-            label="Keywords",
-            emoji="🔑",
-            style=discord.ButtonStyle.primary if self.active_category == "keywords" else discord.ButtonStyle.secondary,
-            disabled=self.active_category == "keywords",
-        )
-        btn_keywords.callback = self._on_switch_keywords
-
-        return discord.ui.ActionRow(btn_words, btn_messages, btn_attachments, btn_emojis, btn_keywords)
-
-    def _build_pagination_row(self) -> discord.ui.ActionRow:
-        btn_prev = discord.ui.Button(
-            label="◀️ Previous",
-            style=discord.ButtonStyle.secondary,
-            disabled=self.current_page <= 0,
-        )
-        btn_prev.callback = self._on_prev_page
-
-        btn_ind = discord.ui.Button(
-            label=f"Page {self.current_page + 1}/{self.total_pages}",
-            style=discord.ButtonStyle.primary,
-            disabled=True,
-        )
-        btn_ind.callback = self._on_indicator
-
-        btn_next = discord.ui.Button(
-            label="Next ▶️",
-            style=discord.ButtonStyle.secondary,
-            disabled=self.current_page >= self.total_pages - 1,
-        )
-        btn_next.callback = self._on_next_page
-
-        return discord.ui.ActionRow(btn_prev, btn_ind, btn_next)
-
-    async def _on_switch_words(self, interaction: discord.Interaction) -> None:
-        self.active_category = "words"
-        self.current_page = 0
-        await self.refresh_and_edit(interaction)
-
-    async def _on_switch_messages(self, interaction: discord.Interaction) -> None:
-        self.active_category = "messages"
-        self.current_page = 0
-        await self.refresh_and_edit(interaction)
-
-    async def _on_switch_attachments(self, interaction: discord.Interaction) -> None:
-        self.active_category = "attachments"
-        self.current_page = 0
-        await self.refresh_and_edit(interaction)
-
-    async def _on_switch_emojis(self, interaction: discord.Interaction) -> None:
-        self.active_category = "emojis"
-        self.current_page = 0
-        await self.refresh_and_edit(interaction)
-
-    async def _on_switch_keywords(self, interaction: discord.Interaction) -> None:
-        self.active_category = "keywords"
-        self.current_page = 0
-        await self.refresh_and_edit(interaction)
-
-    async def _on_prev_page(self, interaction: discord.Interaction) -> None:
-        if self.current_page > 0:
-            self.current_page -= 1
-        await self.refresh_and_edit(interaction)
-
-    async def _on_next_page(self, interaction: discord.Interaction) -> None:
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-        await self.refresh_and_edit(interaction)
-
-    async def _on_indicator(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-
-    async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
-        await self.build()
-        await interaction.response.edit_message(view=self)
+        return callback
 
 
 class Counter_Cmds(commands.Cog):
-    def __init__(self, bot) -> None:
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        if not hasattr(self.bot, "db"):
-            self.bot.db = WordCounterDatabase(self.bot)
-        print("Counter_Cmds cog loaded")
 
-    async def cog_load(self) -> None:
-        await self.bot.db.ensure_connected()
-
-    @app_commands.command(
-        name="settings",
-        description="Interactive settings dashboard to configure channels, categories, keywords, and resets",
-    )
+    @app_commands.command(name="settings", description="Choose what gets tracked, manage keywords and reset data")
     @app_commands.default_permissions(manage_guild=True)
     async def settings_command(self, interaction: discord.Interaction) -> None:
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                view=error_view("This command can only be used inside a server."),
-                ephemeral=True,
-            )
-            return
-
-        if not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message(
-                view=error_view("You need the `Manage Server` permission to access settings."),
-                ephemeral=True,
-            )
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
             return
 
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
@@ -1075,38 +738,20 @@ class Counter_Cmds(commands.Cog):
         menu.build_ui()
         await interaction.response.send_message(view=menu, ephemeral=True)
 
-    @app_commands.command(
-        name="leaderboard",
-        description="Shows server leaderboards for words, messages, attachments, emojis, and keywords",
-    )
-    @app_commands.describe(channel="Optional channel to filter the leaderboard by")
-    async def leaderboard(
-        self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None
-    ) -> None:
+    @app_commands.command(name="leaderboard", description="Leaderboards for words, messages, attachments, emojis and keywords")
+    @app_commands.describe(channel="Only count activity in this channel")
+    async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
         if interaction.guild is None:
-            await interaction.response.send_message(
-                view=error_view("This command can only be used inside a server."),
-                ephemeral=True,
-            )
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
-
         if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
-            await interaction.response.send_message(
-                view=error_view("Word count is not enabled on this server! Use `/settings` to enable it."),
-                ephemeral=True,
-            )
+            await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE), ephemeral=True)
             return
 
-        view = UnifiedLeaderboardView(
-            bot=self.bot,
-            guild=interaction.guild,
-            author_id=interaction.user.id,
-            channel=channel,
-            initial_category="words",
-        )
-        await view.build()
-        await interaction.response.send_message(view=view)
+        paginator = LeaderboardPaginator(self.bot, interaction.guild, interaction.user.id, channel)
+        await paginator.load("words")
+        await paginator.start(interaction)
 
 
-async def setup(bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Counter_Cmds(bot))
