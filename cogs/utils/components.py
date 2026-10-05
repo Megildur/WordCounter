@@ -1,44 +1,62 @@
 from __future__ import annotations
-import re
-from typing import Optional, Sequence, Tuple, List, Set, Union, Dict
+from typing import Awaitable, Callable, Dict, Iterable, Optional, Sequence, Set, Tuple, Union
 import discord
+from cogs.utils.counting import count_emojis
 
-CUSTOM_EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]{2,32}:\d+>')
+BRAND_COLOR = discord.Colour(0xB62402)
+WARNING_COLOR = discord.Colour(0xD26B42)
+NEUTRAL_COLOR = discord.Colour(0x908C90)
+SUCCESS_COLOR = discord.Colour(0x5C8A3E)
+ERROR_COLOR = discord.Colour(0xE04B3C)
 
-UNICODE_EMOJI_PATTERN = re.compile(
-    r'(?:'
-    r'[\U0001F1E6-\U0001F1FF]{2}'
-    r'|[\U0001F600-\U0001F64F]'
-    r'|[\U0001F300-\U0001F5FF]'
-    r'|[\U0001F680-\U0001F6FF]'
-    r'|[\U0001F700-\U0001F77F]'
-    r'|[\U0001F780-\U0001F7FF]'
-    r'|[\U0001F800-\U0001F8FF]'
-    r'|[\U0001F900-\U0001F9FF]'
-    r'|[\U0001FA00-\U0001FA6F]'
-    r'|[\U0001FA70-\U0001FAFF]'
-    r'|[\U00002600-\U000026FF]'
-    r'|[\U00002700-\U000027BF]'
-    r'|[\U00002300-\U000023FF]'
-    r'|[\U00002B50\U00002B55\U0000203C\U00002049\U00002139\U00002122\U00003030\U0000303D\U000000A9\U000000AE]'
-    r')(?:[\U0001F3FB-\U0001F3FF\uFE0E\uFE0F]|\u200D(?:[\U0001F000-\U0001FAFF\u2600-\u27BF][\U0001F3FB-\U0001F3FF\uFE0E\uFE0F]*))*'
-)
+TEXT_BUDGET = 3800
+TRACKING_OFF_MESSAGE = "Tracking is off in this server. An admin can turn it on in `/settings`."
+SERVER_ONLY_MESSAGE = "This command only works in a server."
+
+Callback = Callable[[discord.Interaction], Awaitable[None]]
 
 
-def count_emojis(text: str) -> int:
-    if not text:
-        return 0
-    c_count = len(CUSTOM_EMOJI_PATTERN.findall(text))
-    cleaned = CUSTOM_EMOJI_PATTERN.sub('', text)
-    u_count = len(UNICODE_EMOJI_PATTERN.findall(cleaned))
-    return c_count + u_count
+def make_button(
+    label: str,
+    style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+    callback: Optional[Callback] = None,
+    *,
+    disabled: bool = False,
+    url: Optional[str] = None,
+) -> discord.ui.Button:
+    if url:
+        return discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
+    button = discord.ui.Button(label=label, style=style, disabled=disabled)
+    if callback is not None:
+        button.callback = callback
+    return button
 
 
-BRAND_COLOR = discord.Colour.from_str('#af2202')
-SUCCESS_COLOR = discord.Colour.from_rgb(0, 255, 136)
-ERROR_COLOR = discord.Colour.from_rgb(255, 68, 68)
-WARNING_COLOR = discord.Colour.from_rgb(255, 170, 0)
-INFO_COLOR = discord.Colour.blue()
+def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:
+    mark = "**" if bold else ""
+    parts = ((words, "words"), (messages, "messages"), (attachments, "attachments"), (emojis, "emojis"))
+    return " · ".join(f"{mark}{value:,}{mark} {label}" for value, label in parts)
+
+
+def keyword_summary(counts: Iterable[Tuple[str, int]]) -> str:
+    return " · ".join(f"`{keyword}` {count:,}" for keyword, count in counts)
+
+
+def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
+    if interaction.guild is None:
+        return SERVER_ONLY_MESSAGE
+    if not interaction.user.guild_permissions.manage_guild:
+        return "You need the Manage Server permission to do this."
+    return None
+
+
+def clip_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("\n", 0, limit - 2)
+    if cut <= 0:
+        cut = limit - 2
+    return text[:cut].rstrip() + "\n…"
 
 
 def create_v2_container(
@@ -52,44 +70,26 @@ def create_v2_container(
     action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
 ) -> discord.ui.Container:
     container = discord.ui.Container(accent_colour=color)
+    footer_text = f"-# {footer}" if footer else ""
+    budget = TEXT_BUDGET - len(footer_text)
 
-    header_text = f"### {title}"
-    if description:
-        header_text += f"\n{description}"
-
+    header = clip_text(f"### {title}\n{description}" if description else f"### {title}", budget)
+    budget -= len(header)
     if thumbnail_url:
         container.add_item(
-            discord.ui.Section(
-                discord.ui.TextDisplay(header_text),
-                accessory=discord.ui.Thumbnail(thumbnail_url),
-            )
+            discord.ui.Section(discord.ui.TextDisplay(header), accessory=discord.ui.Thumbnail(thumbnail_url))
         )
     else:
-        container.add_item(discord.ui.TextDisplay(header_text))
+        container.add_item(discord.ui.TextDisplay(header))
 
-    if fields:
+    if fields and budget > 50:
+        body = "\n\n".join(f"**{name}**\n{value}" for name, value in fields)
         container.add_item(discord.ui.Separator())
-        field_chunks: List[str] = []
-        current_chunk = ""
-        for name, value in fields:
-            entry = f"**{name}**\n{value}\n\n"
-            if len(current_chunk) + len(entry) > 3500:
-                if current_chunk:
-                    field_chunks.append(current_chunk.strip())
-                current_chunk = entry
-            else:
-                current_chunk += entry
-        if current_chunk.strip():
-            field_chunks.append(current_chunk.strip())
+        container.add_item(discord.ui.TextDisplay(clip_text(body, budget)))
 
-        for idx, chunk in enumerate(field_chunks):
-            if idx > 0:
-                container.add_item(discord.ui.Separator())
-            container.add_item(discord.ui.TextDisplay(chunk))
-
-    if footer:
+    if footer_text:
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(f"-# {footer}"))
+        container.add_item(discord.ui.TextDisplay(footer_text))
 
     if action_rows:
         container.add_item(discord.ui.Separator())
@@ -111,31 +111,43 @@ def create_v2_view(
     timeout: Optional[float] = 180.0,
 ) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=timeout)
-    container = create_v2_container(
-        title=title,
-        description=description,
-        fields=fields,
-        footer=footer,
-        thumbnail_url=thumbnail_url,
-        color=color,
-        action_rows=action_rows,
+    view.add_item(
+        create_v2_container(
+            title=title,
+            description=description,
+            fields=fields,
+            footer=footer,
+            thumbnail_url=thumbnail_url,
+            color=color,
+            action_rows=action_rows,
+        )
     )
-    view.add_item(container)
     if not action_rows:
         view.stop()
     return view
 
 
-def error_view(description: str, title: str = "❌ Error", footer: Optional[str] = None) -> discord.ui.LayoutView:
+def error_view(description: str, title: str = "Something went wrong", footer: Optional[str] = None) -> discord.ui.LayoutView:
     return create_v2_view(title=title, description=description, footer=footer, color=ERROR_COLOR)
 
 
-def success_view(description: str, title: str = "✅ Success", footer: Optional[str] = None) -> discord.ui.LayoutView:
-    return create_v2_view(title=title, description=description, footer=footer, color=SUCCESS_COLOR)
+class AuthorOnlyView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        author_id: Optional[int],
+        denied_message: str = "Only the person who opened this can use it.",
+        timeout: Optional[float] = 180.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.denied_message = denied_message
 
-
-def warning_view(description: str, title: str = "⚠️ Warning", footer: Optional[str] = None) -> discord.ui.LayoutView:
-    return create_v2_view(title=title, description=description, footer=footer, color=WARNING_COLOR)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.author_id is None or interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message(view=error_view(self.denied_message), ephemeral=True)
+        return False
 
 
 def check_channel_with_config(
@@ -147,66 +159,42 @@ def check_channel_with_config(
 ) -> Tuple[bool, int]:
     if isinstance(channel_or_id, int):
         channel_id = channel_or_id
-        channel_obj = guild.get_channel_or_thread(channel_id)
+        channel = guild.get_channel_or_thread(channel_id)
     else:
-        channel_obj = channel_or_id
-        channel_id = channel_obj.id
+        channel = channel_or_id
+        channel_id = channel.id
 
     parent_id: Optional[int] = None
     category_id: Optional[int] = None
-    effective_channel_id: int = channel_id
+    effective_id = channel_id
 
-    if channel_obj is not None:
-        if isinstance(channel_obj, discord.Thread) or getattr(channel_obj, 'type', None) in (
-            discord.ChannelType.public_thread,
-            discord.ChannelType.private_thread,
-            discord.ChannelType.news_thread,
-        ):
-            parent_id = getattr(channel_obj, 'parent_id', None)
-            if parent_id:
-                effective_channel_id = parent_id
-            parent_chan = getattr(channel_obj, 'parent', None) or (guild.get_channel(parent_id) if parent_id else None)
-            category_id = getattr(parent_chan, 'category_id', None) if parent_chan else None
-        else:
-            category_id = getattr(channel_obj, 'category_id', None)
-    elif thread_parent_map and channel_id in thread_parent_map:
-        parent_id = thread_parent_map[channel_id]
-        if parent_id:
-            effective_channel_id = parent_id
-            parent_chan = guild.get_channel(parent_id)
-            category_id = getattr(parent_chan, 'category_id', None) if parent_chan else None
+    if isinstance(channel, discord.Thread):
+        parent_id = channel.parent_id
+    elif channel is not None:
+        category_id = getattr(channel, "category_id", None)
+    elif thread_parent_map:
+        parent_id = thread_parent_map.get(channel_id)
+
+    if parent_id:
+        effective_id = parent_id
+        parent = guild.get_channel(parent_id)
+        category_id = getattr(parent, "category_id", None)
 
     if not watched_ids:
-        return False, effective_channel_id
+        return False, effective_id
 
-    if (
-        channel_id in ignored_ids
-        or effective_channel_id in ignored_ids
-        or (parent_id and parent_id in ignored_ids)
-        or (category_id and category_id in ignored_ids)
-    ):
-        return False, effective_channel_id
-
-    if 1 in watched_ids:
-        return True, effective_channel_id
-
-    if (
-        channel_id in watched_ids
-        or effective_channel_id in watched_ids
-        or (parent_id and parent_id in watched_ids)
-        or (category_id and category_id in watched_ids)
-    ):
-        return True, effective_channel_id
-
-    return False, effective_channel_id
+    related = {channel_id, effective_id, parent_id, category_id} - {None}
+    if related & ignored_ids:
+        return False, effective_id
+    if 1 in watched_ids or related & watched_ids:
+        return True, effective_id
+    return False, effective_id
 
 
 def format_channel_or_category(guild: discord.Guild, target_id: int) -> str:
     if target_id == 1:
-        return "🌐 **Entire Server**"
-    ch = guild.get_channel(target_id)
-    if isinstance(ch, discord.CategoryChannel):
-        return f"📁 **{ch.name}** *(Category)*"
-    elif ch is not None:
-        return f"{ch.mention}"
-    return f"<#{target_id}>"
+        return "**Entire server**"
+    channel = guild.get_channel(target_id)
+    if isinstance(channel, discord.CategoryChannel):
+        return f"**{channel.name}** (category)"
+    return channel.mention if channel is not None else f"<#{target_id}>"
