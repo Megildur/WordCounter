@@ -1,93 +1,78 @@
-# 📊 WordCounter
+# WordCounter
 
 <p align="center">
   <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0">
-    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
+    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B62402?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
   <a href="https://discord.gg/prUsgFHvRS">
-    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-57F287?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
+    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-D26B42?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
   <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.12">
-    <img src="https://img.shields.io/badge/Release-v1.0.12-blue?style=for-the-badge" alt="Release v1.0.12" />
+    <img src="https://img.shields.io/badge/Release-v1.0.12-908C90?style=for-the-badge" alt="Release v1.0.12" />
   </a>
 </p>
 
-A feature-rich Discord bot designed to track **words**, **messages**, **attachments** (including stickers), **emojis** (Unicode & custom), **media links**, and **custom keywords** across your Discord server with real-time analytics, monthly history breakdowns, and retroactive past-message analysis.
+A Discord bot that counts **words**, **messages**, **attachments** (including stickers and links), **emojis** (Unicode and custom) and **custom keywords** in your server. It keeps monthly history per channel and can count messages sent before it joined.
 
----
+## Links
 
-## 🔗 Quick Links & Invites
+| | |
+| :--- | :--- |
+| Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
+| Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
+| Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
+| Privacy Policy | [PRIVACY.md](PRIVACY.md) |
+| Terms of Service | [TERMS.md](TERMS.md) |
 
-| Link | Description | URL |
+## What it does
+
+- **Live tracking.** Every message in a tracked channel is counted as it's sent, and counts are corrected when messages are edited or deleted.
+- **Monthly history.** Everything is grouped by month and channel, both for live tracking and for past messages.
+- **Member stats** (`/stats user`). Totals at the top, then a month-by-month view you can page through, with a per-channel breakdown.
+- **Leaderboards** (`/leaderboard [channel]`). Switch between words, messages, attachments, emojis and keywords. Pick a channel to see its top members and monthly history.
+- **Past messages** (`/analyze_chat`). Counts messages that weren't counted live:
+  - WordCounter records when tracking is turned on and off, so messages already counted live are skipped and nothing is counted twice. Gaps when tracking was off are filled in, and messages wiped by a reset are counted again.
+  - `single_user` uses Discord's message search to find one member's messages, usually in a few minutes. If search isn't available for the server, it reads channel history instead.
+  - `whole_server` reads every tracked channel, voice chat and thread (active and archived) once, 100 messages per request, and credits each message to its author. Channels the bot can't read are listed at the end so you know what was left out.
+  - Channel reads save a checkpoint every minute. If the bot restarts mid-run, it picks up where it stopped on its own.
+  - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
+- **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
+- **Coming soon: Swear Jar.** Track swearing in chat and see who owes the jar the most.
+
+## Commands
+
+| Command | Who can use it | What it does |
 | :--- | :--- | :--- |
-| 🤖 **Invite WordCounter** | Add the bot directly to your Discord server | [**Add Bot to Server**](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
-| 💬 **Discord Support Server** | Get help, report bugs, and suggest features | [**Join Community Server**](https://discord.gg/prUsgFHvRS) |
-| 📦 **GitHub Repository** | View source code and release notes | [**Megildur/WordCounter**](https://github.com/Megildur/WordCounter) |
+| `/help [ephemeral]` | Everyone | Command guide and invite links. |
+| `/advertisement`, `/ad` | Everyone | Posts a card about WordCounter with invite links. |
+| `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis and keywords. |
+| `/stats user <member>` | Everyone | A member's totals with monthly and per-channel history. |
+| `/keyword list` | Everyone | The keywords this server tracks. |
+| `/settings` | Manage Server | Tracking mode, channels, keywords and data resets. |
+| `/analyze_chat single_user <member>` | Manage Server | Counts one member's past messages. |
+| `/analyze_chat whole_server` | Manage Server | Counts past messages for every member not analyzed yet. |
 
----
+Right-click menus:
+- **User Stats**: right-click a member, then Apps > User Stats.
+- **Message Word Count**: right-click a message, then Apps > Message Word Count.
 
-## ✨ Key Features
+## Self-hosting
 
-- **⚡ Real-Time Tracking**: Counts words, messages, attachments (including Discord stickers), emojis (Unicode and custom), media links, and custom keywords instantly on `on_message`, with accurate updates on edits and deletions.
-- **📅 Monthly & Yearly Channel Analytics**: All stats are grouped by month, year, and channel from newest to oldest for both live tracking and historical message sweeps.
-- **👤 Interactive User Stats (`/stats user`)**:
-  - Displays overall server totals (words, messages, attachments, emojis, keywords) at the top.
-  - Interactive month-by-month timeline underneath with dropdown navigation (`Month / Year...`) and `◀️ Newer` / `Older ▶️` buttons.
-  - Shows per-channel activity breakdowns for the selected month.
-- **🏆 Unified Leaderboards (`/leaderboard [channel]`)**:
-  - Switch interactively between **Words**, **Messages**, **Attachments**, **Emojis**, and **Keywords** using buttons.
-  - Optional `channel` filter to view top 10 contributors in a specific channel plus a complete chronological monthly history breakdown (newest to oldest).
-- **🔍 Retroactive Chat Deep-Sweep (`/analyze_chat`)**:
-  - Scan messages sent up to the command execution time via Discord's Guild Search API.
-  - Supports single-user analysis or whole-server sweeping with live progress tracking, dynamic multi-server scaled safety pacing (20.0s base delay per page, scaling by +5s per additional active server to avoid rate limits), and adaptive ETA estimation.
-  - ⏳ **Duration Notice**: Scanning large message histories takes a long time (potentially multiple hours for thousands of messages).
-- **⚙️ Interactive Settings Dashboard (`/settings`)**:
-  - Switch between **Whole Server Mode** (with ignore lists) or **Specific Channels/Categories Mode**.
-  - Add, edit, or remove tracked keywords with instant regex matching.
-  - Reset individual user stats, specific channels, or perform a complete server wipe with re-analysis unlock tools.
-- **🎨 Modern Components V2 UI**: Clean, containerized Discord layout views with brand-colored embeds and responsive controls.
-- **🔮 Coming Soon: 💰 Swear Jar Feature**: An interactive server swear jar to track cursing and profanities, finding out who owes the jar the most pennies!
+### Requirements
+- Python 3.10 or newer
+- A [Discord application](https://discord.com/developers/applications) with the **Message Content** and **Server Members** intents turned on
 
----
+### Install
 
-## 📋 Slash Commands Reference
-
-| Command | Scope | Description |
-| :--- | :--- | :--- |
-| `/help [ephemeral]` | Everyone | Comprehensive command guide, tips, and invite links. |
-| `/advertisement`, `/ad` | Everyone | Share a showcase card of WordCounter features and invite links. |
-| `/leaderboard [channel]` | Everyone | Interactive leaderboard for Words, Messages, Attachments, Emojis, and Keywords. When filtering by channel, shows top 10 plus channel monthly history. |
-| `/stats user <member>` | Everyone | Member stats with overall totals and monthly channel history navigation. |
-| `/keyword list` | Everyone | Lists all custom keywords currently watched in the server. |
-| `/settings` | Admins (`Manage Server`) | Interactive control dashboard for tracking rules, channels, keywords, and data resets. |
-| `/analyze_chat single_user <member>` | Admins (`Manage Server`) | Retroactively scans a member's chat history up to command execution (takes a long time; 20s+ safety pacing). |
-| `/analyze_chat whole_server` | Admins (`Manage Server`) | Sweeps chat history for all eligible non-bot server members up to command execution with live progress & multi-server pacing (takes multiple hours). |
-
-### Context Menus
-- **User Stats** *(Right-click User -> Apps -> User Stats)*: Opens the interactive user statistics menu.
-- **Message Word Count** *(Right-click Message -> Apps -> Message Word Count)*: Shows word count of that specific message.
-
----
-
-## 🚀 Setup & Self-Hosting
-
-### Prerequisites
-- Python 3.10+
-- A registered [Discord Bot Application](https://discord.com/developers/applications) with:
-  - **Message Content Intent** enabled
-  - **Server Members Intent** enabled
-
-### Installation
-
-1. **Clone the repository**:
+1. Clone the repository:
    ```bash
    git clone https://github.com/Megildur/WordCounter.git
    cd WordCounter
    ```
 
-2. **Set up a virtual environment**:
+2. Create a virtual environment:
    ```bash
    python -m venv .venv
    # Windows:
@@ -96,70 +81,45 @@ A feature-rich Discord bot designed to track **words**, **messages**, **attachme
    source .venv/bin/activate
    ```
 
-3. **Install dependencies**:
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Environment Variables**:
-   Create a `.env` file (or set environment variables) in the root directory:
+4. Create a `.env` file in the project root:
    ```env
-   # Discord Bot Application Token
    API_TOKEN=your_bot_token_here
-
-   # Support server invite link
    BOT_SERVER=https://discord.gg/prUsgFHvRS
-
-   # Webhook URL for server join/leave logging
    BOT_WEBHOOK_URL=https://discord.com/api/webhooks/...
-
-   # Comma-separated Discord guild IDs authorized for owner/admin commands
    ALLOWED_GUILDS=123456789012345678,987654321098765432
    ```
+   - `API_TOKEN`: your bot token.
+   - `BOT_SERVER`: support server invite shown in help and error messages.
+   - `BOT_WEBHOOK_URL`: optional webhook that gets a message when the bot joins or leaves a server.
+   - `ALLOWED_GUILDS`: servers where the owner-only `/owner` commands are available.
 
-5. **Run the bot**:
+5. Run the bot:
    ```bash
    python main.py
    ```
 
-6. **Add Bot to Allowed Server**:
-   - In the [Discord Developer Portal](https://discord.com/developers/applications), navigate to **OAuth2** -> **URL Generator** (or configure **Installation** -> **Default Install Settings** for Guild Install):
-     - **Scopes**:
-       - `bot`
-       - `applications.commands`
-     - **Bot Permissions** (Permission Integer: `1126177200925776`):
-       - `Add Reactions`
-       - `Attach Files`
-       - `Embed Links`
-       - `Manage Channels` *(Required for upcoming Swear Jar)*
-       - `Manage Messages` *(Required for upcoming Swear Jar)*
-       - `Manage Roles` *(Required for upcoming Swear Jar)*
-       - `Mention Everyone` *(Required for upcoming Swear Jar)*
-       - `Read Message History`
-       - `Send Messages`
-       - `Send Messages in Threads`
-       - `Use External Apps`
-       - `Use Slash Commands` (`Use Application Commands`)
-       - `View Channels`
-   - Use the generated invite URL to add the bot to your server listed in `ALLOWED_GUILDS`:
-     ```text
-     https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0
-     ```
+6. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
+   - View Channels, Read Message History, Send Messages, Send Messages in Threads
+   - Embed Links, Attach Files, Add Reactions, Use Slash Commands, Use External Apps
+   - Manage Channels, Manage Messages, Manage Roles, Mention Everyone (for the upcoming Swear Jar)
 
-7. **Sync Slash Commands**:
-   - In any server listed in your `ALLOWED_GUILDS`, run the quicksync command:
-     ```text
-     !wcquicksync
-     ```
-   - Then run the slash command to complete the guild command sync:
-     ```text
-     /owner sync sync_type:Guild
-     ```
+   ```text
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0
+   ```
 
----
+   `/analyze_chat whole_server` can read private archived threads only if the bot has **Manage Threads** or was added to those threads.
 
-## 🛡️ Support & Community
+7. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
+   ```text
+   !wcquicksync
+   ```
+   then run `/owner sync sync_type:Guild` (or `Global` to publish everywhere).
 
-Need assistance, found an issue, or want to suggest new features?
-- **Join our Discord**: [https://discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS)
-- **Invite WordCounter**: [https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0)
+## Support
+
+Questions, bug reports and ideas go in the [support server](https://discord.gg/prUsgFHvRS).
