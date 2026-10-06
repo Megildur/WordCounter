@@ -1,10 +1,10 @@
 from __future__ import annotations
 import logging
-import aiohttp
 import discord
 from discord.ext import commands
 from cogs.utils.components import ERROR_COLOR, SUCCESS_COLOR, create_v2_view
 from cogs.utils.config import WEBHOOK_URL, daily_log_handler
+from cogs.utils.http import get_session
 
 
 def guild_log_view(bot: commands.Bot, guild: discord.Guild, joined: bool) -> discord.ui.LayoutView:
@@ -27,18 +27,16 @@ class ServerJoinLogger(commands.Cog):
         self.handler = daily_log_handler("bot_server_joins.log")
         self.handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
         self.logger.addHandler(self.handler)
-        self.session = aiohttp.ClientSession()
 
     async def cog_unload(self) -> None:
         self.logger.removeHandler(self.handler)
         self.handler.close()
-        await self.session.close()
 
     async def send_webhook_message(self, view: discord.ui.LayoutView) -> None:
         if not WEBHOOK_URL:
             return
         try:
-            await discord.Webhook.from_url(WEBHOOK_URL, session=self.session).send(view=view)
+            await discord.Webhook.from_url(WEBHOOK_URL, session=get_session()).send(view=view)
         except (discord.HTTPException, ValueError) as error:
             self.logger.error("Webhook message failed: %s", error)
 
