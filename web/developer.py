@@ -57,6 +57,6 @@ async def developer_profile(bot) -> Dict[str, Any]:
         "listening": listening,
         "avatar_url": person.display_avatar.with_size(256).url if person is not None else FALLBACK_AVATAR,
         "decoration_url": decoration.url if decoration else None,
-        "banner_url": banner.with_size(600).url if banner else None,
+        "banner_url": banner.with_size(1024).url if banner else None,
         "invite_url": DEVELOPER_INVITE_URL,
     }
