@@ -1,8 +1,10 @@
 from __future__ import annotations
 import calendar
 import hashlib
+import ipaddress
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 import jinja2
 from aiohttp import web
 from cogs.utils.config import BOTZILLA_URL, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
@@ -12,6 +14,7 @@ from web import auth
 ROOT = Path(__file__).parent
 STATIC_MAX_AGE = 60 * 60 * 24 * 7
 SECURE_COOKIES = SITE_URL.startswith("https://")
+SITE_HOST = (urlsplit(SITE_URL).hostname or "").lower()
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -109,8 +112,21 @@ def error_page(request: web.Request, status: int, title: str, message: str) -> w
     return render(request, "error.html", status=status, code=status, title=title, message=message)
 
 
+def _old_address(request: web.Request) -> bool:
+    host = (request.url.host or "").lower().rstrip(".")
+    if not host or host in (SITE_HOST, "localhost"):
+        return False
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return True
+    return False
+
+
 @web.middleware
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
+    if _old_address(request):
+        return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
     try:
         response = await handler(request)
     except web.HTTPNotFound:
