@@ -5,6 +5,7 @@ from discord import AppCommandOptionType, AppCommandType, app_commands
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
 from web import auth
 from web.core import SECURE_COOKIES, client_id, current_user, redirect, render
+from web.developer import developer_profile
 
 routes = web.RouteTableDef()
 
@@ -65,7 +66,14 @@ async def home(request: web.Request) -> web.Response:
         "words": words or None,
     }
     commands = command_reference(bot)
-    return render(request, "index.html", "home", stats=stats, command_count=len(commands["slash"]))
+    return render(
+        request,
+        "index.html",
+        "home",
+        stats=stats,
+        command_count=len(commands["slash"]),
+        developer=await developer_profile(bot),
+    )
 
 
 @routes.get("/commands")

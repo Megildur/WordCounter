@@ -207,12 +207,73 @@
       <div>
         <p class="eyebrow">Specimen 01 &middot; from the same lab</p>
         <h2 id="specimen-title" class="display">Botzilla</h2>
-        <p>Join-to-create voice rooms, mini-games, counting channels and a honeypot that throws out raid bots. Same developer, also free. Need a bot of your own? Botzilla's site has the details.</p>
+        <p>Join-to-create voice rooms, mini-games, counting channels and a honeypot that throws out raid bots. Same developer, also free.</p>
       </div>
       <div class="specimen__actions">
         <a href="{{ botzilla_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">Meet Botzilla</a>
       </div>
     </article>
+  </div>
+</section>
+
+<section id="about-developer" class="section section--surface" aria-labelledby="maker-title">
+  <div class="wrap">
+    <div class="maker">
+      <div class="maker__copy">
+        <p class="eyebrow">Custom bots</p>
+        <h2 id="maker-title" class="section-title display">Need a bot of your own?</h2>
+        <p>
+          Hi, I'm Brandon. I build and run WordCounter and Botzilla on my own, with discord.py, Components V2 layouts, and SQLite or MySQL for anything that needs to be saved.
+        </p>
+        <p>
+          I also take commissions. If your clan, community or business needs moderation tools, an economy or leveling system, game commands, or a hookup to some outside API, message me on Discord and tell me what you have in mind.
+        </p>
+        <div class="chips">
+          <span class="chip chip--plain">Components V2</span>
+          <span class="chip chip--plain">MySQL &amp; SQLite</span>
+          <span class="chip chip--plain">Multiplayer games</span>
+          <span class="chip chip--plain">Custom integrations</span>
+        </div>
+        <div class="maker__actions">
+          <a href="{{ developer.invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">
+            <svg class="icon" aria-hidden="true"><use href="#i-discord"/></svg>
+            <span>Contact me on Discord</span>
+          </a>
+          <a class="link" href="{{ support_url }}" target="_blank" rel="noopener noreferrer">or ask in the support server</a>
+        </div>
+      </div>
+
+      <article class="profile" {% if developer.status %}data-status="{{ developer.status }}"{% endif %} aria-label="{{ developer.name }}'s Discord profile">
+        <div class="profile__banner">
+          {% if developer.banner_url %}<img src="{{ developer.banner_url }}" alt="" width="432" height="136" loading="lazy" decoding="async">{% endif %}
+          {% if developer.status %}
+            <p class="profile__presence">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>{{ developer.status_label }}</span>
+            </p>
+          {% endif %}
+        </div>
+        <div class="profile__body">
+          <div class="profile__id">
+            <div class="profile__avatar">
+              <img class="avatar" src="{{ developer.avatar_url }}" alt="" width="88" height="88" loading="lazy" decoding="async">
+              {% if developer.decoration_url %}<img class="profile__decor" src="{{ developer.decoration_url }}" alt="" width="109" height="109" loading="lazy" decoding="async">{% endif %}
+              {% if developer.status %}<span class="status-dot" aria-hidden="true"></span>{% endif %}
+            </div>
+            <div class="profile__who">
+              <h3 class="profile__name"><span>{{ developer.name }}</span> <span class="tag">{{ developer.tag }}</span></h3>
+              <p class="profile__handle">@{{ developer.username }}</p>
+            </div>
+          </div>
+          <div class="profile__status">
+            <span class="profile__status-label">Status</span>
+            <p>{{ developer.custom_status }}</p>
+            {% if developer.listening %}<p class="profile__listening">Listening to {{ developer.listening }}</p>{% endif %}
+          </div>
+          <p class="profile__foot"><span class="tag tag--accent">Commissions open</span></p>
+        </div>
+      </article>
+    </div>
   </div>
 </section>
 
