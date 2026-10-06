@@ -15,21 +15,42 @@
 {% if guild.icon_url %}<img src="{{ guild.icon_url }}" alt="" width="{{ size }}" height="{{ size }}" loading="lazy">{% else %}<span class="server__initial" aria-hidden="true">{{ guild.name[:1] }}</span>{% endif %}
 {% endmacro %}
 
-{% macro channel_select(name, groups, label, id, empty_label=None, multiple=False, hint=None) %}
+{% macro dropdown(label, menu, field=None) %}
 <div class="form-row">
-  <label for="{{ id }}">{{ label }}</label>
-  <select class="input" id="{{ id }}" name="{{ name }}" {% if multiple %}multiple size="10"{% endif %}>
-    {% if empty_label %}<option value="">{{ empty_label }}</option>{% endif %}
-    {% for group in groups %}
-      <optgroup label="{{ group.label }}">
-        {% for option in group.options %}
-          <option value="{{ option.id }}">{{ option.label }}</option>
-        {% endfor %}
-      </optgroup>
-    {% endfor %}
-  </select>
-  {% if hint %}<p class="form-hint">{{ hint }}</p>{% endif %}
+  <span class="form-label">{{ label }}</span>
+  <details class="dropdown">
+    <summary class="dropdown__button" aria-label="{{ label }}: {{ menu.current }}">
+      <span>{{ menu.current }}</span>
+      <svg class="icon dropdown__chevron" aria-hidden="true"><use href="#i-chevron"/></svg>
+    </summary>
+    <div class="dropdown__menu">
+      {% for group in menu.groups %}
+        {% if group.label %}<p class="dropdown__group">{{ group.label }}</p>{% endif %}
+        <ul>
+          {% for option in group.options %}
+            <li><a href="{{ option.url }}"{% if option.selected %} aria-current="true"{% endif %}>{{ option.label }}</a></li>
+          {% endfor %}
+        </ul>
+      {% endfor %}
+    </div>
+  </details>
+  {% if field and menu.selected %}<input type="hidden" name="{{ field }}" value="{{ menu.selected }}">{% endif %}
 </div>
+{% endmacro %}
+
+{% macro checklist(name, groups, label, hint=None) %}
+<fieldset class="form-row checklist-field">
+  <legend class="form-label">{{ label }}</legend>
+  <div class="checklist">
+    {% for group in groups %}
+      <p class="checklist__group">{{ group.label }}</p>
+      {% for option in group.options %}
+        <label class="checklist__item"><input type="checkbox" name="{{ name }}" value="{{ option.id }}"><span>{{ option.label }}</span></label>
+      {% endfor %}
+    {% endfor %}
+  </div>
+  {% if hint %}<p class="form-hint">{{ hint }}</p>{% endif %}
+</fieldset>
 {% endmacro %}
 
 {% macro confirm(id, text) %}
@@ -107,10 +128,6 @@
 
 {% macro dashboard_link(classes, signed_in="Open the dashboard", signed_out="Log in with Discord") -%}
 {% if user %}<a href="/dashboard" class="{{ classes }}">{{ signed_in }}</a>{% else %}<a href="/login?next=/dashboard" class="{{ classes }}">{{ signed_out }}</a>{% endif %}
-{%- endmacro %}
-
-{% macro leaderboard_url(guild_id, metric, channel_id=None, page=None) -%}
-/dashboard/{{ guild_id }}/leaderboard?metric={{ metric }}{% if channel_id %}&amp;channel={{ channel_id }}{% endif %}{% if page %}&amp;page={{ page }}{% endif %}
 {%- endmacro %}
 
 {% macro member_cell(guild_id, row) %}

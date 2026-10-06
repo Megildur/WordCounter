@@ -1,12 +1,12 @@
 from __future__ import annotations
 import math
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlencode
 import discord
 from aiohttp import web
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import current_user, error_page, redirect, render
+from web.core import ENV, current_user, error_page, redirect, render
 
 routes = web.RouteTableDef()
 
@@ -18,6 +18,25 @@ LISTABLE_TYPES = (*TRACKABLE_CHANNEL_TYPES, discord.ChannelType.category)
 def _int(value: Any) -> Optional[int]:
     text = str(value or "")
     return int(text) if text.isdigit() else None
+
+
+def page_url(path: str, anchor: str = "", **query: Any) -> str:
+    filled = {key: value for key, value in query.items() if value not in (None, "")}
+    return path + (f"?{urlencode(filled)}" if filled else "") + (f"#{anchor}" if anchor else "")
+
+
+def leaderboard_url(guild_id: int, metric: str, channel_id: Optional[int] = None, page: Optional[int] = None) -> str:
+    return page_url(f"/dashboard/{guild_id}/leaderboard", metric=metric, channel=channel_id, page=page)
+
+
+ENV.globals["leaderboard_url"] = leaderboard_url
+
+
+def paginate(items: List[Any], requested: Any) -> Tuple[List[Any], int, int]:
+    pages = max(1, math.ceil(len(items) / PAGE_SIZE))
+    page = min(max(1, _int(requested) or 1), pages)
+    start = (page - 1) * PAGE_SIZE
+    return items[start:start + PAGE_SIZE], page, pages
 
 
 def require_user(request: web.Request) -> auth.User:
@@ -89,6 +108,20 @@ def channel_groups(guild: discord.Guild, include_categories: bool, exclude: Tupl
         if options:
             groups.append({"label": category.name if category else "No category", "options": options})
     return groups
+
+
+def channel_menu(groups: List[Dict[str, Any]], selected: Optional[int], link: Callable[[Optional[int]], str], empty_label: str) -> Dict[str, Any]:
+    return {
+        "current": next((option["label"] for group in groups for option in group["options"] if option["id"] == selected), empty_label),
+        "selected": selected,
+        "groups": [{"label": None, "options": [{"label": empty_label, "url": link(None), "selected": selected is None}]}] + [
+            {
+                "label": group["label"],
+                "options": [{"label": option["label"], "url": link(option["id"]), "selected": option["id"] == selected} for option in group["options"]],
+            }
+            for group in groups
+        ],
+    }
 
 
 def valid_channel(guild: discord.Guild, value: Any, include_categories: bool) -> Optional[int]:
@@ -192,18 +225,19 @@ async def leaderboard(request: web.Request) -> web.Response:
         ]
     else:
         rows = await bot.db.get_leaderboard(metric, guild.id, channel_id)
-        pages = max(1, math.ceil(len(rows) / PAGE_SIZE))
-        page = min(max(1, _int(request.query.get("page")) or 1), pages)
+        shown, page, pages = paginate(rows, request.query.get("page"))
         start = (page - 1) * PAGE_SIZE
         context.update(
-            rows=[{"rank": start + index, "count": count, **person(guild, uid)} for index, (uid, count) in enumerate(rows[start:start + PAGE_SIZE], start=1)],
+            rows=[{"rank": start + index, "count": count, **person(guild, uid)} for index, (uid, count) in enumerate(shown, start=1)],
             page=page,
             pages=pages,
             total=len(rows),
         )
 
     context["history"] = await bot.db.get_channel_monthly_breakdown(guild.id, channel_id) if channel_id else []
-    context["channel_groups"] = channel_groups(guild, include_categories=False)
+    context["channel_menu"] = channel_menu(
+        channel_groups(guild, include_categories=False), channel_id, lambda cid: leaderboard_url(guild.id, metric, cid), "Whole server"
+    )
     return render(request, "server_leaderboard.html", "dashboard", **context, **guild_context(guild, can_manage, "leaderboard"))
 
 
@@ -223,7 +257,12 @@ async def member_page(request: web.Request) -> web.Response:
         stats=await member_stats(bot, guild, member_id),
         analyzed=await bot.db.is_user_analyzed(guild.id, member_id),
         busy=busy,
-        channel_groups=channel_groups(guild, include_categories=False),
+        reset_menu=channel_menu(
+            channel_groups(guild, include_categories=False),
+            valid_channel(guild, request.query.get("channel"), include_categories=False),
+            lambda cid: page_url(f"/dashboard/{guild.id}/members/{member_id}", "reset-member", channel=cid),
+            "Every channel",
+        ),
         **guild_context(guild, can_manage, "leaderboard"),
     )
 
@@ -267,7 +306,12 @@ async def settings(request: web.Request) -> web.Response:
         mode=mode,
         listed=[{"id": cid, "label": channel_label(guild, cid)} for cid in listed],
         add_groups=channel_groups(guild, include_categories=True, exclude=listed),
-        reset_groups=channel_groups(guild, include_categories=False),
+        reset_menu=channel_menu(
+            channel_groups(guild, include_categories=False),
+            valid_channel(guild, request.query.get("reset_channel"), include_categories=False),
+            lambda cid: page_url(f"/dashboard/{guild.id}/settings", "reset-channel", reset_channel=cid),
+            "Pick a channel",
+        ),
         keywords=await bot.db.get_keywords(guild.id),
         running=running,
         busy=busy,

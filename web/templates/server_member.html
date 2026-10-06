@@ -8,7 +8,7 @@
     <h2 class="account__name">{{ person.name }}</h2>
     <p class="account__meta">ID <code>{{ person.id }}</code> &middot; {% if analyzed %}past messages counted{% else %}past messages not counted yet{% endif %}</p>
   </div>
-  <a class="btn btn--sm btn--ghost" href="{{ ui.leaderboard_url(guild.id, 'words') }}">Back to leaderboard</a>
+  <a class="btn btn--sm btn--ghost" href="{{ leaderboard_url(guild.id, 'words') }}">Back to leaderboard</a>
 </div>
 
 {% if stats.empty %}
@@ -27,13 +27,13 @@
   </div>
 {% endif %}
 
-<section class="panel panel--danger" aria-labelledby="reset-member-title">
+<section id="reset-member" class="panel panel--danger" aria-labelledby="reset-member-title">
   <h3 id="reset-member-title">Reset counts</h3>
   <p>Deletes this member's words, messages, attachments, emojis, keywords and monthly history. Pick a channel to reset only that channel. It can't be undone.</p>
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="reset_member">
-    {{ ui.channel_select("channel", channel_groups, "Channel", "reset-member-channel", empty_label="Every channel") }}
+    {{ ui.dropdown("Channel", reset_menu, field="channel") }}
     {{ ui.confirm("reset-member-confirm", "I understand this deletes their counts.") }}
     <div class="form-actions">
       <button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Reset counts</button>
