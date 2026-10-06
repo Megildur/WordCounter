@@ -1,7 +1,6 @@
 from __future__ import annotations
 import calendar
-from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -632,10 +631,7 @@ class LeaderboardPaginator(ButtonPaginator):
                 self.history = [("Monthly history, newest first", "\n".join(lines))]
 
         if category == "keywords":
-            per_keyword: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
-            for keyword, count, user_id in await self.bot.db.get_keyword_leaderboard(self.guild.id, channel_id):
-                per_keyword[keyword][user_id] += count
-            entries: List = sorted(per_keyword.items())
+            entries: List = await self.bot.db.get_keyword_leaders(self.guild.id, channel_id)
             size = 5
         else:
             entries = await self.bot.db.get_leaderboard(category, self.guild.id, channel_id)
@@ -651,7 +647,7 @@ class LeaderboardPaginator(ButtonPaginator):
             if not chunk:
                 description += "\n\nNo keyword use recorded yet."
             for keyword, users in chunk:
-                top = sorted(users.items(), key=lambda item: item[1], reverse=True)[:10]
+                top = users[:10]
                 fields.append((
                     f'"{keyword}"',
                     "\n".join(f"{rank_prefix(rank)} **{self._name(uid)}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),

@@ -590,20 +590,27 @@ class WordCounterDatabase:
                 )
             return await cursor.fetchall()
 
-    async def get_keyword_leaderboard(self, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[str, int, int]]:
+    async def get_keyword_leaders(self, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[str, List[Tuple[int, int]]]]:
         await self.ensure_connected()
         async with self.db_lock:
             if channel_id is None:
                 cursor = await self.db.execute(
-                    "SELECT keyword, count, user_id FROM keyword_user WHERE guild_id = ? AND count > 0",
+                    "SELECT keyword, user_id, count FROM keyword_user WHERE guild_id = ? AND count > 0",
                     (guild_id,),
                 )
             else:
                 cursor = await self.db.execute(
-                    "SELECT keyword, count, user_id FROM keyword_channel WHERE guild_id = ? AND channel_id = ? AND count > 0",
+                    "SELECT keyword, user_id, count FROM keyword_channel WHERE guild_id = ? AND channel_id = ? AND count > 0",
                     (guild_id, channel_id),
                 )
-            return await cursor.fetchall()
+            rows = await cursor.fetchall()
+        per_keyword: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        for keyword, user_id, count in rows:
+            per_keyword[keyword][user_id] += count
+        return [
+            (keyword, sorted(users.items(), key=lambda item: item[1], reverse=True))
+            for keyword, users in sorted(per_keyword.items())
+        ]
 
     async def get_keywords(self, guild_id: int) -> List[str]:
         await self.ensure_connected()
