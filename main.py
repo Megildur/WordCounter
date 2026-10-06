@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import WordCounterDatabase
+from cogs.utils.http import close_session
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
@@ -50,8 +51,9 @@ class MyBot(commands.Bot):
                 await self.load_extension(f"cogs.{filename[:-3]}")
 
     async def close(self) -> None:
-        await self.db.close()
         await super().close()
+        await close_session()
+        await self.db.close()
 
 
 bot = MyBot()
