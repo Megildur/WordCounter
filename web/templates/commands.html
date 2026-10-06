@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
 {% block title %}All {{ slash|length }} WordCounter commands{% endblock %}
 {% block meta_description %}Every WordCounter slash command and right-click app, with options and who can use them.{% endblock %}
 {% block og_title %}WordCounter commands ({{ slash|length }}){% endblock %}
@@ -54,10 +55,10 @@
     <aside class="callout" aria-labelledby="dash-title">
       <div>
         <h2 id="dash-title" class="display">Prefer clicking to typing?</h2>
-        <p>Server managers can change tracking, channels and keywords, and reset counts, from the dashboard too.</p>
+        <p>Server managers can change tracking, channels and keywords, and reset counts, on this website too.</p>
       </div>
       <div class="callout__actions">
-        <a href="/dashboard" class="btn btn--primary">Open the dashboard</a>
+        {{ ui.dashboard_link("btn btn--primary") }}
         <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--ghost">Support server</a>
       </div>
     </aside>

@@ -105,6 +105,10 @@
 {% endif %}
 {% endmacro %}
 
+{% macro dashboard_link(classes, signed_in="Open the dashboard", signed_out="Log in with Discord") -%}
+{% if user %}<a href="/dashboard" class="{{ classes }}">{{ signed_in }}</a>{% else %}<a href="/login?next=/dashboard" class="{{ classes }}">{{ signed_out }}</a>{% endif %}
+{%- endmacro %}
+
 {% macro leaderboard_url(guild_id, metric, channel_id=None, page=None) -%}
 /dashboard/{{ guild_id }}/leaderboard?metric={{ metric }}{% if channel_id %}&amp;channel={{ channel_id }}{% endif %}{% if page %}&amp;page={{ page }}{% endif %}
 {%- endmacro %}

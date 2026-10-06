@@ -51,7 +51,6 @@
       <nav class="site-nav" aria-label="Main">
         <a href="/" {% if active_page == 'home' %}aria-current="page"{% endif %}>Home</a>
         <a href="/commands" {% if active_page == 'commands' %}aria-current="page"{% endif %}>Commands</a>
-        <a href="/dashboard" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
         <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg><span class="sr-only">(opens in a new tab)</span></a>
       </nav>
 
@@ -60,6 +59,7 @@
           <div class="user-pill">
             <img src="{{ user.avatar_url }}" alt="" width="28" height="28">
             <span class="user-pill__name" title="{{ user.name }}">{{ user.name }}</span>
+            <a href="/dashboard" class="btn btn--sm btn--quiet" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
             <form method="post" action="/logout" class="inline-form">
               <input type="hidden" name="csrf" value="{{ csrf }}">
               <button type="submit" class="btn btn--sm btn--danger">Log out</button>
@@ -89,7 +89,6 @@
               <nav class="mobile-menu__main" aria-label="Main">
                 <a href="/" {% if active_page == 'home' %}aria-current="page"{% endif %}>Home</a>
                 <a href="/commands" {% if active_page == 'commands' %}aria-current="page"{% endif %}>Commands</a>
-                <a href="/dashboard" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
                 <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg></a>
               </nav>
               <div class="mobile-menu__minor">
@@ -101,6 +100,7 @@
                 <div class="mobile-menu__account">
                   <img src="{{ user.avatar_url }}" alt="" width="32" height="32" class="avatar-sm">
                   <span>{{ user.name }}</span>
+                  <a href="/dashboard" class="btn btn--sm btn--quiet" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
                   <form method="post" action="/logout" class="inline-form">
                     <input type="hidden" name="csrf" value="{{ csrf }}">
                     <button type="submit" class="btn btn--sm btn--danger">Log out</button>
@@ -152,7 +152,6 @@
           <h2 id="footer-bot" class="footer-heading">Bot</h2>
           <ul>
             <li><a href="/commands">Commands</a></li>
-            <li><a href="/dashboard">Dashboard</a></li>
             <li><a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer">Add to Discord</a></li>
             <li><a href="{{ source_url }}" target="_blank" rel="noopener noreferrer">Source code</a></li>
           </ul>
@@ -163,6 +162,7 @@
           <ul>
             <li><a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server</a></li>
             {% if user %}
+              <li><a href="/dashboard">Dashboard</a></li>
               <li>
                 <form method="post" action="/logout" class="inline-form">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
