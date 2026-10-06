@@ -95,7 +95,7 @@
 
 <section id="reset-channel" class="panel panel--danger" aria-labelledby="reset-channel-title">
   <h3 id="reset-channel-title">Reset a channel</h3>
-  <p>Deletes every member's counts and monthly history in one channel. To reset one member, open them from the leaderboard.</p>
+  <p>Deletes every member's counts and monthly history in one channel. To reset one member, open them from Members.</p>
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="reset_channel">

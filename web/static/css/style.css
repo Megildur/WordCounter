@@ -940,6 +940,11 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 }
 .tabs a:hover { color: var(--text); }
 .tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
+@media (max-width: 640px) {
+  .tabs { flex-wrap: nowrap; gap: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { flex: none; padding-inline: 0.4375rem; font-size: 0.875rem; }
+}
 
 .segmented { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .segmented a {
@@ -1130,6 +1135,9 @@ textarea.input { min-height: 8rem; resize: vertical; line-height: 1.5; }
 .checklist__item:has(input:checked) { color: var(--text); }
 .checklist__item input { flex: none; width: 1.125rem; height: 1.125rem; accent-color: var(--accent); }
 
+.search { margin-bottom: var(--s-5); }
+.search__row { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-2); max-width: 40rem; }
+.search__row .input { flex: 1; min-width: 12rem; }
 .choices { display: grid; gap: var(--s-2); margin: 0; padding: 0; border: 0; min-width: 0; }
 .choice {
   display: grid;
