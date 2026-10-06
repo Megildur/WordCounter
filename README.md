@@ -9,8 +9,8 @@
     <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-D26B42?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
-  <a href="https://wordcounter.wisp.uno">
-    <img src="https://img.shields.io/badge/Website-wordcounter.wisp.uno-D26B42?style=for-the-badge" alt="Website" />
+  <a href="https://wordcounter.dev">
+    <img src="https://img.shields.io/badge/Website-wordcounter.dev-D26B42?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
   <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.1.0">
@@ -25,11 +25,11 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | | |
 | :--- | :--- |
 | Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
-| Website and dashboard | [wordcounter.wisp.uno](https://wordcounter.wisp.uno) |
+| Website and dashboard | [wordcounter.dev](https://wordcounter.dev) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
 | Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
-| Privacy Policy | [wordcounter.wisp.uno/privacy](https://wordcounter.wisp.uno/privacy) |
-| Terms of Service | [wordcounter.wisp.uno/terms](https://wordcounter.wisp.uno/terms) |
+| Privacy Policy | [wordcounter.dev/privacy](https://wordcounter.dev/privacy) |
+| Terms of Service | [wordcounter.dev/terms](https://wordcounter.dev/terms) |
 
 ## What it does
 
@@ -43,7 +43,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
   - `whole_server` reads every tracked channel, voice chat and thread (active and archived) once, 100 messages per request, and credits each message to its author. Channels the bot can't read are listed at the end so you know what was left out.
   - Channel reads save a checkpoint every minute. If the bot restarts mid-run, it picks up where it stopped on its own.
   - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
-- **Website** ([wordcounter.wisp.uno](https://wordcounter.wisp.uno)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, and the same settings and resets as `/settings`.
+- **Website** ([wordcounter.dev](https://wordcounter.dev)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, and the same settings and resets as `/settings`.
 - **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
 - **Coming soon: Swear Jar.** Track swearing in chat and see who owes the jar the most.
 
@@ -98,7 +98,7 @@ Right-click menus:
    BOT_SERVER=https://discord.gg/prUsgFHvRS
    BOT_WEBHOOK_URL=https://discord.com/api/webhooks/...
    ALLOWED_GUILDS=123456789012345678,987654321098765432
-   BASE_URL=https://wordcounter.wisp.uno
+   BASE_URL=https://wordcounter.dev
    WEB_PORT=8080
    DISCORD_CLIENT_SECRET=your_client_secret_here
    SESSION_SECRET=a_long_random_string
@@ -130,7 +130,7 @@ Right-click menus:
 
 7. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
    ```text
-   https://wordcounter.wisp.uno/callback
+   https://wordcounter.dev/callback
    ```
    The website starts with the bot and only asks Discord who you are (the `identify` scope).
 
