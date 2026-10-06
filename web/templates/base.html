@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}WordCounter, a Discord bot that counts words, messages and more{% endblock %}</title>
+  <meta name="description" content="{% block meta_description %}WordCounter counts words, messages, attachments, emojis and keywords for each member and channel, keeps monthly history, and can count messages sent before it joined.{% endblock %}">
+  <link rel="canonical" href="{{ current_url }}">
+
+  <meta name="theme-color" content="#B62402">
+  <meta property="og:site_name" content="WordCounter">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ current_url }}">
+  <meta property="og:title" content="{% block og_title %}WordCounter, a Discord bot that counts words, messages and more{% endblock %}">
+  <meta property="og:description" content="{{ self.meta_description() }}">
+  <meta property="og:image" content="{{ site_url }}/static/img/wordcounter-512.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="WordCounter's icon, a flip counter showing 0 1 2 on an orange background">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ self.og_title() }}">
+  <meta name="twitter:description" content="{{ self.meta_description() }}">
+  <meta name="twitter:image" content="{{ site_url }}/static/img/wordcounter-512.png">
+  {% block robots %}{% endblock %}
+
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+
+  <link rel="preload" href="/static/fonts/big-shoulders-display-800.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/atkinson-next.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-discord" viewBox="0 0 127.14 96.36"><path fill="currentColor" d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,45.91,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,45.91,96.12,53,91.08,65.69,84.69,65.69Z"/></symbol>
+    <symbol id="i-out" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" d="M6 3h7v7M13 3 4 12"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 20 20"><path fill="none" stroke="currentColor" stroke-width="2" d="M2 5h16M2 10h16M2 15h10"/></symbol>
+    <symbol id="i-close" viewBox="0 0 20 20"><path fill="none" stroke="currentColor" stroke-width="2" d="m4 4 12 12M16 4 4 16"/></symbol>
+  </svg>
+
+  <header class="site-header">
+    <div class="wrap site-header__bar">
+      <a href="/" class="brand">
+        <img src="/static/img/wordcounter-96.webp" alt="" width="40" height="40">
+        <span class="brand__name">WordCounter</span>
+      </a>
+
+      <nav class="site-nav" aria-label="Main">
+        <a href="/" {% if active_page == 'home' %}aria-current="page"{% endif %}>Home</a>
+        <a href="/commands" {% if active_page == 'commands' %}aria-current="page"{% endif %}>Commands</a>
+        <a href="/dashboard" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
+        <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg><span class="sr-only">(opens in a new tab)</span></a>
+      </nav>
+
+      <div class="site-header__actions">
+        {% if user %}
+          <div class="user-pill">
+            <img src="{{ user.avatar_url }}" alt="" width="28" height="28">
+            <span class="user-pill__name" title="{{ user.name }}">{{ user.name }}</span>
+            <form method="post" action="/logout" class="inline-form">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn--sm btn--danger">Log out</button>
+            </form>
+          </div>
+        {% else %}
+          <a href="/login" class="btn btn--sm btn--ghost">
+            <svg class="icon" aria-hidden="true"><use href="#i-discord"/></svg>
+            <span>Log in</span>
+          </a>
+        {% endif %}
+        <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--sm btn--primary">Add to Discord</a>
+      </div>
+
+      <div class="site-header__mobile">
+        {% if user %}
+          <img src="{{ user.avatar_url }}" alt="" width="32" height="32" class="avatar-sm">
+        {% endif %}
+        <details class="mobile-nav">
+          <summary class="menu-btn">
+            <span class="sr-only">Menu</span>
+            <svg class="icon menu-btn__open" aria-hidden="true"><use href="#i-menu"/></svg>
+            <svg class="icon menu-btn__close" aria-hidden="true"><use href="#i-close"/></svg>
+          </summary>
+          <div class="mobile-menu">
+            <div class="wrap">
+              <nav class="mobile-menu__main" aria-label="Main">
+                <a href="/" {% if active_page == 'home' %}aria-current="page"{% endif %}>Home</a>
+                <a href="/commands" {% if active_page == 'commands' %}aria-current="page"{% endif %}>Commands</a>
+                <a href="/dashboard" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
+                <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg></a>
+              </nav>
+              <div class="mobile-menu__minor">
+                <a href="/terms" {% if active_page == 'terms' %}aria-current="page"{% endif %}>Terms of Service</a>
+                <a href="/privacy" {% if active_page == 'privacy' %}aria-current="page"{% endif %}>Privacy Policy</a>
+              </div>
+
+              {% if user %}
+                <div class="mobile-menu__account">
+                  <img src="{{ user.avatar_url }}" alt="" width="32" height="32" class="avatar-sm">
+                  <span>{{ user.name }}</span>
+                  <form method="post" action="/logout" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{ csrf }}">
+                    <button type="submit" class="btn btn--sm btn--danger">Log out</button>
+                  </form>
+                </div>
+              {% endif %}
+
+              <div class="mobile-menu__actions">
+                <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary btn--block">Add to Discord</a>
+                {% if not user %}
+                  <a href="/login" class="btn btn--lg btn--discord btn--block">
+                    <svg class="icon" aria-hidden="true"><use href="#i-discord"/></svg>
+                    <span>Log in with Discord</span>
+                  </a>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+  </header>
+
+  {% if alert %}
+    <div class="wrap">
+      <div class="alert {% if alert.type == 'error' %}alert--error{% endif %}" role="{% if alert.type == 'error' %}alert{% else %}status{% endif %}">
+        <span class="alert__label">{% if alert.type == 'error' %}Error{% else %}Done{% endif %}</span>
+        <p>{{ alert.message }}</p>
+      </div>
+    </div>
+  {% endif %}
+
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="site-footer__grid">
+        <div class="site-footer__brand">
+          <a href="/" class="brand">
+            <img src="/static/img/wordcounter-96.webp" alt="" width="36" height="36" loading="lazy">
+            <span class="brand__name">WordCounter</span>
+          </a>
+          <p>Counts who says what in your Discord server. Built and run by one developer.</p>
+        </div>
+
+        <nav aria-labelledby="footer-bot">
+          <h2 id="footer-bot" class="footer-heading">Bot</h2>
+          <ul>
+            <li><a href="/commands">Commands</a></li>
+            <li><a href="/dashboard">Dashboard</a></li>
+            <li><a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer">Add to Discord</a></li>
+            <li><a href="{{ source_url }}" target="_blank" rel="noopener noreferrer">Source code</a></li>
+          </ul>
+        </nav>
+
+        <nav aria-labelledby="footer-help">
+          <h2 id="footer-help" class="footer-heading">Help</h2>
+          <ul>
+            <li><a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server</a></li>
+            {% if user %}
+              <li>
+                <form method="post" action="/logout" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button type="submit" class="link-button">Log out</button>
+                </form>
+              </li>
+            {% else %}
+              <li><a href="/login">Log in with Discord</a></li>
+            {% endif %}
+            <li><a href="{{ botzilla_url }}" target="_blank" rel="noopener noreferrer">Specimen 01: Botzilla</a></li>
+          </ul>
+        </nav>
+
+        <nav aria-labelledby="footer-legal">
+          <h2 id="footer-legal" class="footer-heading">Legal</h2>
+          <ul>
+            <li><a href="/terms">Terms of Service</a></li>
+            <li><a href="/privacy">Privacy Policy</a></li>
+          </ul>
+        </nav>
+      </div>
+
+      <div class="site-footer__base">
+        <p>&copy; 2026 Botzilla</p>
+        <p>Not affiliated with or endorsed by Discord Inc. Discord is a trademark of Discord Inc.</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

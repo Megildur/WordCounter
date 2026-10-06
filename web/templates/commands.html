@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}All {{ slash|length }} WordCounter commands{% endblock %}
+{% block meta_description %}Every WordCounter slash command and right-click app, with options and who can use them.{% endblock %}
+{% block og_title %}WordCounter commands ({{ slash|length }}){% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="wrap wrap--mid">
+    <header class="page-head">
+      <p class="eyebrow">Reference</p>
+      <h1 class="page-title display">Commands</h1>
+      <p class="page-lede">{{ slash|length }} slash commands and {{ apps|length }} right-click apps. Commands marked Manage Server only show up for members with that permission.</p>
+    </header>
+
+    <div class="cmd-list">
+      {% for cmd in slash %}
+        <article class="cmd">
+          <div class="cmd__head">
+            <h2 class="cmd__name">{{ cmd.name }}</h2>
+            {% if cmd.managers_only %}<span class="tag tag--accent">Manage Server</span>{% else %}<span class="tag">Everyone</span>{% endif %}
+          </div>
+          <p class="cmd__desc">{{ cmd.description }}</p>
+          {% if cmd.options %}
+            <dl class="cmd__opts" aria-label="Options for {{ cmd.name }}">
+              {% for opt in cmd.options %}
+                <div class="cmd__opt">
+                  <dt>
+                    <code>{{ opt.name }}</code>
+                    <span class="cmd__type">{{ opt.type }}</span>
+                    {% if opt.required %}<span class="cmd__req">required</span>{% endif %}
+                  </dt>
+                  <dd>{{ opt.description }}</dd>
+                </div>
+              {% endfor %}
+            </dl>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+
+    <h2 class="subhead display section-gap">Right-click apps</h2>
+    <div class="cmd-list">
+      {% for app in apps %}
+        <article class="cmd">
+          <div class="cmd__head">
+            <h3 class="cmd__name">{{ app.name }}</h3>
+            <span class="tag">Everyone</span>
+          </div>
+          <p class="cmd__desc">{{ app.place }}, then Apps &gt; {{ app.name }}.</p>
+        </article>
+      {% endfor %}
+    </div>
+
+    <aside class="callout" aria-labelledby="dash-title">
+      <div>
+        <h2 id="dash-title" class="display">Prefer clicking to typing?</h2>
+        <p>Server managers can change tracking, channels and keywords, and reset counts, from the dashboard too.</p>
+      </div>
+      <div class="callout__actions">
+        <a href="/dashboard" class="btn btn--primary">Open the dashboard</a>
+        <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--ghost">Support server</a>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}

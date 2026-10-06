@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Dashboard, WordCounter{% endblock %}
+{% block meta_description %}Your WordCounter stats in every server you share with the bot, and settings for servers you manage.{% endblock %}
+{% block og_title %}WordCounter dashboard{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="wrap wrap--mid">
+    <section class="account" aria-label="Your account">
+      <img src="{{ user.avatar_url }}" alt="" width="56" height="56">
+      <div class="account__who">
+        <p class="account__name">{{ user.name }}</p>
+        <p class="account__meta">@{{ user.username }} &middot; ID <code>{{ user.id }}</code> &middot; Signed in with Discord</p>
+      </div>
+      <form method="post" action="/logout" class="inline-form">
+        {{ ui.csrf_field() }}
+        <button type="submit" class="btn btn--sm btn--danger">Log out</button>
+      </form>
+    </section>
+
+    <header class="page-head">
+      <p class="eyebrow">Dashboard</p>
+      <h1 class="page-title display">Your servers</h1>
+      <p class="page-lede">
+        Servers you share with WordCounter. Open one to see your own counts. In servers where you have Manage Server, you also get the leaderboards, every member's stats and the settings.
+      </p>
+    </header>
+
+    {% if servers %}
+      <ul class="servers">
+        {% for g in servers %}
+          <li class="server">
+            {{ ui.server_icon(g) }}
+            <span class="server__name"><a href="/dashboard/{{ g.id }}">{{ g.name }}</a></span>
+            {% if g.manager %}<span class="tag tag--accent">You manage this</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="callout" role="status">
+        <div>
+          <h2 class="display">No shared servers yet</h2>
+          <p>WordCounter isn't in any server you're in. Add it to a server you manage, then come back here.</p>
+        </div>
+        <div class="callout__actions">
+          <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--primary">Add WordCounter</a>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block body_class %}has-band{% endblock %}
+
+{% block content %}
+<section class="hero" aria-labelledby="hero-title">
+  <div class="wrap">
+    <div class="hero__grid">
+      <div>
+        <p class="eyebrow">Discord bot &middot; free</p>
+        <h1 id="hero-title" class="hero__title display">Who talks the most? <em>WordCounter knows.</em></h1>
+        <p class="hero__lede">
+          WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and channel. It keeps a monthly history and can count messages sent before it joined your server.
+        </p>
+        <div class="hero__actions">
+          <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">Add WordCounter</a>
+          <a href="/dashboard" class="btn btn--lg btn--ghost">See your stats</a>
+        </div>
+        <p class="hero__aside">
+          Questions first? <a class="link" href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Ask in the support server</a>.
+        </p>
+      </div>
+
+      <figure class="mascot">
+        <div class="mascot__frame">
+          <picture>
+            <source type="image/webp" srcset="/static/img/wordcounter-256.webp 1x, /static/img/wordcounter-512.webp 2x">
+            <img src="/static/img/wordcounter-256.png" alt="WordCounter's icon, a flip counter showing 0 1 2" width="256" height="256" fetchpriority="high">
+          </picture>
+        </div>
+        <figcaption><b>Specimen 02: WordCounter</b>Habitat: busy chat channels</figcaption>
+      </figure>
+    </div>
+
+    {{ ui.stat_strip([
+      ("Servers", stats.servers|num),
+      ("Members reached", stats.members|num),
+      ("Messages counted", stats.messages|num),
+      ("Words counted", stats.words|num),
+      ("Price", "Free"),
+    ], "Live bot stats") }}
+    <p class="stats-note">Pulled from the bot when this page loaded. A dash means it hasn't counted anything yet.</p>
+  </div>
+</section>
+
+<section class="section section--surface" aria-labelledby="features-title">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it does</p>
+      <h2 id="features-title" class="section-title display">Every message, counted</h2>
+    </div>
+
+    <div class="feature-lead">
+      <div>
+        <h3>Leaderboards for all of it</h3>
+        <p>
+          One command shows who leads in words, messages, attachments, emojis or keywords. Pick a channel to see its top members and its month-by-month history. Member stats show anyone's totals, then page through each month with a per-channel breakdown.
+        </p>
+        <div class="chips">
+          <code class="chip">/leaderboard</code>
+          <code class="chip">/stats user</code>
+          <code class="chip">/keyword list</code>
+        </div>
+      </div>
+
+      <figure class="dmock">
+        <div class="dmock__window">
+          <div class="dmock__msg">
+            <img class="dmock__avatar" src="/static/img/wordcounter-96.webp" alt="" width="40" height="40" loading="lazy">
+            <div>
+              <p class="dmock__meta">
+                <span class="dmock__name">WordCounter</span>
+                <span class="dmock__app">APP</span>
+                <span class="dmock__time">Today at 9:04 PM</span>
+              </p>
+              <div class="dmock__panel">
+                <p class="dmock__h">Words leaderboard</p>
+                <p class="dmock__sub">Top members in this server</p>
+                <hr>
+                <div class="dmock__list">
+                  <p>&#x1F947; <b>Mara</b> &middot; 48,210 words</p>
+                  <p>&#x1F948; <b>Theo</b> &middot; 39,877 words</p>
+                  <p>&#x1F949; <b>Juniper</b> &middot; 31,402 words</p>
+                  <p><b>4.</b> <b>Sam</b> &middot; 22,915 words</p>
+                  <p><b>5.</b> <b>Ivy</b> &middot; 18,630 words</p>
+                </div>
+                <p class="dmock__foot">37 member(s)</p>
+              </div>
+              <div class="dmock__buttons" aria-hidden="true">
+                <span class="dmock__btn dmock__btn--active">Words</span>
+                <span class="dmock__btn">Messages</span>
+                <span class="dmock__btn">Attachments</span>
+                <span class="dmock__btn">Emojis</span>
+                <span class="dmock__btn">Keywords</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption>An example of <code>/leaderboard</code> with made-up members. The buttons switch between the five leaderboards.</figcaption>
+      </figure>
+    </div>
+
+    <div class="feature-rows">
+      <article class="feature-row">
+        <h3>Live tracking</h3>
+        <div>
+          <p>Every message in a tracked channel is counted as it's sent. Edit or delete a message and the counts are corrected. Attachments include files, stickers and links, and emojis include both standard and custom ones.</p>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Counts from before it joined</h3>
+        <div>
+          <p>Count one member's past messages using Discord's search, usually in a few minutes, or read every tracked channel, voice chat and thread in the server. Messages already counted live are skipped, so nothing is counted twice, and a long run picks up where it stopped if the bot restarts.</p>
+          <div class="chips">
+            <code class="chip">/analyze_chat single_user</code>
+            <code class="chip">/analyze_chat whole_server</code>
+          </div>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Your stats on the web</h3>
+        <div>
+          <p>Log in with Discord to see your own counts in every server you share with WordCounter. If you can manage a server, you also get its leaderboards, every member's stats and its settings, here in the browser.</p>
+          <div class="chips">
+            <a class="chip" href="/dashboard">Open the dashboard</a>
+          </div>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Keywords</h3>
+        <div>
+          <p>Pick words or phrases your server cares about, like an inside joke or a game's name, and see who says each one most.</p>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Your rules</h3>
+        <div>
+          <p>Track the whole server with an ignore list, or only the channels and categories you pick. Reset counts for a member, a channel, both, or the whole server whenever you need a fresh start.</p>
+          <div class="chips">
+            <code class="chip">/settings</code>
+          </div>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Right-click apps</h3>
+        <div>
+          <p>Right-click a member for their stats, or a message for its word count, without typing a command.</p>
+          <div class="chips">
+            <span class="chip">User Stats</span>
+            <span class="chip">Message Word Count</span>
+          </div>
+        </div>
+      </article>
+      <article class="feature-row">
+        <h3>Coming soon: swear jar</h3>
+        <div>
+          <p>Track swearing in chat and see who owes the jar the most. It's not in the bot yet.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="start-title">
+  <div class="wrap">
+    <div class="next">
+      <div class="next__head">
+        <p class="eyebrow eyebrow--mark">Getting started</p>
+        <h2 id="start-title" class="section-title display">Three steps</h2>
+        <p>Type <code>/help</code> in Discord for a guide to every command, or browse them here.</p>
+        <a class="link" href="/commands">All {{ command_count }} commands</a>
+      </div>
+
+      <ol class="next__list">
+        <li class="next__item">
+          <span class="next__num" aria-hidden="true">01</span>
+          <div>
+            <h3>Add WordCounter</h3>
+            <p>Invite it to a server you manage. It reads the channels it tracks, so keep View Channels and Read Message History turned on for it.</p>
+          </div>
+        </li>
+        <li class="next__item">
+          <span class="next__num" aria-hidden="true">02</span>
+          <div>
+            <h3>Choose what to track</h3>
+            <p>Pick the whole server or specific channels, and add any keywords you want counted. Do it in Discord or in the dashboard.</p>
+            <div class="chips"><code class="chip chip--plain">/settings</code><a class="chip chip--plain" href="/dashboard">Dashboard</a></div>
+          </div>
+        </li>
+        <li class="next__item">
+          <span class="next__num" aria-hidden="true">03</span>
+          <div>
+            <h3>Count the past</h3>
+            <p>Run a whole-server analysis once to fill in everything said before WordCounter arrived. New messages are counted live from then on.</p>
+            <div class="chips"><code class="chip chip--plain">/analyze_chat whole_server</code></div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="section section--flush-top" aria-labelledby="specimen-title">
+  <div class="wrap">
+    <article class="specimen theme-bz">
+      <img class="specimen__img" src="/static/img/botzilla.webp" alt="" width="144" height="144" loading="lazy">
+      <div>
+        <p class="eyebrow">Specimen 01 &middot; from the same lab</p>
+        <h2 id="specimen-title" class="display">Botzilla</h2>
+        <p>Join-to-create voice rooms, mini-games, counting channels and a honeypot that throws out raid bots. Same developer, also free. Need a bot of your own? Botzilla's site has the details.</p>
+      </div>
+      <div class="specimen__actions">
+        <a href="{{ botzilla_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">Meet Botzilla</a>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="cta-band" aria-labelledby="cta-title">
+  <div class="wrap cta-band__inner">
+    <div>
+      <h2 id="cta-title" class="display">Every word. Counted.</h2>
+      <p>Add WordCounter to your server, or log in to see what it has counted for you.</p>
+    </div>
+    <div class="cta-band__actions">
+      <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--ink">Add WordCounter</a>
+      <a href="/dashboard" class="btn btn--lg btn--ink-ghost">Open the dashboard</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

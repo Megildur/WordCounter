@@ -1,0 +1,142 @@
+{% extends "server_base.html" %}
+{% import "_macros.html" as ui with context %}
+
+{% block server_content %}
+{% if busy %}
+  <div class="alert alert--error" role="status">
+    <span class="alert__label">Busy</span>
+    <p>An analysis is running in this server. Resets come back once it finishes.</p>
+  </div>
+{% endif %}
+
+<section class="panel" aria-labelledby="mode-title">
+  <h2 id="mode-title">Tracking mode</h2>
+  {% if mode == "off" %}
+    <p>Tracking is off, so nothing is being counted. Track the whole server, or pick specific channels below.</p>
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="mode">
+      <input type="hidden" name="mode" value="whole">
+      <div class="form-actions"><button type="submit" class="btn btn--primary">Track the whole server</button></div>
+    </form>
+  {% else %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="mode">
+      <fieldset class="choices">
+        <legend class="sr-only">Tracking mode</legend>
+        <label class="choice">
+          <input type="radio" name="mode" value="whole" {% if mode == "whole" %}checked{% endif %}>
+          <span><b>Whole server</b>Every channel is counted except the ones you ignore.{% if mode == "specific" %} Replaces your list of tracked channels.{% endif %}</span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="mode" value="specific" {% if mode == "specific" %}checked{% endif %}>
+          <span><b>Specific channels</b>Only the channels and categories you pick are counted.</span>
+        </label>
+      </fieldset>
+      <div class="form-actions"><button type="submit" class="btn btn--primary">Save mode</button></div>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="channels-title">
+  {% if mode == "whole" %}
+    <h2 id="channels-title">Ignored channels</h2>
+    <p>Everything is counted except these. Ignoring a category ignores every channel in it.</p>
+  {% else %}
+    <h2 id="channels-title">Tracked channels</h2>
+    <p>Only these are counted. Picking a category includes every channel and thread inside it.</p>
+  {% endif %}
+
+  {% if listed %}
+    <ul class="item-list">
+      {% for item in listed %}
+        <li>
+          <span>{{ item.label }}</span>
+          <form method="post" class="inline-form">
+            {{ ui.csrf_field() }}
+            <input type="hidden" name="action" value="remove_channel">
+            <input type="hidden" name="channel" value="{{ item.id }}">
+            <button type="submit" class="btn btn--sm btn--quiet">Remove<span class="sr-only"> {{ item.label }}</span></button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="form-hint">{% if mode == "whole" %}Nothing ignored.{% else %}None picked yet.{% endif %}</p>
+  {% endif %}
+
+  {% if add_groups %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="add_channels">
+      {{ ui.channel_select("channel", add_groups, "Ignore channels or categories" if mode == "whole" else "Track channels or categories", "add-channels", multiple=True, hint="Hold Ctrl (or Cmd) to pick more than one.") }}
+      <div class="form-actions"><button type="submit" class="btn btn--primary">{% if mode == "whole" %}Ignore{% else %}Track{% endif %}</button></div>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="keywords-title">
+  <h2 id="keywords-title">Keywords</h2>
+  <p>A keyword is counted every time someone says it in a tracked channel. Keywords only count from when you add them, so set them before running <code>/analyze_chat</code>.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="keywords">
+    <div class="form-row">
+      <label for="keywords">Tracked keywords</label>
+      <textarea class="input" id="keywords" name="keywords" maxlength="2000" spellcheck="false">{{ keywords|join(", ") }}</textarea>
+      <p class="form-hint">Separate them with commas or new lines. Leave it empty to remove every keyword.</p>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn btn--primary">Save keywords</button></div>
+  </form>
+</section>
+
+<h2 class="subhead display section-gap">Data and resets</h2>
+
+<section class="panel panel--danger" aria-labelledby="reset-channel-title">
+  <h3 id="reset-channel-title">Reset a channel</h3>
+  <p>Deletes every member's counts and monthly history in one channel. To reset one member, open them from the leaderboard.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="reset_channel">
+    {{ ui.channel_select("channel", reset_groups, "Channel", "reset-channel", empty_label="Pick a channel") }}
+    {{ ui.confirm("reset-channel-confirm", "I understand this deletes everyone's counts in that channel.") }}
+    <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Reset channel</button></div>
+  </form>
+</section>
+
+<section class="panel panel--danger" aria-labelledby="reanalyze-all-title">
+  <h3 id="reanalyze-all-title">Re-analyze everyone</h3>
+  <p>Clears every member's counts (settings and keywords stay) so <code>/analyze_chat whole_server</code> can rebuild the full history without counting anything twice.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="reanalyze_all">
+    {{ ui.confirm("reanalyze-all-confirm", "I understand every member's counts are cleared until the analysis runs.") }}
+    <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Clear and allow re-analysis</button></div>
+  </form>
+</section>
+
+{% if mode != "off" %}
+  <section class="panel panel--danger" aria-labelledby="off-title">
+    <h3 id="off-title">Turn off tracking</h3>
+    <p>New messages stop being counted and your channel lists are cleared. Existing stats stay.</p>
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="tracking_off">
+      {{ ui.confirm("off-confirm", "Turn off tracking in this server.") }}
+      <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Turn off tracking</button></div>
+    </form>
+  </section>
+{% endif %}
+
+<section class="panel panel--danger" aria-labelledby="wipe-title">
+  <h3 id="wipe-title">Reset everything</h3>
+  <p>Deletes all of this server's stats, clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="reset_server">
+    {{ ui.confirm("wipe-confirm", "I understand this deletes everything WordCounter has for this server.") }}
+    <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset everything</button></div>
+  </form>
+</section>
+{% endblock %}
