@@ -20,7 +20,7 @@ ALLOWED_GUILD_IDS: List[int] = [
     int(part) for part in os.getenv("ALLOWED_GUILDS", "").replace(" ", "").split(",") if part.isdigit()
 ]
 
-SITE_URL = _env("BASE_URL", "https://wordcounter.wisp.uno").rstrip("/")
+SITE_URL = _env("BASE_URL", "https://wordcounter.dev").rstrip("/")
 WEB_HOST = _env("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
@@ -31,7 +31,7 @@ INVITE_PERMISSIONS = 1126177200925776
 PRIVACY_URL = f"{SITE_URL}/privacy"
 TERMS_URL = f"{SITE_URL}/terms"
 SOURCE_URL = "https://github.com/Megildur/WordCounter"
-BOTZILLA_URL = "https://botzilla.wisp.uno"
+BOTZILLA_URL = "https://bot-zilla.app"
 LOG_RETENTION_DAYS = 90
 
 
