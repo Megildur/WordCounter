@@ -31,7 +31,7 @@ INVITE_PERMISSIONS = 1126177200925776
 PRIVACY_URL = f"{SITE_URL}/privacy"
 TERMS_URL = f"{SITE_URL}/terms"
 SOURCE_URL = "https://github.com/Megildur/WordCounter"
-BOTZILLA_URL = "https://botzilla.wispbyte.app"
+BOTZILLA_URL = "https://botzilla.wisp.uno"
 LOG_RETENTION_DAYS = 90
 
 
