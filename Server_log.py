@@ -7,8 +7,17 @@ from cogs.utils.config import WEBHOOK_URL, daily_log_handler
 from cogs.utils.http import get_session
 
 
-def guild_log_view(bot: commands.Bot, guild: discord.Guild, joined: bool) -> discord.ui.LayoutView:
-    owner = guild.owner.name if guild.owner else f"<@{guild.owner_id}>"
+async def owner_display_name(bot: commands.Bot, guild: discord.Guild) -> str:
+    owner = guild.owner or bot.get_user(guild.owner_id or 0)
+    if owner is None and guild.owner_id:
+        try:
+            owner = await bot.fetch_user(guild.owner_id)
+        except discord.HTTPException:
+            return "Unknown"
+    return (owner.global_name or owner.name) if owner else "Unknown"
+
+
+def guild_log_view(bot: commands.Bot, guild: discord.Guild, owner: str, joined: bool) -> discord.ui.LayoutView:
     return create_v2_view(
         "Joined server" if joined else "Left server",
         f"**{guild.name}**\n-# {guild.id}",
@@ -43,12 +52,12 @@ class ServerJoinLogger(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
         self.logger.info("Guild join: %s (%s), owner %s (%s)", guild.name, guild.id, guild.owner, guild.owner_id)
-        await self.send_webhook_message(guild_log_view(self.bot, guild, joined=True))
+        await self.send_webhook_message(guild_log_view(self.bot, guild, await owner_display_name(self.bot, guild), joined=True))
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         self.logger.info("Guild remove: %s (%s)", guild.name, guild.id)
-        await self.send_webhook_message(guild_log_view(self.bot, guild, joined=False))
+        await self.send_webhook_message(guild_log_view(self.bot, guild, await owner_display_name(self.bot, guild), joined=False))
 
 
 async def setup(bot: commands.Bot) -> None:
