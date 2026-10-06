@@ -32,6 +32,8 @@ PRIVACY_URL = f"{SITE_URL}/privacy"
 TERMS_URL = f"{SITE_URL}/terms"
 SOURCE_URL = "https://github.com/Megildur/WordCounter"
 BOTZILLA_URL = "https://bot-zilla.app"
+DEVELOPER_ID = 1535886540847325305
+DEVELOPER_INVITE_URL = _env("DEVELOPER_INVITE_URL", "https://discord.gg/2X4fUapJ")
 LOG_RETENTION_DAYS = 90
 
 
