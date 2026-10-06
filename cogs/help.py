@@ -71,7 +71,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         "About WordCounter",
         "Everything is grouped by month and channel, for live tracking and past messages alike.",
         [
-            ("/advertisement or /ad", "Post a card about WordCounter with invite links."),
+            ("/advertisement", "Post a card about WordCounter with invite links."),
             ("Coming soon: Swear Jar", "Track swearing in chat and see who owes the jar the most."),
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
         ],
@@ -160,13 +160,6 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(view=AdvertisementView(self.bot))
-
-    @app_commands.command(name="ad", description="Post a card about WordCounter with invite links")
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    async def ad_command(self, interaction: discord.Interaction) -> None:
-        await self.advertisement_command.callback(self, interaction)
-
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(HelpCog(bot))
