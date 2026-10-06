@@ -28,8 +28,8 @@ SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:
 
 DEFAULT_CLIENT_ID = 1551875701748277299
 INVITE_PERMISSIONS = 1126177200925776
-PRIVACY_URL = "https://github.com/Megildur/WordCounter/blob/main/PRIVACY.md"
-TERMS_URL = "https://github.com/Megildur/WordCounter/blob/main/TERMS.md"
+PRIVACY_URL = f"{SITE_URL}/privacy"
+TERMS_URL = f"{SITE_URL}/terms"
 SOURCE_URL = "https://github.com/Megildur/WordCounter"
 BOTZILLA_URL = "https://botzilla.wispbyte.app"
 LOG_RETENTION_DAYS = 90

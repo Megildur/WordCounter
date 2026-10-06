@@ -23,8 +23,8 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
 | Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
-| Privacy Policy | [PRIVACY.md](PRIVACY.md) |
-| Terms of Service | [TERMS.md](TERMS.md) |
+| Privacy Policy | [wordcounter.wisp.uno/privacy](https://wordcounter.wisp.uno/privacy) |
+| Terms of Service | [wordcounter.wisp.uno/terms](https://wordcounter.wisp.uno/terms) |
 
 ## What it does
 
