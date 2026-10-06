@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 import discord
 from discord.ext import commands
-from cogs.utils.components import ERROR_COLOR, SUCCESS_COLOR, create_v2_view
+from cogs.utils.components import NEUTRAL_COLOR, SUCCESS_COLOR, create_v2_view
 from cogs.utils.config import WEBHOOK_URL, daily_log_handler
 from cogs.utils.http import get_session
 
@@ -20,11 +20,11 @@ async def owner_display_name(bot: commands.Bot, guild: discord.Guild) -> str:
 def guild_log_view(bot: commands.Bot, guild: discord.Guild, owner: str, joined: bool) -> discord.ui.LayoutView:
     return create_v2_view(
         "Joined server" if joined else "Left server",
-        f"**{guild.name}**\n-# {guild.id}",
+        f"**{guild.name}**",
         fields=[("Owner", owner), ("Members", f"{guild.member_count or 0:,}")],
         footer=f"Now in {len(bot.guilds):,} servers",
         thumbnail_url=guild.icon.url if guild.icon else None,
-        color=SUCCESS_COLOR if joined else ERROR_COLOR,
+        color=SUCCESS_COLOR if joined else NEUTRAL_COLOR,
     )
 
 
