@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}, WordCounter{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="wrap wrap--mid">
+    <header class="page-head">
+      <p class="eyebrow">Error {{ code }}</p>
+      <h1 class="page-title display">{{ title }}</h1>
+      <p class="page-lede">{{ message }}</p>
+    </header>
+    <div class="form-actions">
+      <a href="/" class="btn btn--primary">Go home</a>
+      <a href="/dashboard" class="btn btn--ghost">Dashboard</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

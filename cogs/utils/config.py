@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
@@ -7,17 +8,30 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
-SUPPORT_URL = os.getenv("BOT_SERVER", "").strip() or "https://discord.gg/prUsgFHvRS"
-WEBHOOK_URL = os.getenv("BOT_WEBHOOK_URL", "").strip()
+
+def _env(key: str, default: str = "") -> str:
+    return os.getenv(key, "").strip() or default
+
+
+API_TOKEN = _env("API_TOKEN")
+SUPPORT_URL = _env("BOT_SERVER", "https://discord.gg/prUsgFHvRS")
+WEBHOOK_URL = _env("BOT_WEBHOOK_URL")
 ALLOWED_GUILD_IDS: List[int] = [
     int(part) for part in os.getenv("ALLOWED_GUILDS", "").replace(" ", "").split(",") if part.isdigit()
 ]
+
+SITE_URL = _env("BASE_URL", "https://wordcounter.wisp.uno").rstrip("/")
+WEB_HOST = _env("WEB_HOST", "0.0.0.0")
+WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))
+DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
+SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()
 
 DEFAULT_CLIENT_ID = 1551875701748277299
 INVITE_PERMISSIONS = 1126177200925776
 PRIVACY_URL = "https://github.com/Megildur/WordCounter/blob/main/PRIVACY.md"
 TERMS_URL = "https://github.com/Megildur/WordCounter/blob/main/TERMS.md"
+SOURCE_URL = "https://github.com/Megildur/WordCounter"
+BOTZILLA_URL = "https://botzilla.wispbyte.app"
 LOG_RETENTION_DAYS = 90
 
 

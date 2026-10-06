@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}{{ guild.name }}, WordCounter{% endblock %}
+{% block meta_description %}WordCounter stats for {{ guild.name }}.{% endblock %}
+{% block og_title %}{{ guild.name }} on WordCounter{% endblock %}
+{% block robots %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="wrap">
+    <p class="eyebrow"><a class="link" href="/dashboard">Dashboard</a> / {{ guild.name }}</p>
+    <header class="guild-head">
+      {{ ui.server_icon(guild, 64) }}
+      <div class="guild-head__who">
+        <h1 class="page-title display">{{ guild.name }}</h1>
+      </div>
+      {% if can_manage %}<span class="tag tag--accent">You manage this server</span>{% endif %}
+    </header>
+
+    <nav class="tabs" aria-label="{{ guild.name }}">
+      <a href="/dashboard/{{ guild.id }}" {% if tab == 'stats' %}aria-current="page"{% endif %}>Your stats</a>
+      {% if can_manage %}
+        <a href="/dashboard/{{ guild.id }}/leaderboard" {% if tab == 'leaderboard' %}aria-current="page"{% endif %}>Leaderboard</a>
+        <a href="/dashboard/{{ guild.id }}/settings" {% if tab == 'settings' %}aria-current="page"{% endif %}>Settings</a>
+      {% endif %}
+    </nav>
+
+    {% block server_content %}{% endblock %}
+  </div>
+</div>
+{% endblock %}

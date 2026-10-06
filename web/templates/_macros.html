@@ -1,0 +1,117 @@
+{% macro csrf_field() %}<input type="hidden" name="csrf" value="{{ csrf }}">{% endmacro %}
+
+{% macro stat_strip(items, label, extra_class="") %}
+<dl class="stats {{ extra_class }}" aria-label="{{ label }}">
+  {% for name, value in items %}
+    <div>
+      <dt>{{ name }}</dt>
+      <dd>{{ value }}</dd>
+    </div>
+  {% endfor %}
+</dl>
+{% endmacro %}
+
+{% macro server_icon(guild, size=48) %}
+{% if guild.icon_url %}<img src="{{ guild.icon_url }}" alt="" width="{{ size }}" height="{{ size }}" loading="lazy">{% else %}<span class="server__initial" aria-hidden="true">{{ guild.name[:1] }}</span>{% endif %}
+{% endmacro %}
+
+{% macro channel_select(name, groups, label, id, empty_label=None, multiple=False, hint=None) %}
+<div class="form-row">
+  <label for="{{ id }}">{{ label }}</label>
+  <select class="input" id="{{ id }}" name="{{ name }}" {% if multiple %}multiple size="10"{% endif %}>
+    {% if empty_label %}<option value="">{{ empty_label }}</option>{% endif %}
+    {% for group in groups %}
+      <optgroup label="{{ group.label }}">
+        {% for option in group.options %}
+          <option value="{{ option.id }}">{{ option.label }}</option>
+        {% endfor %}
+      </optgroup>
+    {% endfor %}
+  </select>
+  {% if hint %}<p class="form-hint">{{ hint }}</p>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro confirm(id, text) %}
+<label class="check" for="{{ id }}">
+  <input type="checkbox" id="{{ id }}" name="confirm" value="yes" required>
+  <span>{{ text }}</span>
+</label>
+{% endmacro %}
+
+{% macro counted(value, noun) -%}
+{{ value|num }} {{ noun }}{% if value != 1 %}s{% endif %}
+{%- endmacro %}
+
+{% macro activity(item) -%}
+{{ counted(item.words, "word") }} &middot; {{ counted(item.messages, "message") }} &middot; {{ counted(item.attachments, "attachment") }} &middot; {{ counted(item.emojis, "emoji") }}
+{%- endmacro %}
+
+{% macro member_stats(stats, who) %}
+{{ stat_strip([("Words", stats.totals.words|num), ("Messages", stats.totals.messages|num), ("Attachments", stats.totals.attachments|num), ("Emojis", stats.totals.emojis|num)], who ~ " totals", "stats--tight") }}
+
+{% if stats.keywords %}
+  <h2 class="subhead display section-gap">Keywords</h2>
+  <div class="chips">
+    {% for keyword, count in stats.keywords %}
+      <span class="chip">{{ keyword }} &middot; {{ count|num }}</span>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<h2 class="subhead display section-gap">Month by month</h2>
+{% if stats.months %}
+  <div class="months">
+    {% for month in stats.months %}
+      <details class="month" {% if loop.first %}open{% endif %}>
+        <summary>
+          <h3>{{ month_name(month.month) }} {{ month.year }}</h3>
+          <p>{{ activity(month) }}</p>
+        </summary>
+        <div class="month__body">
+          {% if month.keywords %}
+            <div class="chips">
+              {% for keyword, count in month.keywords %}<span class="chip">{{ keyword }} &middot; {{ count|num }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          <div class="table-wrap">
+            <table class="table">
+              <caption class="sr-only">Channels in {{ month_name(month.month) }} {{ month.year }}</caption>
+              <thead>
+                <tr><th scope="col">Channel</th><th scope="col" class="num">Words</th><th scope="col" class="num">Messages</th><th scope="col" class="num">Attachments</th><th scope="col" class="num">Emojis</th></tr>
+              </thead>
+              <tbody>
+                {% for channel in month.channels %}
+                  <tr>
+                    <th scope="row">{{ channel.label }}{% if channel.keywords %}<br><span class="muted">{% for keyword, count in channel.keywords %}{{ keyword }} {{ count|num }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</th>
+                    <td class="num">{{ channel.words|num }}</td>
+                    <td class="num">{{ channel.messages|num }}</td>
+                    <td class="num">{{ channel.attachments|num }}</td>
+                    <td class="num">{{ channel.emojis|num }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="empty">
+    <p class="empty__title">No monthly history yet.</p>
+    <p>It fills in as messages are counted.</p>
+  </div>
+{% endif %}
+{% endmacro %}
+
+{% macro leaderboard_url(guild_id, metric, channel_id=None, page=None) -%}
+/dashboard/{{ guild_id }}/leaderboard?metric={{ metric }}{% if channel_id %}&amp;channel={{ channel_id }}{% endif %}{% if page %}&amp;page={{ page }}{% endif %}
+{%- endmacro %}
+
+{% macro member_cell(guild_id, row) %}
+<span class="who">
+  {% if row.avatar_url %}<img src="{{ row.avatar_url }}" alt="" width="32" height="32" loading="lazy">{% else %}<span class="server__initial" aria-hidden="true"></span>{% endif %}
+  <a href="/dashboard/{{ guild_id }}/members/{{ row.id }}">{{ row.name }}</a>
+</span>
+{% endmacro %}

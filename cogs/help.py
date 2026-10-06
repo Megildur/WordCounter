@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from cogs.utils.components import BRAND_COLOR, create_v2_container, make_button
-from cogs.utils.config import PRIVACY_URL, SUPPORT_URL, TERMS_URL, invite_url
+from cogs.utils.config import PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
 from paginator import ButtonPaginator
 
 HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
@@ -72,6 +72,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         "Everything is grouped by month and channel, for live tracking and past messages alike.",
         [
             ("/advertisement", "Post a card about WordCounter with invite links."),
+            ("Website", f"See your stats in every server you share with WordCounter, and manage settings for servers you run: {SITE_URL}"),
             ("Coming soon: Swear Jar", "Track swearing in chat and see who owes the jar the most."),
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
         ],
@@ -84,6 +85,7 @@ def link_buttons(bot: commands.Bot, invite_label: str, support_label: str) -> Li
     return [
         make_button(invite_label, url=invite_url(client_id)),
         make_button(support_label, url=SUPPORT_URL),
+        make_button("Website", url=SITE_URL),
     ]
 
 
@@ -160,6 +162,7 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(view=AdvertisementView(self.bot))
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(HelpCog(bot))

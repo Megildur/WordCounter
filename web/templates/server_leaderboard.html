@@ -1,0 +1,97 @@
+{% extends "server_base.html" %}
+{% import "_macros.html" as ui with context %}
+
+{% block server_content %}
+<div class="toolbar">
+  <nav class="segmented" aria-label="Leaderboard type">
+    {% for key, label in labels.items() %}
+      <a href="{{ ui.leaderboard_url(guild.id, key, channel_id) }}" {% if key == metric %}aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <form method="get" class="form-actions">
+    <input type="hidden" name="metric" value="{{ metric }}">
+    {{ ui.channel_select("channel", channel_groups, "Channel", "lb-channel", empty_label="Whole server") }}
+    <button type="submit" class="btn btn--ghost">Show</button>
+  </form>
+</div>
+
+<h2 class="subhead display">{{ labels[metric] }} in {{ channel_label or "the whole server" }}</h2>
+
+{% if metric == "keywords" %}
+  {% for leader in keyword_leaders %}
+    <section class="panel" aria-labelledby="kw-{{ loop.index }}">
+      <h3 id="kw-{{ loop.index }}" class="cmd__name">{{ leader.keyword }}</h3>
+      <div class="table-wrap panel__body">
+        <table class="table">
+          <caption class="sr-only">Who says {{ leader.keyword }} most</caption>
+          <thead><tr><th scope="col" class="rank">#</th><th scope="col">Member</th><th scope="col" class="num">Times</th></tr></thead>
+          <tbody>
+            {% for row in leader.rows %}
+              <tr>
+                <td class="rank">{{ row.rank }}</td>
+                <td>{{ ui.member_cell(guild.id, row) }}</td>
+                <td class="num">{{ row.count|num }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if leader.total > leader.rows|length %}<p class="form-hint">Top {{ leader.rows|length }} of {{ leader.total|num }} members.</p>{% endif %}
+    </section>
+  {% else %}
+    <div class="empty">
+      <p class="empty__title">No keyword use recorded yet.</p>
+      <p>Add keywords in Settings and they're counted from then on.</p>
+    </div>
+  {% endfor %}
+{% elif rows %}
+  <div class="table-wrap">
+    <table class="table">
+      <caption class="sr-only">{{ labels[metric] }} leaderboard, page {{ page }} of {{ pages }}</caption>
+      <thead><tr><th scope="col" class="rank">#</th><th scope="col">Member</th><th scope="col" class="num">{{ labels[metric] }}</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td class="rank">{{ row.rank }}</td>
+            <td>{{ ui.member_cell(guild.id, row) }}</td>
+            <td class="num">{{ row.count|num }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <span>{{ ui.counted(total, "member") }} &middot; page {{ page }} of {{ pages }}</span>
+    <span class="form-actions">
+      {% if page > 1 %}<a class="btn btn--sm btn--ghost" href="{{ ui.leaderboard_url(guild.id, metric, channel_id, page - 1) }}">Previous</a>{% endif %}
+      {% if page < pages %}<a class="btn btn--sm btn--ghost" href="{{ ui.leaderboard_url(guild.id, metric, channel_id, page + 1) }}">Next</a>{% endif %}
+    </span>
+  </div>
+{% else %}
+  <div class="empty">
+    <p class="empty__title">Nothing recorded yet.</p>
+    <p>Counts show up here as soon as tracked channels get messages.</p>
+  </div>
+{% endif %}
+
+{% if history %}
+  <h2 class="subhead display section-gap">Monthly history for {{ channel_label }}</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <caption class="sr-only">Monthly history for {{ channel_label }}</caption>
+      <thead><tr><th scope="col">Month</th><th scope="col" class="num">Words</th><th scope="col" class="num">Messages</th><th scope="col" class="num">Attachments</th><th scope="col" class="num">Emojis</th></tr></thead>
+      <tbody>
+        {% for year, month, words, messages, attachments, emojis in history %}
+          <tr>
+            <th scope="row">{{ month_name(month) }} {{ year }}</th>
+            <td class="num">{{ words|num }}</td>
+            <td class="num">{{ messages|num }}</td>
+            <td class="num">{{ attachments|num }}</td>
+            <td class="num">{{ emojis|num }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+{% endblock %}

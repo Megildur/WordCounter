@@ -25,7 +25,7 @@ for handler in (file_handler, console_handler):
 
 log = logging.getLogger("main")
 
-CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands")
+CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web")
 
 
 class MyBot(commands.Bot):

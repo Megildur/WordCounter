@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Terms of Service, WordCounter{% endblock %}
+{% block meta_description %}The terms for using the WordCounter Discord bot and its website.{% endblock %}
+{% block og_title %}WordCounter Terms of Service{% endblock %}
+
+{% block content %}
+<div class="page">
+  <div class="wrap">
+    <header class="page-head">
+      <p class="eyebrow">Legal</p>
+      <h1 class="page-title display">Terms of Service</h1>
+      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 5, 2026</p>
+    </header>
+
+    <div class="legal">
+      <nav class="legal__toc" aria-label="On this page">
+        <p class="footer-heading">On this page</p>
+        <ol>
+          <li><a href="#acceptance">Acceptance of terms</a></li>
+          <li><a href="#discord">Compliance with Discord terms</a></li>
+          <li><a href="#service">Description of service and licence</a></li>
+          <li><a href="#use">Acceptable use</a></li>
+          <li><a href="#admins">Server admins</a></li>
+          <li><a href="#availability">Availability and changes</a></li>
+          <li><a href="#warranties">Disclaimer of warranties</a></li>
+          <li><a href="#liability">Limitation of liability</a></li>
+          <li><a href="#termination">Termination</a></li>
+          <li><a href="#updates">Updates to these terms</a></li>
+          <li><a href="#law">Governing law</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ol>
+      </nav>
+
+      <div class="prose">
+        <section id="acceptance">
+          <h2><span class="num">01</span>Acceptance of terms</h2>
+          <p>
+            By adding the <strong>WordCounter</strong> Discord bot ("the Service", "the Bot", "we", "us", or "our") to a server, using its commands, or using this website, you agree to these Terms of Service ("Terms") and our <a href="/privacy">Privacy Policy</a>. WordCounter is run by Botzilla. It is a separate bot from Botzilla, and these Terms cover WordCounter only.
+          </p>
+          <p>If you do not agree to these Terms, remove the Bot from your server and stop using it and this website.</p>
+        </section>
+
+        <section id="discord">
+          <h2><span class="num">02</span>Compliance with Discord terms</h2>
+          <p>WordCounter runs on Discord. As a user or server admin, you must follow Discord's policies, including:</p>
+          <ul>
+            <li><a href="https://discord.com/terms" target="_blank" rel="noopener noreferrer">Discord Terms of Service</a></li>
+            <li><a href="https://discord.com/guidelines" target="_blank" rel="noopener noreferrer">Discord Community Guidelines</a></li>
+          </ul>
+          <p>Using WordCounter to break Discord's terms or guidelines is prohibited and can end your access.</p>
+        </section>
+
+        <section id="service">
+          <h2><span class="num">03</span>Description of service and licence</h2>
+          <p>
+            WordCounter counts words, messages, attachments (including stickers and links), emojis and custom keywords in your server. It shows leaderboards and member stats with monthly and per-channel history, and can count messages sent before it joined.
+          </p>
+          <p>
+            This website lets you sign in with Discord to see your own stats in the servers you share with WordCounter. Members with the Manage Server permission can also see everyone's stats in that server and change its WordCounter settings.
+          </p>
+          <p>We grant you a revocable, non-exclusive, non-transferable, limited licence to use the Bot and this website in Discord communities, in line with these Terms.</p>
+        </section>
+
+        <section id="use">
+          <h2><span class="num">04</span>Acceptable use and prohibited conduct</h2>
+          <p>You agree not to:</p>
+          <ul>
+            <li>Try to break, overload or misuse the Bot, this website, or the services they rely on, including flooding them with commands or requests or getting around their limits.</li>
+            <li>Try to see stats or change settings for servers you aren't allowed to, on Discord or on this website.</li>
+            <li>Exploit bugs or security problems. If you find one, report it in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>.</li>
+            <li>Impersonate the Bot, its developer, or its staff.</li>
+          </ul>
+        </section>
+
+        <section id="admins">
+          <h2><span class="num">05</span>Your responsibilities as a server admin</h2>
+          <p>
+            If you add WordCounter to a server, you're responsible for telling that server's members it counts their activity. Our <a href="/privacy">Privacy Policy</a> describes what it stores. You choose which channels are tracked, and you can reset counts at any time in <code>/settings</code> or on this website. Changes made on the website work the same way as <code>/settings</code> in Discord.
+          </p>
+        </section>
+
+        <section id="availability">
+          <h2><span class="num">06</span>Service availability and changes</h2>
+          <p>WordCounter and this website are free and provided on an <strong>"AS IS"</strong> and <strong>"AS AVAILABLE"</strong> basis. We may:</p>
+          <ul>
+            <li>Change, pause or stop any part of WordCounter or this website at any time.</li>
+            <li>Take the Bot and website offline for updates, fixes or hosting work.</li>
+          </ul>
+          <p>Counts depend on what Discord lets the Bot see. Messages in channels it can't read, deleted messages, and messages from before it had access may be missing.</p>
+        </section>
+
+        <section id="warranties">
+          <h2><span class="num">07</span>Disclaimer of warranties</h2>
+          <p>To the maximum extent permitted by applicable law, the Bot and this website are provided without warranties of any kind, whether express or implied. We don't promise they will always be available, free of errors, or that every count is exact.</p>
+        </section>
+
+        <section id="liability">
+          <h2><span class="num">08</span>Limitation of liability</h2>
+          <p>To the extent the law allows, Botzilla, as the operator of WordCounter, isn't liable for any loss or damage from using WordCounter or this website, including lost data or lost counts.</p>
+        </section>
+
+        <section id="termination">
+          <h2><span class="num">09</span>Termination</h2>
+          <p>
+            You can remove WordCounter from your server whenever you like. Removing it doesn't delete your server's data. Ask us in the <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a> and we'll delete it within 90 days, as described in the <a href="/privacy">Privacy Policy</a>.
+          </p>
+          <p>We can stop providing WordCounter or this website to any server or user that breaks these Terms.</p>
+        </section>
+
+        <section id="updates">
+          <h2><span class="num">10</span>Updates to these terms</h2>
+          <p>If these Terms change, we'll update the "Last revised" date at the top and announce it in the support server. If you keep using WordCounter after an update is posted, you accept the new Terms.</p>
+        </section>
+
+        <section id="law">
+          <h2><span class="num">11</span>Governing law</h2>
+          <p>These Terms are governed by the laws of the State of Washington, USA.</p>
+        </section>
+
+        <section id="contact">
+          <h2><span class="num">12</span>Contact information</h2>
+          <p>For questions about these Terms, ask in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Discord support server</a>. It's the only way to contact us.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

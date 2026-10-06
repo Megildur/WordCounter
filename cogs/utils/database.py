@@ -612,6 +612,13 @@ class WordCounterDatabase:
             for keyword, users in sorted(per_keyword.items())
         ]
 
+    async def get_global_totals(self) -> Tuple[int, int]:
+        await self.ensure_connected()
+        async with self.db_lock:
+            messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
+            words = await self._fetch_value("SELECT SUM(count) FROM server", ())
+        return messages, words
+
     async def get_keywords(self, guild_id: int) -> List[str]:
         await self.ensure_connected()
         async with self.db_lock:

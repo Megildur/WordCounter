@@ -1,0 +1,20 @@
+{% extends "server_base.html" %}
+{% import "_macros.html" as ui with context %}
+
+{% block server_content %}
+{% if not tracking %}
+  <div class="alert" role="status">
+    <span class="alert__label">Note</span>
+    <p>Tracking is off in this server, so new messages aren't being counted right now.</p>
+  </div>
+{% endif %}
+
+{% if stats.empty %}
+  <div class="empty">
+    <p class="empty__title">Nothing counted for you here yet.</p>
+    <p>Send a message in a tracked channel and it shows up here.</p>
+  </div>
+{% else %}
+  {{ ui.member_stats(stats, "Your") }}
+{% endif %}
+{% endblock %}
