@@ -241,6 +241,40 @@ async def leaderboard(request: web.Request) -> web.Response:
     return render(request, "server_leaderboard.html", "dashboard", **context, **guild_context(guild, can_manage, "leaderboard"))
 
 
+@routes.get(r"/dashboard/{guild_id:\d+}/members")
+async def members(request: web.Request) -> web.Response:
+    guild, _, can_manage = await member_access(request)
+    if not can_manage:
+        return manager_only(request)
+    db = request.app["bot"].db
+    query = request.query.get("q", "").strip()[:100]
+    needle = query.casefold()
+    found = sorted(
+        (m for m in guild.members if not m.bot and (needle in m.display_name.casefold() or needle in m.name.casefold())),
+        key=lambda m: m.display_name.casefold(),
+    )
+    shown, page, pages = paginate(found, request.query.get("page"))
+    words = dict(await db.get_leaderboard("words", guild.id, None))
+    messages = dict(await db.get_leaderboard("messages", guild.id, None))
+
+    def link(number: int) -> str:
+        return page_url(f"/dashboard/{guild.id}/members", q=query, page=number)
+
+    return render(
+        request,
+        "server_members.html",
+        "dashboard",
+        rows=[{**person(guild, m.id), "words": words.get(m.id, 0), "messages": messages.get(m.id, 0)} for m in shown],
+        query=query,
+        total=len(found),
+        page=page,
+        pages=pages,
+        prev_url=link(page - 1) if page > 1 else None,
+        next_url=link(page + 1) if page < pages else None,
+        **guild_context(guild, can_manage, "members"),
+    )
+
+
 @routes.get(r"/dashboard/{guild_id:\d+}/members/{member_id:\d+}")
 async def member_page(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
@@ -263,7 +297,7 @@ async def member_page(request: web.Request) -> web.Response:
             lambda cid: page_url(f"/dashboard/{guild.id}/members/{member_id}", "reset-member", channel=cid),
             "Every channel",
         ),
-        **guild_context(guild, can_manage, "leaderboard"),
+        **guild_context(guild, can_manage, "members"),
     )
 
 

@@ -8,7 +8,7 @@
     <h2 class="account__name">{{ person.name }}</h2>
     <p class="account__meta">ID <code>{{ person.id }}</code> &middot; {% if analyzed %}past messages counted{% else %}past messages not counted yet{% endif %}</p>
   </div>
-  <a class="btn btn--sm btn--ghost" href="{{ leaderboard_url(guild.id, 'words') }}">Back to leaderboard</a>
+  <a class="btn btn--sm btn--ghost" href="/dashboard/{{ guild.id }}/members">All members</a>
 </div>
 
 {% if stats.empty %}

@@ -1,0 +1,42 @@
+{% extends "server_base.html" %}
+{% import "_macros.html" as ui with context %}
+
+{% block server_content %}
+<form method="get" class="search" role="search">
+  <label class="form-label" for="member-search">Find a member</label>
+  <div class="search__row">
+    <input class="input" type="search" id="member-search" name="q" value="{{ query }}" maxlength="100" autocomplete="off" placeholder="Name or username">
+    <button type="submit" class="btn btn--ghost">Search</button>
+  </div>
+</form>
+
+{% if rows %}
+  <div class="table-wrap">
+    <table class="table">
+      <caption class="sr-only">Members{% if query %} matching {{ query }}{% endif %}, page {{ page }} of {{ pages }}</caption>
+      <thead><tr><th scope="col">Member</th><th scope="col" class="num">Words</th><th scope="col" class="num">Messages</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ ui.member_cell(guild.id, row) }}</td>
+            <td class="num">{{ row.words|num }}</td>
+            <td class="num">{{ row.messages|num }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <span>{{ ui.counted(total, "member") }} &middot; page {{ page }} of {{ pages }}</span>
+    <span class="form-actions">
+      {% if prev_url %}<a class="btn btn--sm btn--ghost" href="{{ prev_url }}">Previous</a>{% endif %}
+      {% if next_url %}<a class="btn btn--sm btn--ghost" href="{{ next_url }}">Next</a>{% endif %}
+    </span>
+  </div>
+{% else %}
+  <div class="empty">
+    <p class="empty__title">{% if query %}No members match "{{ query }}".{% else %}No members found.{% endif %}</p>
+    {% if query %}<p><a class="link" href="/dashboard/{{ guild.id }}/members">Show everyone</a></p>{% endif %}
+  </div>
+{% endif %}
+{% endblock %}

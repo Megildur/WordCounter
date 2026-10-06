@@ -21,6 +21,7 @@
       <a href="/dashboard/{{ guild.id }}" {% if tab == 'stats' %}aria-current="page"{% endif %}>Your stats</a>
       {% if can_manage %}
         <a href="/dashboard/{{ guild.id }}/leaderboard" {% if tab == 'leaderboard' %}aria-current="page"{% endif %}>Leaderboard</a>
+        <a href="/dashboard/{{ guild.id }}/members" {% if tab == 'members' %}aria-current="page"{% endif %}>Members</a>
         <a href="/dashboard/{{ guild.id }}/settings" {% if tab == 'settings' %}aria-current="page"{% endif %}>Settings</a>
       {% endif %}
     </nav>
