@@ -70,7 +70,7 @@
     <form method="post" class="form">
       {{ ui.csrf_field() }}
       <input type="hidden" name="action" value="add_channels">
-      {{ ui.channel_select("channel", add_groups, "Ignore channels or categories" if mode == "whole" else "Track channels or categories", "add-channels", multiple=True, hint="Hold Ctrl (or Cmd) to pick more than one.") }}
+      {{ ui.checklist("channel", add_groups, "Ignore channels or categories" if mode == "whole" else "Track channels or categories", hint="Tick as many as you like.") }}
       <div class="form-actions"><button type="submit" class="btn btn--primary">{% if mode == "whole" %}Ignore{% else %}Track{% endif %}</button></div>
     </form>
   {% endif %}
@@ -93,13 +93,13 @@
 
 <h2 class="subhead display section-gap">Data and resets</h2>
 
-<section class="panel panel--danger" aria-labelledby="reset-channel-title">
+<section id="reset-channel" class="panel panel--danger" aria-labelledby="reset-channel-title">
   <h3 id="reset-channel-title">Reset a channel</h3>
   <p>Deletes every member's counts and monthly history in one channel. To reset one member, open them from the leaderboard.</p>
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="reset_channel">
-    {{ ui.channel_select("channel", reset_groups, "Channel", "reset-channel", empty_label="Pick a channel") }}
+    {{ ui.dropdown("Channel", reset_menu, field="channel") }}
     {{ ui.confirm("reset-channel-confirm", "I understand this deletes everyone's counts in that channel.") }}
     <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Reset channel</button></div>
   </form>

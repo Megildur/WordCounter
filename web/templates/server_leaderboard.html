@@ -5,14 +5,10 @@
 <div class="toolbar">
   <nav class="segmented" aria-label="Leaderboard type">
     {% for key, label in labels.items() %}
-      <a href="{{ ui.leaderboard_url(guild.id, key, channel_id) }}" {% if key == metric %}aria-current="true"{% endif %}>{{ label }}</a>
+      <a href="{{ leaderboard_url(guild.id, key, channel_id) }}" {% if key == metric %}aria-current="true"{% endif %}>{{ label }}</a>
     {% endfor %}
   </nav>
-  <form method="get" class="form-actions">
-    <input type="hidden" name="metric" value="{{ metric }}">
-    {{ ui.channel_select("channel", channel_groups, "Channel", "lb-channel", empty_label="Whole server") }}
-    <button type="submit" class="btn btn--ghost">Show</button>
-  </form>
+  {{ ui.dropdown("Channel", channel_menu) }}
 </div>
 
 <h2 class="subhead display">{{ labels[metric] }} in {{ channel_label or "the whole server" }}</h2>
@@ -63,8 +59,8 @@
   <div class="pager">
     <span>{{ ui.counted(total, "member") }} &middot; page {{ page }} of {{ pages }}</span>
     <span class="form-actions">
-      {% if page > 1 %}<a class="btn btn--sm btn--ghost" href="{{ ui.leaderboard_url(guild.id, metric, channel_id, page - 1) }}">Previous</a>{% endif %}
-      {% if page < pages %}<a class="btn btn--sm btn--ghost" href="{{ ui.leaderboard_url(guild.id, metric, channel_id, page + 1) }}">Next</a>{% endif %}
+      {% if page > 1 %}<a class="btn btn--sm btn--ghost" href="{{ leaderboard_url(guild.id, metric, channel_id, page - 1) }}">Previous</a>{% endif %}
+      {% if page < pages %}<a class="btn btn--sm btn--ghost" href="{{ leaderboard_url(guild.id, metric, channel_id, page + 1) }}">Next</a>{% endif %}
     </span>
   </div>
 {% else %}
