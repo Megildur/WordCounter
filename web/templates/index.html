@@ -14,7 +14,7 @@
         </p>
         <div class="hero__actions">
           <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">Add WordCounter</a>
-          <a href="/dashboard" class="btn btn--lg btn--ghost">See your stats</a>
+          {{ ui.dashboard_link("btn btn--lg btn--ghost", "See your stats", "See your stats") }}
         </div>
         <p class="hero__aside">
           Questions first? <a class="link" href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Ask in the support server</a>.
@@ -122,7 +122,7 @@
         <div>
           <p>Log in with Discord to see your own counts in every server you share with WordCounter. If you can manage a server, you also get its leaderboards, every member's stats and its settings, here in the browser.</p>
           <div class="chips">
-            <a class="chip" href="/dashboard">Open the dashboard</a>
+            {{ ui.dashboard_link("chip") }}
           </div>
         </div>
       </article>
@@ -183,8 +183,8 @@
           <span class="next__num" aria-hidden="true">02</span>
           <div>
             <h3>Choose what to track</h3>
-            <p>Pick the whole server or specific channels, and add any keywords you want counted. Do it in Discord or in the dashboard.</p>
-            <div class="chips"><code class="chip chip--plain">/settings</code><a class="chip chip--plain" href="/dashboard">Dashboard</a></div>
+            <p>Pick the whole server or specific channels, and add any keywords you want counted. Do it in Discord or here on the website.</p>
+            <div class="chips"><code class="chip chip--plain">/settings</code>{{ ui.dashboard_link("chip chip--plain", "Dashboard") }}</div>
           </div>
         </li>
         <li class="next__item">
@@ -224,7 +224,7 @@
     </div>
     <div class="cta-band__actions">
       <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--ink">Add WordCounter</a>
-      <a href="/dashboard" class="btn btn--lg btn--ink-ghost">Open the dashboard</a>
+      {{ ui.dashboard_link("btn btn--lg btn--ink-ghost") }}
     </div>
   </div>
 </section>

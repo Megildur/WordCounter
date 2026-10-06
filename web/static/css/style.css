@@ -234,6 +234,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 .btn--discord:hover { background: var(--blurple-hi); }
 .btn--quiet { color: var(--text-2); }
 .btn--quiet:hover { color: var(--text); background: var(--base-2); }
+.btn--quiet[aria-current="page"] { color: var(--text); background: var(--base-2); }
 .btn--danger { color: var(--danger); }
 .btn--danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .btn--danger-solid { background: var(--danger); color: var(--base); }

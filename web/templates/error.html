@@ -12,7 +12,7 @@
     </header>
     <div class="form-actions">
       <a href="/" class="btn btn--primary">Go home</a>
-      <a href="/dashboard" class="btn btn--ghost">Dashboard</a>
+      {% if user %}<a href="/dashboard" class="btn btn--ghost">Dashboard</a>{% endif %}
     </div>
   </div>
 </div>
