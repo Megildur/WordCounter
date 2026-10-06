@@ -9,7 +9,7 @@
     <header class="page-head">
       <p class="eyebrow">Legal</p>
       <h1 class="page-title display">Privacy Policy</h1>
-      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 5, 2026</p>
+      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 6, 2026</p>
     </header>
 
     <div class="legal">
@@ -22,6 +22,7 @@
           <li><a href="#processed">Processed, not stored</a></li>
           <li><a href="#third-party">Third-party services</a></li>
           <li><a href="#visibility">Who can see your data</a></li>
+          <li><a href="#website">This website</a></li>
           <li><a href="#security">Storage and security</a></li>
           <li><a href="#rights">Your rights and deletion</a></li>
           <li><a href="#children">Children</a></li>
@@ -33,14 +34,14 @@
       <div>
         <div class="legal__summary">
           <h2>The short version</h2>
-          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. Signing in on this website only tells us who you are, and that stays in your browser.</p>
+          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. We never sell data or use it for ads.</p>
         </div>
 
         <div class="prose">
           <section id="introduction">
             <h2><span class="num">01</span>Introduction</h2>
             <p>
-              This Privacy Policy explains what information <strong>WordCounter</strong> ("we", "us", or "our") collects when you use the WordCounter Discord application and this website, why, and what you can do about it. WordCounter is run by Botzilla, based in Washington State, USA. It is a separate bot from Botzilla, with its own data and its own policy.
+              This Privacy Policy explains what information <strong>WordCounter</strong> ("we", "us", or "our") collects when you use the WordCounter Discord app and this website, why, who can see it, how we protect it, and what you can do about it. Botzilla and WordCounter are separate bots from the same developer. Each has its own data and its own policy.
             </p>
           </section>
 
@@ -51,16 +52,16 @@
               <li><strong>The text of your messages.</strong> WordCounter reads each message in a tracked channel so it can count it, then discards the text. The same applies when <code>/analyze_chat</code> reads past messages. Only the resulting numbers are kept.</li>
               <li><strong>Attachments.</strong> Files, images and stickers are counted, never saved.</li>
               <li><strong>Direct messages.</strong> WordCounter doesn't read or count DMs.</li>
-              <li><strong>Personal details.</strong> We don't ask for or store your real name, email address, phone number or passwords.</li>
-              <li><strong>Your Discord login.</strong> Signing in on this website goes through Discord. We use what Discord sends back once, to read your account's ID, username, display name and avatar, then discard the access it grants. We never see your password.</li>
-              <li><strong>Browsing data.</strong> This website has no analytics, ads or tracking cookies, and doesn't log page visits.</li>
+              <li><strong>Personal details.</strong> We don't ask for or store your real name, email address, home address, phone number or passwords.</li>
+              <li><strong>Your Discord password.</strong> Logging in on this website goes through Discord, so we never see your password.</li>
+              <li><strong>Browsing data.</strong> This website has no analytics, ads or tracking cookies, and doesn't log page visits. Only server errors are logged, with the page address and not who visited.</li>
               <li><strong>Payment details.</strong> WordCounter is free and never handles card or bank details.</li>
             </ul>
           </section>
 
           <section id="collected">
             <h2><span class="num">03</span>Information we collect and store</h2>
-            <p>We store what WordCounter needs to keep counting accurately after a restart, and nothing for advertising or profiling.</p>
+            <p>We store what WordCounter needs to keep working after a restart, and nothing for advertising or profiling:</p>
             <dl>
               <div>
                 <dt>Discord IDs</dt>
@@ -79,80 +80,98 @@
                 <dd>When tracking was turned on or off and when counts were reset, so past messages are never counted twice. While <code>/analyze_chat</code> is running, the ID of the last message read in each channel, so it can pick up where it left off after a restart. These checkpoints are deleted when the analysis finishes.</dd>
               </div>
               <div>
-                <dt>Website session</dt>
-                <dd>When you sign in, your browser keeps a signed cookie with your Discord ID, username, display name and avatar link, so the site knows it's you. It stays in your browser, not in our database, and lasts 30 days or until you log out. A second cookie lasts 10 minutes while you sign in, to make sure the login was started by you.</dd>
-              </div>
-              <div>
                 <dt>Logs</dt>
-                <dd>Error logs may include a member's Discord username and ID, the name and ID of the server and channel where an error happened, or the address of a website page that failed. Join logs record a server's name, ID and owner when WordCounter is added, and its name and ID when it's removed. We use logs only to fix bugs, and log files are deleted automatically after 90 days at most.</dd>
+                <dd>When WordCounter joins a server, we log the server's name and ID and the owner's username and ID. When it leaves, we log the server's name and ID. When something fails, the error log can record the command or page, your username and ID, and the server and channel where it happened. Log files are kept on the bot's host, used only to fix problems, and deleted automatically after 90 days.</dd>
               </div>
               <div>
-                <dt>Join and leave posts</dt>
-                <dd>When WordCounter joins or leaves a server, a message is posted in a public channel of our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a> showing that server's name, ID, icon, member count and owner's display name (not their username). Anyone in the support server can see these posts. They aren't deleted automatically. Server owners can ask us to remove the ones about their server.</dd>
+                <dt>Join and leave notices</dt>
+                <dd>When WordCounter joins or leaves a server, a notice is posted in a public channel of our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a> showing that server's name, icon and member count, and its owner's display name (not their username). Anyone in the support server can see them. Server and owner IDs aren't shown there. They're kept only in the log files above. These notices aren't deleted automatically. Server owners can ask us to remove the ones about their server.</dd>
               </div>
             </dl>
-            <p>The planned Swear Jar feature will count swearing per member in the same way. This policy will be updated before it launches.</p>
+            <p>Planned features will store more: the Swear Jar will count swearing per member the same way other words are counted. This policy will be updated before anything new is stored.</p>
           </section>
 
           <section id="processed">
             <h2><span class="num">04</span>Processed, not stored</h2>
-            <p>These actions use your data once and keep only numbers:</p>
+            <p>These features use your data once and don't save it:</p>
             <ul>
-              <li><strong>Live counting:</strong> each new, edited or deleted message is read, counted or recounted, and its text discarded.</li>
+              <li><strong>Live counting:</strong> each new, edited or deleted message is read, counted or recounted, and its text discarded. Only the numbers in section 03 are kept.</li>
               <li><strong>Past-message analysis (<code>/analyze_chat</code>):</strong> past messages are read the same way, either through Discord's message search for one member or by reading channel history for the whole server.</li>
               <li><strong>Message Word Count (right-click app):</strong> the message you pick is counted and the result shown to you. Nothing is saved.</li>
-              <li><strong>Website sign-in:</strong> Discord confirms who you are, we read your ID, names and avatar, and keep them only in your browser's session cookie.</li>
             </ul>
           </section>
 
           <section id="third-party">
             <h2><span class="num">05</span>Third-party services</h2>
-            <p>
-              WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are when you sign in. It asks Discord for your basic profile only, not your server list, email or messages. It doesn't send your data to any other API.
-            </p>
-            <p>
-              Pages that show avatars or server icons load those images from Discord's image servers, so Discord can see that your browser asked for them. Fonts and everything else on this site are served by us.
-            </p>
-            <p>
-              WordCounter and this website run on <a href="https://wispbyte.com" target="_blank" rel="noopener noreferrer">Wispbyte</a>, a hosting company. The database and logs are stored on their servers. Apart from that hosting and the join and leave posts described in section 03, we don't share data with anyone, and we never sell it or use it for ads.
-            </p>
+            <p>WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are when you log in. It doesn't send your data to any other service.</p>
+            <p>Apart from these services, our host (see section 08) and the join and leave notices in section 03, we don't share data with anyone. We never sell it or use it for ads.</p>
           </section>
 
           <section id="visibility">
             <h2><span class="num">06</span>Who can see your data</h2>
-            <p>Anyone in a server can view that server's leaderboards and member stats with WordCounter's commands. Stats from one server are never shown in another.</p>
+            <ul>
+              <li><strong>Stats:</strong> anyone in a server can view that server's leaderboards and member stats with WordCounter's commands. Stats from one server are never shown in another.</li>
+              <li><strong>Server settings:</strong> members with the Manage Server permission can see and change the server's WordCounter settings with <code>/settings</code>.</li>
+            </ul>
             <p>On this website, you see your own stats in each server you share with WordCounter. Members of a server who have the Manage Server permission also see everyone's stats in that server and can change its WordCounter settings, the same things <code>/leaderboard</code> and <code>/settings</code> show in Discord.</p>
           </section>
 
+          <section id="website">
+            <h2><span class="num">07</span>This website</h2>
+            <p>
+              <strong>Logging in.</strong> If you log in here with Discord, Discord tells us your user ID, username, display name and avatar. We keep those in a signed cookie called <code>wordcounter_session</code> in your browser so you stay logged in for up to 30 days. The cookie is not copied into our database, and logging out deletes it.
+            </p>
+            <p>
+              <strong>Your servers.</strong> WordCounter asks Discord for your basic profile only, not your server list. It finds the servers you share with it from its own member lists, and checks your membership and permissions with Discord's live data every time you open a page or change a setting.
+            </p>
+            <p>
+              <strong>Other cookies.</strong> While you log in, a cookie called <code>wordcounter_login</code> holds a random value for up to 10 minutes so the login can't be started by another site. We don't use advertising or analytics cookies.
+            </p>
+            <p>
+              <strong>Outside requests from your browser.</strong> Pages that show avatars or server icons load those images directly from Discord (<code>cdn.discordapp.com</code>). Like any site you visit, they can see your IP address. Fonts and other files are served from this site.
+            </p>
+          </section>
+
           <section id="security">
-            <h2><span class="num">07</span>Data storage and security</h2>
-            <p>Counts and settings live in a database file on the bot's host that only the bot can reach. The website runs inside the bot and checks your membership and permissions in each server with Discord's live data every time you open a page or change a setting. No system is perfectly secure, but we keep access limited to the bot and the developer.</p>
+            <h2><span class="num">08</span>Data storage and security</h2>
+            <p>
+              Counts and settings live in a database file on the bot's host that only the bot can reach.
+            </p>
+            <p>
+              <a href="https://wispbyte.com" target="_blank" rel="noopener noreferrer">Wispbyte</a>, a hosting company, runs WordCounter and this website and stores the database and log files. No system is perfectly secure, but we keep access limited to the bot and the developer.
+            </p>
           </section>
 
           <section id="rights">
-            <h2><span class="num">08</span>Your rights and deletion</h2>
-            <p>Stats and settings are kept until they're reset or deleted. They aren't deleted automatically when WordCounter is removed from a server.</p>
+            <h2><span class="num">09</span>Your rights and deletion</h2>
+            <p>Data is kept until it's deleted. Removing WordCounter from a server doesn't delete that server's data. You can remove some data yourself, and ask us to remove the rest:</p>
             <ul>
               <li><strong>Server admins:</strong> reset a member's counts, a channel's counts, or everything for the server in <code>/settings</code> &gt; Data &amp; Reset Tools, or on this website.</li>
               <li><strong>Re-analysis:</strong> <strong>Allow re-analysis</strong> clears one member's counts so their history can be rebuilt.</li>
-              <li><strong>Website:</strong> log out at any time and your session cookie is removed.</li>
-              <li><strong>Everything else:</strong> anyone can ask us to delete their data, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We finish deleting it within 90 days of the request.</li>
+              <li><strong>Website:</strong> log out at any time and your session cookie is deleted.</li>
+              <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request.</li>
             </ul>
           </section>
 
           <section id="children">
-            <h2><span class="num">09</span>Children's privacy</h2>
-            <p>In line with Discord's Terms of Service, WordCounter is not meant for anyone under 13 (or under the minimum legal age for digital consent where you live). We do not knowingly collect data from children under 13.</p>
+            <h2><span class="num">10</span>Children's privacy</h2>
+            <p>
+              In line with Discord's Terms of Service, WordCounter is not meant for anyone under 13 (or under the minimum legal age for digital consent where you live). We do not knowingly collect or ask for data from children under 13.
+            </p>
           </section>
 
           <section id="changes">
-            <h2><span class="num">10</span>Changes to this Privacy Policy</h2>
-            <p>We may revise this Privacy Policy when we add features or the law requires it. When we do, we'll change the "Last revised" date at the top and announce it in the support server.</p>
+            <h2><span class="num">11</span>Changes to this Privacy Policy</h2>
+            <p>
+              We may revise this Privacy Policy when we add features or the law requires it. When we do, we'll change the "Last revised" date at the top of this page and announce it in our support server.
+            </p>
           </section>
 
           <section id="contact">
-            <h2><span class="num">11</span>Contact us</h2>
-            <p>For privacy questions or deletion requests, join our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Discord support server</a>. It's the only way to contact us.</p>
+            <h2><span class="num">12</span>Contact us</h2>
+            <p>
+              For privacy questions or deletion requests, ask in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Discord support server</a>. It's the only way to contact us.
+            </p>
           </section>
         </div>
       </div>
