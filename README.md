@@ -9,8 +9,12 @@
     <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-D26B42?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.0.12">
-    <img src="https://img.shields.io/badge/Release-v1.0.12-908C90?style=for-the-badge" alt="Release v1.0.12" />
+  <a href="https://wordcounter.wisp.uno">
+    <img src="https://img.shields.io/badge/Website-wordcounter.wisp.uno-D26B42?style=for-the-badge" alt="Website" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v1.1.0">
+    <img src="https://img.shields.io/badge/Release-v1.1.0-908C90?style=for-the-badge" alt="Release v1.1.0" />
   </a>
 </p>
 
@@ -21,6 +25,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | | |
 | :--- | :--- |
 | Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
+| Website and dashboard | [wordcounter.wisp.uno](https://wordcounter.wisp.uno) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
 | Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
 | Privacy Policy | [wordcounter.wisp.uno/privacy](https://wordcounter.wisp.uno/privacy) |
@@ -38,6 +43,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
   - `whole_server` reads every tracked channel, voice chat and thread (active and archived) once, 100 messages per request, and credits each message to its author. Channels the bot can't read are listed at the end so you know what was left out.
   - Channel reads save a checkpoint every minute. If the bot restarts mid-run, it picks up where it stopped on its own.
   - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
+- **Website** ([wordcounter.wisp.uno](https://wordcounter.wisp.uno)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, and the same settings and resets as `/settings`.
 - **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
 - **Coming soon: Swear Jar.** Track swearing in chat and see who owes the jar the most.
 
@@ -92,11 +98,19 @@ Right-click menus:
    BOT_SERVER=https://discord.gg/prUsgFHvRS
    BOT_WEBHOOK_URL=https://discord.com/api/webhooks/...
    ALLOWED_GUILDS=123456789012345678,987654321098765432
+   BASE_URL=https://wordcounter.wisp.uno
+   WEB_PORT=8080
+   DISCORD_CLIENT_SECRET=your_client_secret_here
+   SESSION_SECRET=a_long_random_string
    ```
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
    - `BOT_WEBHOOK_URL`: optional webhook that gets a message when the bot joins or leaves a server.
    - `ALLOWED_GUILDS`: servers where the owner-only `/owner` commands are available.
+   - `BASE_URL`: the public address of the website, without a trailing slash.
+   - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
+   - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
+   - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
 
 5. Run the bot:
    ```bash
@@ -114,7 +128,13 @@ Right-click menus:
 
    `/analyze_chat whole_server` can read private archived threads only if the bot has **Manage Threads** or was added to those threads.
 
-7. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
+7. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
+   ```text
+   https://wordcounter.wisp.uno/callback
+   ```
+   The website starts with the bot and only asks Discord who you are (the `identify` scope).
+
+8. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
    ```text
    !wcquicksync
    ```
