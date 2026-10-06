@@ -22,9 +22,8 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
 )
+from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
-
-ANALYSIS_BUSY_MESSAGE = "An analysis is running in this server. Try again once it finishes."
 
 SECTIONS = (
     ("overview", "Overview", "Turn tracking on or off and pick a mode"),
@@ -33,27 +32,7 @@ SECTIONS = (
     ("reset", "Data & Reset Tools", "Reset counts or allow re-analysis"),
 )
 
-LEADERBOARDS = {
-    "words": "Words",
-    "messages": "Messages",
-    "attachments": "Attachments",
-    "emojis": "Emojis",
-    "keywords": "Keywords",
-}
-
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-TRACKABLE_CHANNEL_TYPES = [
-    discord.ChannelType.text,
-    discord.ChannelType.news,
-    discord.ChannelType.forum,
-    discord.ChannelType.voice,
-]
-
-
-def parse_keywords(raw: str) -> List[str]:
-    parts = [part.strip().lower() for line in raw.splitlines() for part in line.split(",") if part.strip()]
-    return list(dict.fromkeys(parts))
 
 
 def rank_prefix(rank: int) -> str:
@@ -128,11 +107,6 @@ class SettingsMenuView(AuthorOnlyView):
         self.watched_ids: Set[int] = set()
         self.ignored_ids: Set[int] = set()
         self.keywords: List[str] = []
-
-    async def _analysis_state(self) -> Tuple[bool, bool]:
-        cog = self.bot.get_cog("AnalyzeChat")
-        running = cog is not None and self.guild.id in cog.running_guilds
-        return running, running or await self.bot.db.has_analysis_run(self.guild.id)
 
     async def load_state(self) -> None:
         self.watched_ids, self.ignored_ids = await self.bot.db.get_guild_tracking_config(self.guild.id)
@@ -555,7 +529,7 @@ class SettingsMenuView(AuthorOnlyView):
 
     async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
         self.pending_confirmation = None
-        _, busy = await self._analysis_state()
+        _, busy = await analysis_state(self.bot, self.guild.id)
         if busy:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
         elif self.selected_reset_user_id is not None or self.selected_reset_channel_id is not None:
@@ -570,7 +544,7 @@ class SettingsMenuView(AuthorOnlyView):
     async def _execute_reanalysis(self, interaction: discord.Interaction) -> None:
         self.pending_confirmation = None
         uid = self.selected_reset_user_id
-        _, busy = await self._analysis_state()
+        _, busy = await analysis_state(self.bot, self.guild.id)
         if busy:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
         else:
@@ -593,7 +567,7 @@ class SettingsMenuView(AuthorOnlyView):
 
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
         self.pending_confirmation = None
-        running, _ = await self._analysis_state()
+        running, _ = await analysis_state(self.bot, self.guild.id)
         if running:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             await self.refresh_and_edit(interaction)
