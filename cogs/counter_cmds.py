@@ -52,6 +52,7 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         self.menu_view = menu_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         keywords = parse_keywords(self.keywords_input.value)
         if not keywords:
             self.menu_view.status_banner = ("No keywords were entered.", WARNING_COLOR)
@@ -83,6 +84,7 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         keywords = parse_keywords(self.keywords_input.value or "")
         await self.menu_view.bot.db.replace_keywords(interaction.guild_id, keywords)
         self.menu_view.status_banner = (f"Keyword list saved. Tracking {len(keywords)} keyword(s).", SUCCESS_COLOR)
@@ -426,12 +428,14 @@ class SettingsMenuView(AuthorOnlyView):
             await self._confirm_whole_server(interaction)
 
     async def _confirm_whole_server(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         await self.bot.db.enable_whole_server(self.guild.id)
         self.pending_confirmation = None
         self.status_banner = ("Whole server mode is on. Every channel is counted now.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _switch_to_specific_mode(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         await self.bot.db.switch_to_specific_mode(self.guild.id)
         self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
@@ -441,6 +445,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _confirm_disable_server(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         await self.bot.db.disable_server_tracking(self.guild.id)
         self.pending_confirmation = None
         self.status_banner = ("Tracking is off.", WARNING_COLOR)
@@ -455,6 +460,7 @@ class SettingsMenuView(AuthorOnlyView):
         return [int(value) for value in interaction.data.get("values", [])]
 
     async def _on_channels_added(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         selected = self._selected_ids(interaction)
         listed = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected)
         if self.is_whole_server:
@@ -466,6 +472,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_removed(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         selected = self._selected_ids(interaction)
         listed = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected)
         if self.is_whole_server:
@@ -477,6 +484,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_channels(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         if self.is_whole_server:
             await self.bot.db.clear_ignored_channels(self.guild.id)
             self.status_banner = ("Ignore list cleared.", SUCCESS_COLOR)
@@ -492,12 +500,14 @@ class SettingsMenuView(AuthorOnlyView):
         await interaction.response.send_modal(BulkEditKeywordsModal(self, self.keywords))
 
     async def _on_keywords_removed(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         removed = interaction.data.get("values", [])
         await self.bot.db.remove_keywords(self.guild.id, removed)
         self.status_banner = (f"Removed {len(removed)} keyword(s): `{', '.join(removed)}`", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_keywords(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         await self.bot.db.clear_keywords(self.guild.id)
         self.status_banner = ("All keywords removed.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
@@ -527,6 +537,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         self.pending_confirmation = None
         _, busy = await analysis_state(self.bot, self.guild.id)
         if busy:
@@ -541,6 +552,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _execute_reanalysis(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         self.pending_confirmation = None
         uid = self.selected_reset_user_id
         _, busy = await analysis_state(self.bot, self.guild.id)
@@ -565,6 +577,7 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         self.pending_confirmation = None
         running, _ = await analysis_state(self.bot, self.guild.id)
         if running:
@@ -579,9 +592,11 @@ class SettingsMenuView(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         await self.load_state()
         self.build_ui()
-        await interaction.response.edit_message(view=self)
+        await interaction.edit_original_response(view=self)
 
     async def _on_close_menu(self, interaction: discord.Interaction) -> None:
         self.stop()
