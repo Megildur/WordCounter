@@ -34,7 +34,7 @@ from cogs.utils.counting import MessageStats
 log = logging.getLogger(__name__)
 
 SEARCH_PAGE_SIZE = 25
-SEARCH_INTERVAL = 2.0
+SEARCH_INTERVAL = 6.0
 SEARCH_MAX_FAILURES = 5
 SEARCH_RECHECKS = 2
 INDEX_WAIT_LIMIT = 120.0
