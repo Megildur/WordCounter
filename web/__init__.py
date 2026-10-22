@@ -1,10 +1,11 @@
 from __future__ import annotations
+import asyncio
 import logging
 from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
 from cogs.utils.config import SITE_URL, WEB_HOST, WEB_PORT
 from web import dashboard, pages
-from web.core import ROOT, site_middleware
+from web.core import ROOT, load_templates, site_middleware
 
 log = logging.getLogger("web")
 
@@ -25,6 +26,7 @@ def create_app(bot) -> web.Application:
 
 
 async def setup(bot) -> None:
+    await asyncio.to_thread(load_templates)
     runner = web.AppRunner(create_app(bot), access_log_class=ErrorAccessLogger)
     await runner.setup()
     try:
