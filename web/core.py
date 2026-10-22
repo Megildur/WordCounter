@@ -60,6 +60,7 @@ ENV = jinja2.Environment(
     autoescape=True,
     trim_blocks=True,
     lstrip_blocks=True,
+    auto_reload=False,
 )
 ENV.filters["num"] = _number
 ENV.globals.update(
@@ -70,6 +71,11 @@ ENV.globals.update(
     asset_version=_asset_version(),
     month_name=lambda month: calendar.month_name[month],
 )
+
+
+def load_templates() -> None:
+    for name in ENV.list_templates():
+        ENV.get_template(name)
 
 
 def client_id(bot) -> int:
