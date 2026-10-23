@@ -1,3 +1,14 @@
+{% macro screenshot(shot, alt, caption) %}
+{% if shot %}
+<figure class="screen">
+  <img src="{{ shot.src }}" alt="{{ alt }}" width="{{ shot.width }}" height="{{ shot.height }}" loading="lazy" decoding="async">
+  <figcaption>{{ caption }}</figcaption>
+</figure>
+{% endif %}
+{% endmacro %}
+
+{% macro showcase_class(shot) %}showcase{% if not shot %} showcase--text{% endif %}{% endmacro %}
+
 {% macro csrf_field() %}<input type="hidden" name="csrf" value="{{ csrf }}">{% endmacro %}
 
 {% macro stat_strip(items, label, extra_class="") %}
