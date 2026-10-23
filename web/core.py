@@ -3,7 +3,7 @@ import calendar
 import hashlib
 import ipaddress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 import jinja2
 from aiohttp import web
@@ -15,6 +15,10 @@ ROOT = Path(__file__).parent
 STATIC_MAX_AGE = 60 * 60 * 24 * 7
 SECURE_COOKIES = SITE_URL.startswith("https://")
 SITE_HOST = (urlsplit(SITE_URL).hostname or "").lower()
+SHOWCASE_DIR = ROOT / "static" / "img" / "showcase"
+SHOWCASE_TYPES = (".webp", ".png")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+WEBP_SIZE_MASK = 0x3FFF
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -51,6 +55,41 @@ def _asset_version() -> str:
     return hashlib.sha1((ROOT / "static" / "css" / "style.css").read_bytes()).hexdigest()[:10]
 
 
+def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
+    if data.startswith(PNG_SIGNATURE) and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    chunk = data[12:16]
+    if chunk == b"VP8X":
+        return 1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little")
+    if chunk == b"VP8 ":
+        return int.from_bytes(data[26:28], "little") & WEBP_SIZE_MASK, int.from_bytes(data[28:30], "little") & WEBP_SIZE_MASK
+    if chunk == b"VP8L":
+        bits = int.from_bytes(data[21:25], "little")
+        return 1 + (bits & WEBP_SIZE_MASK), 1 + ((bits >> 14) & WEBP_SIZE_MASK)
+    return None
+
+
+def _showcase() -> Dict[str, Dict[str, Any]]:
+    found: Dict[str, Dict[str, Any]] = {}
+    if not SHOWCASE_DIR.is_dir():
+        return found
+    for path in sorted(SHOWCASE_DIR.iterdir()):
+        if path.suffix.lower() not in SHOWCASE_TYPES or path.stem in found:
+            continue
+        data = path.read_bytes()
+        size = _image_size(data)
+        if size is None:
+            continue
+        found[path.stem] = {
+            "src": f"/static/img/showcase/{path.name}?v={hashlib.sha1(data).hexdigest()[:10]}",
+            "width": size[0],
+            "height": size[1],
+        }
+    return found
+
+
 def _number(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) and not isinstance(value, bool) else "–"
 
@@ -69,6 +108,7 @@ ENV.globals.update(
     source_url=SOURCE_URL,
     botzilla_url=BOTZILLA_URL,
     asset_version=_asset_version(),
+    showcase=_showcase(),
     month_name=lambda month: calendar.month_name[month],
 )
 
