@@ -39,14 +39,18 @@ from cogs.utils.jar import (
     credit_for,
     days_to_clear,
     jar_checks,
+    listed_words,
     money,
+    moved_words,
     parse_amount,
     parse_prices,
     parse_tier,
     parse_tokens,
     parse_unit_cents,
     prices,
+    removed_words,
     role_problem,
+    shown_word,
     unit_label,
     utc_day,
     week_index,
@@ -60,12 +64,11 @@ from cogs.utils.swear_filter import (
     DEFAULT_KEYS,
     MAX_FINED_PER_MESSAGE,
     SwearMatcher,
-    build_entries,
     fine_for,
     matcher_for,
 )
 from cogs.utils.swear_store import DAY_HISTORY_DAYS
-from cogs.utils.swear_words import EXPLICIT, MILD, SLUR, TIER_NAMES
+from cogs.utils.swear_words import TIER_NAMES
 from paginator import ButtonPaginator
 
 log = logging.getLogger(__name__)
@@ -76,7 +79,6 @@ NOTICE_SECONDS = 5
 STATE_TTL = 15.0
 DAILY_INTERVAL = 600.0
 WORDS_PER_PAGE = 60
-DEFAULT_WORDS_BY_KEY = {entry.key: entry.word for entry in DEFAULT_ENTRIES}
 
 TOP_TABS = {"swears": "Swears", "debt": "Debt", "wallet": "Wallet", "streak": "Streak"}
 TOP_DESCRIPTIONS = {
@@ -108,16 +110,12 @@ class JarState:
     loaded_at: float = field(default_factory=time.monotonic)
 
 
-def display_word(key: str) -> str:
-    return DEFAULT_WORDS_BY_KEY.get(key, key.lstrip("~=").rstrip("*"))
-
-
 def role_mention(role_id: Optional[int], empty: str) -> str:
     return f"<@&{role_id}>" if role_id else empty
 
 
-def spoiler_list(words: Sequence[str], limit: int = 25) -> str:
-    shown = ", ".join(f"||{word}||" for word in words[:limit])
+def word_list(words: Sequence[str], limit: int = 25) -> str:
+    shown = ", ".join(discord.utils.escape_markdown(word) for word in words[:limit])
     if len(words) > limit:
         shown += f" and {len(words) - limit} more"
     return shown or "None"
@@ -331,16 +329,17 @@ class JarSettingsView(SectionMenu):
         )
 
     def _populate_words_tab(self, container: discord.ui.Container) -> None:
-        removed = [display_word(key) for key, _, gone in self.overrides if gone]
-        moved = [f"{display_word(key)} → {TIER_NAMES[tier]}" for key, tier, gone in self.overrides if not gone and key in DEFAULT_KEYS]
+        removed = [word for _, word, _ in removed_words(self.overrides)]
+        moved = [f"{shown_word(key)} → {TIER_NAMES[tier]}" for key, tier in moved_words(self.overrides).items()]
         custom = [f"{key} ({TIER_NAMES[tier]})" for key, tier, gone in self.overrides if not gone and key not in DEFAULT_KEYS]
         container.add_item(
             discord.ui.TextDisplay(
                 f"### Words\nThe default list has **{len(DEFAULT_ENTRIES)}** English and Polish swear words and slurs in three tiers. "
-                "Matching ignores case and accents, and catches leetspeak like `sh!t`, stretched letters and spacing like `f u c k`.\n\n"
-                f"**Your words ({len(custom)}):** {spoiler_list(custom)}\n"
-                f"**Removed from the default list ({len(removed)}):** {spoiler_list(removed)}\n"
-                f"**Moved to another tier ({len(moved)}):** {spoiler_list(moved)}"
+                "Matching ignores case and accents, and catches leetspeak like `sh!t`, stretched letters and spacing like `f u c k`. "
+                "Press **View the list** to see every word.\n\n"
+                f"**Your words ({len(custom)}):** {word_list(custom)}\n"
+                f"**Removed from the default list ({len(removed)}):** {word_list(removed)}\n"
+                f"**Moved to another tier ({len(moved)}):** {word_list(moved)}"
             )
         )
         if self.pending_confirmation == "restore_words":
@@ -615,7 +614,7 @@ class JarSettingsView(SectionMenu):
         text = f"{verb} {done} word(s)." if done else "Nothing changed."
         if skipped:
             reason = "not on the list" if action != "add" else "not a word the jar can match"
-            text += f" Skipped ({reason}): {spoiler_list(skipped, 10)}"
+            text += f" Skipped ({reason}): {word_list(skipped, 10)}"
         return text
 
     async def _restore_words(self, interaction: discord.Interaction) -> None:
@@ -625,19 +624,15 @@ class JarSettingsView(SectionMenu):
         await self.refresh_and_edit(interaction)
 
     async def _view_list(self, interaction: discord.Interaction) -> None:
-        by_tier: Dict[int, List[str]] = defaultdict(list)
-        for entry in build_entries(self.overrides):
-            by_tier[entry.tier].append(entry.word)
         pages = []
-        for tier in (MILD, EXPLICIT, SLUR):
-            words = sorted(by_tier[tier])
+        for tier, words in listed_words(self.overrides).items():
             for start in range(0, max(1, len(words)), WORDS_PER_PAGE):
-                chunk = words[start:start + WORDS_PER_PAGE]
+                chunk = [f"{word} ({note})" if note else word for _, word, note in words[start:start + WORDS_PER_PAGE]]
                 pages.append(
                     create_v2_container(
                         title=f"{TIER_NAMES[tier]}: {money(self.settings, prices(self.settings)[tier])} each",
-                        description=", ".join(f"||{word}||" for word in chunk) or "No words in this tier.",
-                        footer=f"{len(words)} word(s) in this tier · shown hidden because the list includes slurs",
+                        description=word_list(chunk, WORDS_PER_PAGE) if chunk else "No words in this tier.",
+                        footer=f"{len(words)} word(s) in this tier · a * means endings count too, and *word* also counts inside longer words",
                         color=BRAND_COLOR,
                     )
                 )
