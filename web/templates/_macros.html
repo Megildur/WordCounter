@@ -49,14 +49,14 @@
 </div>
 {% endmacro %}
 
-{% macro checklist(name, groups, label, hint=None) %}
+{% macro checklist(name, groups, label, hint=None, kind="checkbox", selected=None) %}
 <fieldset class="form-row checklist-field">
   <legend class="form-label">{{ label }}</legend>
   <div class="checklist">
     {% for group in groups %}
-      <p class="checklist__group">{{ group.label }}</p>
+      {% if group.label %}<p class="checklist__group">{{ group.label }}</p>{% endif %}
       {% for option in group.options %}
-        <label class="checklist__item"><input type="checkbox" name="{{ name }}" value="{{ option.id }}"><span>{{ option.label }}</span></label>
+        <label class="checklist__item"><input type="{{ kind }}" name="{{ name }}" value="{{ option.id }}"{% if selected is not none and option.id == selected %} checked{% endif %}><span>{{ option.label }}</span></label>
       {% endfor %}
     {% endfor %}
   </div>
@@ -135,6 +135,16 @@
     <p>It fills in as messages are counted.</p>
   </div>
 {% endif %}
+{% endmacro %}
+
+{% macro jar_panel(jar, who) %}
+<h2 class="subhead display section-gap">Swear jar</h2>
+{{ stat_strip([(jar.label, jar.balance), ("Clean streak", jar.streak|num ~ " days"), ("Best streak", jar.best|num ~ " days"), ("Swears", jar.swears|num)], who ~ " swear jar", "stats--tight") }}
+<div class="jar-notes">
+  {% if jar.in_debt %}<p>About <strong>{{ jar.days_to_clear|num }}</strong> more clean active days pay this off.</p>{% endif %}
+  {% if jar.spam_until %}<p class="jar-notes__warn">Fines are doubled until {{ jar.spam_until }}. {{ jar.spam_note }}</p>{% endif %}
+  <p class="form-hint">{{ jar.week }} fined this week. A clean active day (5 or more messages, no swears) pays back {{ jar.unit }}, with bonuses at 7 and 30 days.</p>
+</div>
 {% endmacro %}
 
 {% macro dashboard_link(classes, signed_in="Open the dashboard", signed_out="Log in with Discord") -%}

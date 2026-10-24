@@ -1092,6 +1092,24 @@ textarea.input { min-height: 8rem; resize: vertical; line-height: 1.5; }
 .search { margin-bottom: var(--s-5); }
 .search__row { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-2); max-width: 40rem; }
 .search__row .input { flex: 1; min-width: 12rem; }
+
+.form-grid { display: grid; gap: var(--s-4); max-width: 40rem; }
+@media (min-width: 640px) { .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.form-grid .input { max-width: none; }
+
+.disclosure { margin-top: var(--s-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--base); max-width: 40rem; }
+.disclosure summary { padding: var(--s-3) var(--s-4); font-weight: 700; cursor: pointer; }
+.disclosure summary:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+.disclosure__body { padding: 0 var(--s-4) var(--s-4); color: var(--text-2); overflow-wrap: anywhere; }
+.disclosure__body p + p { margin-top: var(--s-2); }
+
+.jar-notes { margin-top: var(--s-4); display: grid; gap: var(--s-2); color: var(--text-2); }
+.jar-notes__warn { color: var(--accent-hi); font-weight: 700; }
+
+.jar-progress { display: block; width: 100%; max-width: 40rem; height: 0.75rem; margin-top: var(--s-3); border: 0; border-radius: 999px; background: var(--base); overflow: hidden; appearance: none; }
+.jar-progress::-webkit-progress-bar { background: var(--base); border-radius: 999px; }
+.jar-progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+.jar-progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 .choices { display: grid; gap: var(--s-2); margin: 0; padding: 0; border: 0; min-width: 0; }
 .choice {
   display: grid;
