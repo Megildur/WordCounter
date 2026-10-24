@@ -9,7 +9,7 @@
     <header class="page-head">
       <p class="eyebrow">Legal</p>
       <h1 class="page-title display">Privacy Policy</h1>
-      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 6, 2026</p>
+      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 24, 2026</p>
     </header>
 
     <div class="legal">
@@ -34,7 +34,7 @@
       <div>
         <div class="legal__summary">
           <h2>The short version</h2>
-          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. We never sell data or use it for ads.</p>
+          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. If a server turns on the swear jar, it also keeps each member's swear count, fines, wallet and clean streak. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. We never sell data or use it for ads.</p>
         </div>
 
         <div class="prose">
@@ -88,7 +88,25 @@
                 <dd>When WordCounter joins or leaves a server, a notice is posted in a public channel of our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a> showing that server's name, icon and member count, and its owner's display name (not their username). Anyone in the support server can see them. Server and owner IDs aren't shown there. They're kept only in the log files above. These notices aren't deleted automatically. Server owners can ask us to remove the ones about their server.</dd>
               </div>
             </dl>
-            <p>Planned features will store more: the Swear Jar will count swearing per member the same way other words are counted. This policy will be updated before anything new is stored.</p>
+            <p>Only in servers that turn on the swear jar, we also store:</p>
+            <dl>
+              <div>
+                <dt>Swear jar stats</dt>
+                <dd>How many swears each member said in each channel, the fines they got, their wallet or debt, and their current and best clean streak.</dd>
+              </div>
+              <div>
+                <dt>Fined messages</dt>
+                <dd>For each fined message: its message ID, channel, time, how many swears it had and the fine. Never its text. These records let the right-click <strong>Swear Jar</strong> app show a message's fine, and are deleted after 30 days.</dd>
+              </div>
+              <div>
+                <dt>Daily message counts</dt>
+                <dd>How many messages each member sent each day in channels the jar listens in, and whether they were fined that day, to decide which days were clean. These are deleted after 14 days.</dd>
+              </div>
+              <div>
+                <dt>Swear jar settings</dt>
+                <dd>Whether the jar is on, how fines work and look, changes to the word list, channel exceptions, the roles it hands out, and the server's goal and its progress. We also record when the jar was on or off and which past messages <code>/analyze_chat swears</code> has read, so past swears are never counted twice.</dd>
+              </div>
+            </dl>
           </section>
 
           <section id="processed">
@@ -98,6 +116,7 @@
               <li><strong>Live counting:</strong> each new, edited or deleted message is read, counted or recounted, and its text discarded. Only the numbers in section 03 are kept.</li>
               <li><strong>Past-message analysis (<code>/analyze_chat</code>):</strong> past messages are read the same way, either through Discord's message search for one member or by reading channel history for the whole server.</li>
               <li><strong>Message Word Count (right-click app):</strong> the message you pick is counted and the result shown to you. Nothing is saved.</li>
+              <li><strong>Swear jar:</strong> each message in a channel the jar listens in is checked against the server's word list, then its text is discarded. In delete mode, WordCounter deletes a message with swears and posts a short notice that deletes itself after 5 seconds. Past swears found by <code>/analyze_chat swears</code> are only added to swear counts and are never fined.</li>
             </ul>
           </section>
 
@@ -112,6 +131,7 @@
             <ul>
               <li><strong>Stats:</strong> anyone in a server can view that server's leaderboards and member stats with WordCounter's commands. Stats from one server are never shown in another.</li>
               <li><strong>Server settings:</strong> members with the Manage Server permission can see and change the server's WordCounter settings with <code>/settings</code>.</li>
+              <li><strong>Swear jar:</strong> anyone in a server with the swear jar on can see members' swear counts, wallets, debts and streaks with <code>/swearjar</code> and the Swears leaderboard. Fined messages get a 🫙 reaction, and the Potty Mouth and clean streak roles are visible like any other role.</li>
             </ul>
             <p>On this website, you see your own stats in each server you share with WordCounter. Members of a server who have the Manage Server permission also see everyone's stats in that server and can change its WordCounter settings, the same things <code>/leaderboard</code> and <code>/settings</code> show in Discord.</p>
           </section>
@@ -148,6 +168,7 @@
             <ul>
               <li><strong>Server admins:</strong> reset a member's counts, a channel's counts, or everything for the server in <code>/settings</code> &gt; Data &amp; Reset Tools, or on this website.</li>
               <li><strong>Re-analysis:</strong> <strong>Allow re-analysis</strong> clears one member's counts so their history can be rebuilt.</li>
+              <li><strong>Swear jar:</strong> server admins can reset one member's swear jar or the whole jar in <code>/swearjar settings</code> or on this website.</li>
               <li><strong>Website:</strong> log out at any time and your session cookie is deleted.</li>
               <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request.</li>
             </ul>
