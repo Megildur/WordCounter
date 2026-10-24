@@ -6,6 +6,7 @@ from collections import defaultdict
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import aiosqlite
+from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
 
 MonthlyKey = Tuple[int, int, int]
 MonthlyKeywordKey = Tuple[int, str, int, int]
@@ -26,6 +27,7 @@ COUNT_TABLES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "keyword_channel": (("guild_id", "channel_id", "keyword", "user_id"), "count"),
     "keyword_user": (("guild_id", "user_id", "keyword"), "count"),
     "monthly_user_keywords": (("guild_id", "user_id", "channel_id", "keyword", "year", "month"), "count"),
+    **SWEAR_COUNT_TABLES,
 }
 
 METRIC_TABLES: Dict[str, Tuple[str, str]] = {
@@ -34,6 +36,8 @@ METRIC_TABLES: Dict[str, Tuple[str, str]] = {
     "attachments": ("attachments_channels", "attachments_users"),
     "emojis": ("emojis_channels", "emojis_users"),
 }
+
+LEADERBOARD_TABLES: Dict[str, Tuple[str, str]] = {**METRIC_TABLES, "swears": ("swears_channels", "swears_users")}
 
 MONTHLY_KEYS = "guild_id = ? AND user_id = ? AND channel_id = ? AND year = ? AND month = ?"
 
@@ -158,7 +162,7 @@ ANALYSIS_RUN_TABLES = ("analysis_runs", "analysis_run_members", "analysis_run_ch
 
 GUILD_TABLES = (
     *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword",
-    "tracking_periods", "count_resets", *ANALYSIS_RUN_TABLES,
+    "tracking_periods", "count_resets", *ANALYSIS_RUN_TABLES, *JAR_TABLES,
 )
 
 
@@ -191,7 +195,7 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
     return tuple(values[key] for key in COUNT_TABLES[table][0])
 
 
-class WordCounterDatabase:
+class WordCounterDatabase(SwearJarQueries):
     def __init__(self, bot) -> None:
         self.db_path = "Data/WordCounter.db"
         self.db: Optional[aiosqlite.Connection] = None
@@ -220,7 +224,7 @@ class WordCounterDatabase:
 
     async def initialize_database(self) -> None:
         async with self.db_lock:
-            for statement in SCHEMA:
+            for statement in (*SCHEMA, *JAR_SCHEMA):
                 await self.db.execute(statement)
             try:
                 await self.db.execute("ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0")
@@ -541,6 +545,7 @@ class WordCounterDatabase:
         finished: Mapping[int, str],
         messages_read: int,
         totals: str,
+        swears: Optional[SwearCounts] = None,
     ) -> bool:
         await self.ensure_connected()
         async with self.db_lock:
@@ -551,6 +556,8 @@ class WordCounterDatabase:
             if cursor.rowcount == 0:
                 return False
             await self._write_results(guild_id, results)
+            if swears:
+                await self._write_swear_counts(guild_id, swears)
             await self.db.executemany(
                 "INSERT OR REPLACE INTO analysis_run_channels (guild_id, channel_id, before_id, status) VALUES (?, ?, ?, ?)",
                 [(guild_id, cid, before, "reading") for cid, before in cursors.items()]
@@ -559,7 +566,14 @@ class WordCounterDatabase:
             await self.db.commit()
             return True
 
-    async def finish_analysis_run(self, guild_id: int, results: Mapping[int, UserActivity], user_ids: Iterable[int]) -> bool:
+    async def finish_analysis_run(
+        self,
+        guild_id: int,
+        results: Mapping[int, UserActivity],
+        user_ids: Iterable[int],
+        swears: Optional[SwearCounts] = None,
+        swear_history_before: Optional[int] = None,
+    ) -> bool:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("DELETE FROM analysis_runs WHERE guild_id = ?", (guild_id,))
@@ -567,13 +581,17 @@ class WordCounterDatabase:
                 return False
             await self._write_results(guild_id, results)
             await self._mark_analyzed(guild_id, user_ids)
+            if swears:
+                await self._write_swear_counts(guild_id, swears)
+            if swear_history_before is not None:
+                await self._cover_swear_history(guild_id, swear_history_before)
             for table in ANALYSIS_RUN_TABLES[1:]:
                 await self.db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
             return True
 
     async def get_leaderboard(self, metric: str, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[int, int]]:
-        channel_table, user_table = METRIC_TABLES[metric]
+        channel_table, user_table = LEADERBOARD_TABLES[metric]
         await self.ensure_connected()
         async with self.db_lock:
             if channel_id is None:

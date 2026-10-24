@@ -10,6 +10,7 @@ LEADERBOARDS = {
     "attachments": "Attachments",
     "emojis": "Emojis",
     "keywords": "Keywords",
+    "swears": "Swears",
 }
 
 TRACKABLE_CHANNEL_TYPES = [
