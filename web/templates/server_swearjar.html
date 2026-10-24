@@ -93,36 +93,76 @@
 
 <section class="panel" aria-labelledby="jar-words-title">
   <h2 id="jar-words-title">Words</h2>
-  <p>The default list has {{ word_count|num }} English and Polish swear words and slurs in three tiers. Matching ignores case and accents, and catches leetspeak like <code>sh!t</code>, stretched letters and spaced-out letters like <code>f u c k</code>.</p>
-  <details class="disclosure">
-    <summary>Your changes to the list ({{ (custom|length + removed|length + moved|length)|num }})</summary>
-    <div class="disclosure__body">
-      <p><strong>Your words:</strong> {{ custom|join(", ") or "None" }}</p>
-      <p><strong>Removed from the default list:</strong> {{ removed|join(", ") or "None" }}</p>
-      <p><strong>Moved to another tier:</strong> {{ moved|join(", ") or "None" }}</p>
-    </div>
-  </details>
+  <p>The default list has {{ word_count|num }} English and Polish swears and slurs in three tiers. Add your own words, move words to another tier, or take them off. Matching ignores case and accents, and catches leetspeak like <code>sh!t</code>, stretched letters and spaced-out letters like <code>f u c k</code>.</p>
+  {% if has_overrides %}<p class="form-hint">Your changes: {{ words.added|num }} added, {{ words.moved|num }} moved, {{ words.removed|length|num }} taken off. The jar fines {{ words.total|num }} words now.</p>{% endif %}
+
+  <h3 class="panel__sub">On the list</h3>
   <form method="post" class="form">
     {{ ui.csrf_field() }}
-    <div class="form-row">
-      <label for="jar-words">Words</label>
-      <textarea class="input" id="jar-words" name="words" maxlength="2000" spellcheck="false" placeholder="pog, yeet"></textarea>
-      <p class="form-hint">Separate them with commas or new lines. End a word with * to match its endings too, like yeet* for yeeted.</p>
-    </div>
-    <fieldset class="choices">
-      <legend class="form-label">Tier, for adding or moving words</legend>
-      {% for tier in tiers %}
-        <label class="choice">
-          <input type="radio" name="tier" value="{{ tier.tier }}" {% if tier.tier == 3 %}checked{% endif %}>
-          <span><b>{{ tier.name }}</b>{{ tier.money }} per swear.</span>
-        </label>
-      {% endfor %}
+    <p class="form-hint">A * means endings count too, so <code>yeet*</code> also catches yeeted. A word between stars, like <code>*yeet*</code>, also counts inside longer words. Tick words, then move them or take them off the list.</p>
+    {% for tier in tiers %}
+      <fieldset class="word-tier">
+        <legend><b>{{ tier.name }}</b> <span>{{ ui.counted(tier.words|length, "word") }} &middot; {{ tier.money }} per swear</span></legend>
+        {% if tier.words %}
+          <div class="word-grid">
+            {% for key, word, note in tier.words %}
+              <label class="word-pick"><input type="checkbox" name="word" value="{{ key }}"><span>{{ word }}{% if note %} <small>{{ note }}</small>{% endif %}</span></label>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="form-hint">No words in this tier.</p>
+        {% endif %}
+      </fieldset>
+    {% endfor %}
+    <fieldset class="tier-pick">
+      <legend class="form-label">Move ticked words to</legend>
+      <div class="tier-pick__options">
+        {% for tier in tiers %}
+          <label><input type="radio" name="tier" value="{{ tier.tier }}"><span>{{ tier.name }}</span></label>
+        {% endfor %}
+      </div>
     </fieldset>
     <div class="form-actions">
-      <button type="submit" name="action" value="words_add" class="btn btn--primary">Add</button>
-      <button type="submit" name="action" value="words_tier" class="btn btn--ghost">Move to this tier</button>
-      <button type="submit" name="action" value="words_remove" class="btn btn--ghost">Remove</button>
+      <button type="submit" name="action" value="words_move" class="btn btn--primary">Move ticked words</button>
+      <button type="submit" name="action" value="words_drop" class="btn btn--ghost">Take ticked words off the list</button>
     </div>
+  </form>
+
+  {% if words.removed %}
+    <h3 class="panel__sub">Taken off the list</h3>
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="words_back">
+      <fieldset class="word-tier">
+        <legend><span class="word-tier__count">{{ ui.counted(words.removed|length, "default word") }} the jar ignores</span></legend>
+        <div class="word-grid">
+          {% for key, word, note in words.removed %}
+            <label class="word-pick"><input type="checkbox" name="word" value="{{ key }}"><span>{{ word }} <small>{{ note }}</small></span></label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <div class="form-actions"><button type="submit" class="btn btn--ghost">Put ticked words back</button></div>
+    </form>
+  {% endif %}
+
+  <h3 class="panel__sub">Add words</h3>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="words_add">
+    <div class="form-row">
+      <label for="jar-words">Words</label>
+      <textarea class="input" id="jar-words" name="words" maxlength="2000" spellcheck="false" placeholder="pog, yeet*"></textarea>
+      <p class="form-hint">Separate them with commas or new lines. A word that's already on the list moves to the tier you pick.</p>
+    </div>
+    <fieldset class="tier-pick">
+      <legend class="form-label">Tier</legend>
+      <div class="tier-pick__options">
+        {% for tier in tiers %}
+          <label><input type="radio" name="tier" value="{{ tier.tier }}" {% if tier.tier == 3 %}checked{% endif %}><span>{{ tier.name }} <small>{{ tier.money }}</small></span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div class="form-actions"><button type="submit" class="btn btn--primary">Add words</button></div>
   </form>
   {% if has_overrides %}
     <form method="post" class="form">
