@@ -566,6 +566,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 }
 .feature-row h3 { font-size: var(--step-2); line-height: 1.25; }
 .feature-row p { color: var(--text-2); max-width: 42rem; }
+.feature-row p + p { margin-top: var(--s-3); }
 .feature-row .chips { margin-top: var(--s-3); }
 
 .next { display: grid; gap: var(--s-6); }

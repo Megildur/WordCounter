@@ -10,7 +10,7 @@
         <p class="eyebrow">Discord bot &middot; free</p>
         <h1 id="hero-title" class="hero__title display">Who talks the most? <em>WordCounter knows.</em></h1>
         <p class="hero__lede">
-          WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and channel. It keeps a monthly history and can count messages sent before it joined your server.
+          WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and channel. It keeps a monthly history, can count messages sent before it joined your server, and can run a swear jar that fines swearing as a game.
         </p>
         <div class="hero__actions">
           <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--lg btn--primary">Add WordCounter</a>
@@ -58,7 +58,7 @@
       <article class="{{ ui.showcase_class(shot) }}">
         <div class="showcase__copy">
           <h3>Leaderboards for all of it</h3>
-          <p>One command shows who leads in words, messages, attachments, emojis or keywords, with a button to switch between them. Pick a channel to see its top members and its month-by-month history.</p>
+          <p>One command shows who leads in words, messages, attachments, emojis, keywords or swears, with a button to switch between them. Pick a channel to see its top members and its month-by-month history.</p>
           <div class="chips">
             <code class="chip">/leaderboard</code>
             <code class="chip">/keyword list</code>
@@ -109,7 +109,7 @@
       <article class="{{ ui.showcase_class(shot) }}">
         <div class="showcase__copy">
           <h3>Your stats on the web</h3>
-          <p>Log in with Discord to see your own counts in every server you share with WordCounter. If you can manage a server, you also get its leaderboards, every member's stats and its settings, here in the browser.</p>
+          <p>Log in with Discord to see your own counts in every server you share with WordCounter. If you can manage a server, you also get its leaderboards, every member's stats, its settings and its swear jar, here in the browser.</p>
           <div class="chips">
             {{ ui.dashboard_link("chip") }}
           </div>
@@ -134,17 +134,25 @@
       <article class="feature-row">
         <h3>Right-click apps</h3>
         <div>
-          <p>Right-click a member for their stats, or a message for its word count, without typing a command.</p>
+          <p>Right-click a member for their stats, or a message for its word count or swear jar fine, without typing a command.</p>
           <div class="chips">
             <span class="chip">User Stats</span>
             <span class="chip">Message Word Count</span>
+            <span class="chip">Swear Jar</span>
           </div>
         </div>
       </article>
       <article class="feature-row">
-        <h3>Coming soon: swear jar</h3>
+        <h3>Swear jar</h3>
         <div>
-          <p>Track swearing in chat and see who owes the jar the most. It's not in the bot yet.</p>
+          <p>Every swear costs, in dollars or your own server tokens, and the debt only goes away with clean streaks. Members who never swear build up a wallet. Fight over the weekly Potty Mouth role, earn a clean streak role, and save up for a goal together. English and Polish swears and slurs are caught, even as leetspeak.</p>
+          <p>Fined messages get a 🫙 reaction, or are deleted with a notice that disappears after 5 seconds. Spamming swears doubles fines for 10 minutes. The jar stays off until a server manager turns it on, in Discord or on the dashboard, and past swears can be added to the Swears leaderboard without fining anyone.</p>
+          <div class="chips">
+            <code class="chip">/swearjar wallet</code>
+            <code class="chip">/swearjar top</code>
+            <code class="chip">/swearjar settings</code>
+            <code class="chip">/analyze_chat swears</code>
+          </div>
         </div>
       </article>
     </div>
