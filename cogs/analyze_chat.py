@@ -30,6 +30,8 @@ from cogs.utils.components import (
     manager_check_error,
 )
 from cogs.utils.counting import MessageStats
+from cogs.utils.jar import JAR_OFF_MESSAGE, jar_checks
+from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, matcher_for
 
 log = logging.getLogger(__name__)
 
@@ -208,20 +210,34 @@ class Progress:
 
 
 class ChannelScope:
-    def __init__(self, guild: discord.Guild, watched: Set[int], ignored: Set[int]) -> None:
+    def __init__(
+        self,
+        guild: discord.Guild,
+        watched: Set[int],
+        ignored: Set[int],
+        jar_rules: Optional[Dict[int, str]] = None,
+        skip_age_restricted: bool = False,
+    ) -> None:
         self.guild = guild
         self.watched = watched
         self.ignored = ignored
+        self.jar_rules = jar_rules
+        self.skip_age_restricted = skip_age_restricted
         self.thread_parents: Dict[int, int] = {thread.id: thread.parent_id for thread in guild.threads}
         self._resolved: Dict[int, Optional[int]] = {}
 
     def check(self, channel: Union[discord.abc.GuildChannel, discord.Thread]) -> Tuple[bool, int]:
+        if self.jar_rules is not None:
+            return self.check_jar(channel)
         return check_channel_with_config(self.guild, channel, self.watched, self.ignored)
 
     def learn_threads(self, threads: Iterable[Dict[str, Any]]) -> None:
         for thread in threads:
             if thread.get("id") and thread.get("parent_id"):
                 self.thread_parents[int(thread["id"])] = int(thread["parent_id"])
+
+    def check_jar(self, channel: Union[discord.abc.GuildChannel, discord.Thread]) -> Tuple[bool, int]:
+        return jar_checks(self.guild, channel, self.watched, self.ignored, self.jar_rules, self.skip_age_restricted, self.thread_parents)
 
     async def resolve(self, channel_id: int) -> Optional[int]:
         if channel_id in self._resolved:
@@ -290,6 +306,30 @@ class CrawlRun:
         self.finished: Dict[int, str] = {
             cid: status for cid, (_, status) in record["channels"].items() if status != "reading"
         }
+        self.matcher: Optional[SwearMatcher] = None
+        self.swears: Dict[int, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        self.swear_total = int(state.get("swears", 0))
+        self.swear_members: Set[int] = set(state.get("swear_members", []))
+
+    @property
+    def counts_swears(self) -> bool:
+        return self.kind == "swears"
+
+    def add_swears(self, user_id: int, channel_id: int, content: str) -> None:
+        found = self.matcher.find(content) if self.matcher else []
+        if found:
+            self.swears[user_id][channel_id] += min(len(found), MAX_FINED_PER_MESSAGE)
+
+    def flush_swears(self) -> Dict[int, Dict[int, int]]:
+        flushed, self.swears = self.swears, defaultdict(lambda: defaultdict(int))
+        for user_id, channels in flushed.items():
+            self.swear_total += sum(channels.values())
+            self.swear_members.add(user_id)
+        return {user_id: dict(channels) for user_id, channels in flushed.items()}
+
+    def live_swears(self) -> Tuple[int, int]:
+        pending = {user_id: sum(channels.values()) for user_id, channels in self.swears.items()}
+        return self.swear_total + sum(pending.values()), len(self.swear_members | set(pending))
 
     def tally(self, user_id: int) -> Tally:
         tally = self.tallies.get(user_id)
@@ -310,7 +350,12 @@ class CrawlRun:
         return len(self.credited | {user_id for user_id, tally in self.tallies.items() if tally.messages})
 
     def state(self) -> str:
-        return json.dumps({**self.totals.totals(), "credited": sorted(self.credited)})
+        return json.dumps({
+            **self.totals.totals(),
+            "credited": sorted(self.credited),
+            "swears": self.swear_total,
+            "swear_members": sorted(self.swear_members),
+        })
 
 
 class AnalyzeConfirmView(AuthorOnlyView):
@@ -324,6 +369,7 @@ class AnalyzeConfirmView(AuthorOnlyView):
         target: Optional[discord.Member] = None,
         pending: int = 0,
         already_done: int = 0,
+        swears: bool = False,
     ) -> None:
         super().__init__(
             author_id=author_id,
@@ -332,6 +378,7 @@ class AnalyzeConfirmView(AuthorOnlyView):
         )
         self.cog = cog
         self.target = target
+        self.swears = swears
         self.message: Optional[discord.Message] = None
 
         if keywords:
@@ -344,7 +391,15 @@ class AnalyzeConfirmView(AuthorOnlyView):
                 "so add them in `/settings` first if you want them."
             )
 
-        if target is not None:
+        if swears:
+            title = "Count past swears"
+            description = (
+                "Reads every channel the swear jar listens in and adds past swears to the Swears leaderboard. "
+                "Past swears aren't fined, and swears the jar already counted are skipped."
+            )
+            fields = [("Words", "The swear jar's word list for this server, including your changes.")]
+            footer = "Big servers can take a while. Progress is saved, so a restart picks up where it left off."
+        elif target is not None:
             title = "Count past messages"
             description = (
                 f"Reads {target.mention}'s older messages and adds them to their stats. "
@@ -363,7 +418,8 @@ class AnalyzeConfirmView(AuthorOnlyView):
 
         if coverage.tracking_since is not None:
             since = int(discord.utils.snowflake_time(coverage.tracking_since).timestamp())
-            description += f"\n-# Tracking started <t:{since}:D>. Messages counted live since then are skipped."
+            started = "The swear jar started" if swears else "Tracking started"
+            description += f"\n-# {started} <t:{since}:D>. Messages counted live since then are skipped."
 
         self.add_item(
             create_v2_container(
@@ -386,7 +442,9 @@ class AnalyzeConfirmView(AuthorOnlyView):
         await interaction.response.edit_message(
             view=create_v2_view("Starting", "Getting the channel list ready.", color=WARNING_COLOR)
         )
-        if self.target is not None:
+        if self.swears:
+            await self.cog.run_swears(interaction)
+        elif self.target is not None:
             await self.cog.run_member(interaction, self.target)
         else:
             await self.cog.run_server(interaction)
@@ -506,6 +564,12 @@ class AnalyzeChat(commands.Cog):
         watched, ignored = await self.bot.db.get_guild_tracking_config(guild.id)
         keywords = await self.bot.db.get_keywords(guild.id)
         return ChannelScope(guild, watched, ignored), keywords
+
+    async def _load_jar_scope(self, guild: discord.Guild) -> ChannelScope:
+        watched, ignored = await self.bot.db.get_guild_tracking_config(guild.id)
+        settings = await self.bot.db.jar_settings(guild.id)
+        rules = await self.bot.db.jar_channel_rules(guild.id)
+        return ChannelScope(guild, watched, ignored, rules, bool(settings["skip_age_restricted"]))
 
     async def _coverage(self, guild_id: int, command_cutoff: int) -> LiveCoverage:
         periods, resets = await self.bot.db.get_count_history(guild_id)
@@ -708,6 +772,10 @@ class AnalyzeChat(commands.Cog):
                             run.cursors[channel.id] = message.id
                             progress.read += 1
                             author_id = message.author.id
+                            if run.counts_swears:
+                                if not message.author.bot and not message.is_system() and run.coverage.counts(0, effective_id, message.id):
+                                    run.add_swears(author_id, effective_id, message.content)
+                                continue
                             if (
                                 author_id not in run.authors
                                 or message.is_system()
@@ -737,8 +805,9 @@ class AnalyzeChat(commands.Cog):
 
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
         results = run.flush()
+        swears = run.flush_swears()
         saved = await self.bot.db.checkpoint_analysis_run(
-            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state()
+            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state(), swears
         )
         if not saved:
             raise AnalysisCancelled
@@ -788,6 +857,7 @@ class AnalyzeChat(commands.Cog):
         totals: Tally,
         credited: int,
         progress: Progress,
+        swears: Optional[Tuple[int, int]] = None,
     ) -> discord.ui.LayoutView:
         lines: List[str] = []
         thumbnail = None
@@ -810,12 +880,15 @@ class AnalyzeChat(commands.Cog):
                 pages_left = math.ceil((progress.total - progress.found) / SEARCH_PAGE_SIZE)
                 footer += f" · about {format_duration(pages_left * progress.elapsed / progress.pages)} left"
 
-        counted = activity_line(totals.words, totals.messages, totals.attachments, totals.emojis)
-        lines.append(f"Counted for {credited:,} member(s): {counted}" if kind == "server" else counted)
+        if swears is not None:
+            lines.append(f"Past swears found: **{swears[0]:,}** from {swears[1]:,} member(s)")
+        else:
+            counted = activity_line(totals.words, totals.messages, totals.attachments, totals.emojis)
+            lines.append(f"Counted for {credited:,} member(s): {counted}" if kind == "server" else counted)
         if progress.note:
             lines.append(f"-# {progress.note}")
         return create_v2_view(
-            "Counting past messages",
+            "Counting past swears" if swears is not None else "Counting past messages",
             "\n".join(lines),
             thumbnail_url=thumbnail,
             footer=footer,
@@ -831,9 +904,13 @@ class AnalyzeChat(commands.Cog):
         credited: int,
         keywords: List[str],
         progress: Progress,
+        swears: Optional[Tuple[int, int]] = None,
     ) -> discord.ui.LayoutView:
         thumbnail = None
-        if kind == "member":
+        if swears is not None:
+            description = f"Added **{swears[0]:,}** past swears from {swears[1]:,} member(s) to the Swears leaderboard. Nobody was fined."
+            fields = []
+        elif kind == "member":
             member_id = next(iter(authors))
             member = guild.get_member(member_id)
             thumbnail = member.display_avatar.url if member else None
@@ -841,8 +918,9 @@ class AnalyzeChat(commands.Cog):
         else:
             description = f"{len(authors):,} members are now marked as analyzed. {credited:,} of them had past messages."
 
-        fields = [("Added", activity_line(totals.words, totals.messages, totals.attachments, totals.emojis))]
-        if keywords:
+        if swears is None:
+            fields = [("Added", activity_line(totals.words, totals.messages, totals.attachments, totals.emojis))]
+        if keywords and swears is None:
             fields.append(("Keywords", keyword_summary((k, totals.keywords.get(k, 0)) for k in keywords)))
         if progress.used_history:
             fields.append(("Read", f"{progress.read:,} messages across {progress.channels_total:,} channels and threads"))
@@ -863,7 +941,7 @@ class AnalyzeChat(commands.Cog):
                 "The gap is usually messages deleted during the run or in channels the bot can't see.",
             ))
         return create_v2_view(
-            "Past messages added",
+            "Past swears added" if swears is not None else "Past messages added",
             description,
             fields=fields,
             thumbnail_url=thumbnail,
@@ -877,8 +955,15 @@ class AnalyzeChat(commands.Cog):
             record = await self.bot.db.get_analysis_run(guild.id)
             if record is None:
                 return
-            scope, keywords = await self._load_scope(guild)
-            run = CrawlRun(guild.id, record, await self._coverage(guild.id, record["cutoff"]))
+            if record["kind"] == "swears":
+                scope, keywords = await self._load_jar_scope(guild), []
+                coverage = LiveCoverage(await self.bot.db.jar_coverage(guild.id), {}, record["cutoff"])
+            else:
+                scope, keywords = await self._load_scope(guild)
+                coverage = await self._coverage(guild.id, record["cutoff"])
+            run = CrawlRun(guild.id, record, coverage)
+            if run.counts_swears:
+                run.matcher = await asyncio.to_thread(matcher_for, tuple(await self.bot.db.jar_word_overrides(guild.id)))
             progress = Progress(
                 started=time.monotonic() - max(0.0, time.time() - record["started_at"]),
                 read=record["messages_read"],
@@ -886,23 +971,36 @@ class AnalyzeChat(commands.Cog):
             )
             progress.unreadable = [cid for cid, outcome in run.finished.items() if outcome == "unreadable"]
             progress.failed = [cid for cid, outcome in run.finished.items() if outcome == "failed"]
-            log.info("Reading channel history for %s member(s) in guild %s", len(run.authors), guild.id)
+            if run.counts_swears:
+                log.info("Reading channel history for past swears in guild %s", guild.id)
+            else:
+                log.info("Reading channel history for %s member(s) in guild %s", len(run.authors), guild.id)
 
             def render() -> discord.ui.LayoutView:
-                return self._progress_view(guild, run.kind, run.authors, run.live_totals(), run.credited_count(), progress)
+                swears = run.live_swears() if run.counts_swears else None
+                return self._progress_view(guild, run.kind, run.authors, run.live_totals(), run.credited_count(), progress, swears)
 
             async with self._live_status(status, render):
                 await self._crawl(guild, run, scope, keywords, progress)
                 results = run.flush()
-                if not await self.bot.db.finish_analysis_run(guild.id, results, run.authors):
+                swear_counts = run.flush_swears()
+                finished = await self.bot.db.finish_analysis_run(
+                    guild.id,
+                    results,
+                    run.authors,
+                    swear_counts,
+                    run.scan_before if run.counts_swears else None,
+                )
+                if not finished:
                     raise AnalysisCancelled
 
             log.info(
                 "Finished guild %s: read %s messages in %s channels in %s",
                 guild.id, progress.read, progress.channels_total, format_duration(progress.elapsed),
             )
+            swears = (run.swear_total, len(run.swear_members)) if run.counts_swears else None
             await status.show(
-                self._summary_view(guild, run.kind, run.authors, run.totals, len(run.credited), keywords, progress)
+                self._summary_view(guild, run.kind, run.authors, run.totals, len(run.credited), keywords, progress, swears)
             )
         except AnalysisCancelled:
             await status.show(
@@ -984,6 +1082,37 @@ class AnalyzeChat(commands.Cog):
             await self._run_crawl(guild, status)
         finally:
             self.running_guilds.discard(guild.id)
+
+    async def run_swears(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        status = StatusMessage(interaction.message, interaction)
+        self.running_guilds.add(guild.id)
+        try:
+            coverage = LiveCoverage(
+                await self.bot.db.jar_coverage(guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
+            )
+            await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
+            await self._run_crawl(guild, status)
+        finally:
+            self.running_guilds.discard(guild.id)
+
+    @analyze_chat.command(name="swears", description="Add past swears to the Swears leaderboard (nobody is fined)")
+    async def swears(self, interaction: discord.Interaction) -> None:
+        reason = manager_check_error(interaction)
+        if reason is None and not (await self.bot.db.jar_settings(interaction.guild.id))["enabled"]:
+            reason = JAR_OFF_MESSAGE
+        if reason is None and interaction.guild.id in self.running_guilds:
+            reason = "An analysis is already running in this server. Wait for it to finish."
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return
+        if await self._resume_interrupted(interaction):
+            return
+        coverage = LiveCoverage(
+            await self.bot.db.jar_coverage(interaction.guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
+        )
+        view = AnalyzeConfirmView(self, interaction.user.id, [], coverage, swears=True)
+        view.message = await self._send(interaction, view)
 
     @analyze_chat.command(name="single_user", description="Count one member's past messages")
     @app_commands.describe(target="The member whose past messages to count")
