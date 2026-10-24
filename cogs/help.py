@@ -5,6 +5,8 @@ from discord import app_commands
 from discord.ext import commands
 from cogs.utils.components import BRAND_COLOR, create_v2_container, make_button
 from cogs.utils.config import PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
+from cogs.utils.jar import SPAM_NOTE
+from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE
 from paginator import ButtonPaginator
 
 HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
@@ -14,7 +16,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         [
             (
                 "/leaderboard [channel]",
-                "Rankings for words, messages, attachments, emojis and keywords. "
+                "Rankings for words, messages, attachments, emojis, keywords and swears. "
                 "Pick a channel to see its top members and a month-by-month history.",
             ),
             ("/stats user <member>", "A member's totals, with a month-by-month and channel-by-channel breakdown."),
@@ -68,12 +70,38 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         ],
     ),
     (
+        "Swear jar",
+        "Every swear costs. Debt is only paid back by not swearing. An admin turns it on in `/swearjar settings`.",
+        [
+            (
+                "How fines work",
+                "Swears are fined by tier: mild, explicit, and slurs or words your server adds. A message is fined for "
+                f"at most {MAX_FINED_PER_MESSAGE} swears. WordCounter reacts with 🫙, or deletes the message in delete mode.",
+            ),
+            (
+                "Paying it off",
+                "Only clean streaks pay debt back. Every clean active day (5 or more messages, no swears) pays back one unit, "
+                "with bonuses at 7 and 30 days. Members who never swear build up a wallet instead.",
+            ),
+            ("Spamming", SPAM_NOTE),
+            ("/swearjar wallet [member]", "A member's wallet or debt, clean streak and swears."),
+            ("/swearjar top", "Who swears most, owes most, saved most and has the longest clean streak."),
+            ("/swearjar goal", "What the jar is saving up for, like a movie night."),
+            (
+                "/swearjar settings",
+                "Turn it on, pick money or tokens, set prices, edit the word list, choose channels, roles and a goal. "
+                "Needs Manage Server.",
+            ),
+            ("Past swears", "`/analyze_chat swears` adds past swears to the Swears leaderboard. They aren't fined."),
+            ("Right-click menu", "Right-click a message, then Apps > Swear Jar to see its fine."),
+        ],
+    ),
+    (
         "About WordCounter",
         "Everything is grouped by month and channel, for live tracking and past messages alike.",
         [
             ("/advertisement", "Post a card about WordCounter with invite links."),
             ("Website", f"See your stats in every server you share with WordCounter, and manage settings for servers you run: {SITE_URL}"),
-            ("Coming soon: Swear Jar", "Track swearing in chat and see who owes the jar the most."),
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
         ],
     ),
@@ -131,7 +159,11 @@ class AdvertisementView(discord.ui.LayoutView):
                 "Catch up on past messages (`/analyze_chat`)",
                 "Added WordCounter to an existing server? Count the history so nobody loses credit for what they said before the bot joined.",
             ),
-            ("Coming soon: the Swear Jar", "A playful way to track swearing and see who owes the server jar the most pennies."),
+            (
+                "The swear jar (`/swearjar`)",
+                "Every swear costs, and the debt only goes away with clean streaks. Fight over the weekly Potty Mouth role, "
+                "earn a clean streak role, and save up for a goal together.",
+            ),
         ]
         self.add_item(
             create_v2_container(
