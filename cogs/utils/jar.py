@@ -1,10 +1,10 @@
 from __future__ import annotations
 import math
 import time
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 import discord
 from cogs.utils.components import channel_family, check_channel_with_config
-from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, custom_key, default_keys_for
+from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, build_entries, custom_key, default_keys_for, fold
 from cogs.utils.swear_words import EXPLICIT, MILD, SLUR
 
 ACTIVE_DAY_MESSAGES = 5
@@ -25,8 +25,10 @@ SPAM_NOTE = "Spamming swears isn't appreciated. More than 3 fined messages in a 
 
 Channel = Union[discord.abc.GuildChannel, discord.Thread, int]
 Override = Tuple[str, int, bool]
+ListedWord = Tuple[str, str, str]
 
 TIER_INPUTS = {"1": MILD, "2": EXPLICIT, "3": SLUR, "mild": MILD, "explicit": EXPLICIT, "slur": SLUR, "slurs": SLUR}
+SHORT_TIER_NAMES = {MILD: "Mild", EXPLICIT: "Explicit", SLUR: "Slurs"}
 DEFAULT_TIERS = {entry.key: entry.tier for entry in DEFAULT_ENTRIES}
 PRICE_LIMIT = 1000
 CENTS_LIMIT = 100_000
@@ -143,25 +145,71 @@ def parse_prices(values: Iterable[str]) -> Optional[Dict[str, int]]:
     return {"tier1": int(values[0]), "tier2": int(values[1]), "tier3": int(values[2])}
 
 
+def shown_word(key: str) -> str:
+    return f"*{key[1:]}*" if key.startswith("~") else key.lstrip("=")
+
+
+def moved_words(overrides: Iterable[Override]) -> Dict[str, int]:
+    return {
+        key: tier
+        for key, tier, gone in overrides
+        if not gone and key in DEFAULT_TIERS and tier != DEFAULT_TIERS[key]
+    }
+
+
+def listed_words(overrides: Sequence[Override]) -> Dict[int, List[ListedWord]]:
+    moved = moved_words(overrides)
+    tiers: Dict[int, List[ListedWord]] = {MILD: [], EXPLICIT: [], SLUR: []}
+    for entry in sorted(build_entries(overrides), key=lambda entry: fold(entry.word)):
+        if entry.key not in DEFAULT_TIERS:
+            note = "yours"
+        elif entry.key in moved:
+            note = f"moved from {SHORT_TIER_NAMES[DEFAULT_TIERS[entry.key]]}"
+        else:
+            note = "this spelling only" if entry.kind == "spelling" else ""
+        tiers[entry.tier].append((entry.key, shown_word(entry.key), note))
+    return tiers
+
+
+def removed_words(overrides: Iterable[Override]) -> List[ListedWord]:
+    return [
+        (key, shown_word(key), SHORT_TIER_NAMES[DEFAULT_TIERS[key]])
+        for key, _, gone in overrides
+        if gone and key in DEFAULT_TIERS
+    ]
+
+
+def key_changes(action: str, keys: Iterable[str], tier: Optional[int]) -> Tuple[List[Override], List[str]]:
+    changes: List[Override] = []
+    forget: List[str] = []
+    for key in keys:
+        default = DEFAULT_TIERS.get(key)
+        if action == "remove":
+            if default is None:
+                forget.append(key)
+            else:
+                changes.append((key, default, True))
+        elif tier == default:
+            forget.append(key)
+        else:
+            changes.append((key, tier, False))
+    return changes, forget
+
+
 def word_changes(
     action: str, words: Iterable[str], tier: Optional[int], overrides: Iterable[Override]
 ) -> Tuple[List[Override], List[str], List[str]]:
     custom = {key for key, _, gone in overrides if not gone and key not in DEFAULT_KEYS}
-    changes: List[Override] = []
-    forget: List[str] = []
+    keys: List[str] = []
     skipped: List[str] = []
     for word in words:
-        keys = default_keys_for(word)
         key = custom_key(word)
-        if keys:
-            changes += [(k, DEFAULT_TIERS[k], True) if action == "remove" else (k, tier, False) for k in keys]
-        elif key and (action == "add" or key in custom):
-            if action == "remove":
-                forget.append(key)
-            else:
-                changes.append((key, tier, False))
+        found = default_keys_for(word) or ([key] if key and (action == "add" or key in custom) else [])
+        if found:
+            keys += found
         else:
             skipped.append(word)
+    changes, forget = key_changes(action, keys, tier)
     return changes, forget, skipped
 
 

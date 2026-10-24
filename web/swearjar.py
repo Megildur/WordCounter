@@ -4,20 +4,24 @@ import discord
 from aiohttp import web
 from cogs.utils.jar import (
     SPAM_NOTE,
+    key_changes,
+    listed_words,
     money,
+    moved_words,
     parse_amount,
     parse_prices,
     parse_tier,
     parse_tokens,
     parse_unit_cents,
     prices,
+    removed_words,
     role_problem,
     utc_day,
     week_index,
     word_changes,
 )
 from cogs.utils.server_settings import parse_keywords
-from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS
+from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, Override, build_entries
 from cogs.utils.swear_words import TIER_NAMES
 from web.core import redirect, render
 from web.dashboard import (
@@ -34,13 +38,25 @@ from web.dashboard import (
 
 routes = web.RouteTableDef()
 
-WORD_ACTIONS = {"words_add": "add", "words_remove": "remove", "words_tier": "tier"}
+WORD_ACTIONS = {"words_add": "add", "words_move": "tier", "words_drop": "remove", "words_back": "back"}
+WORD_RESULTS = {"add": "words_saved", "tier": "words_moved", "remove": "words_dropped", "back": "words_back"}
 RULE_ACTIONS = {"rule_include": "include", "rule_exclude": "exclude"}
 ROLE_COLUMNS = ("potty_role_id", "clean_role_id")
 
 
-def word_label(key: str) -> str:
-    return next((entry.word for entry in DEFAULT_ENTRIES if entry.key == key), key.lstrip("~=").rstrip("*"))
+def word_lists(settings: Dict[str, Any], overrides: List[Override]) -> Dict[str, Any]:
+    listed = listed_words(overrides)
+    tiers = [
+        {"tier": tier, "name": TIER_NAMES[tier], "price": price, "money": money(settings, price), "words": listed[tier]}
+        for tier, price in prices(settings).items()
+    ]
+    return {
+        "tiers": tiers,
+        "removed": removed_words(overrides),
+        "total": sum(len(words) for words in listed.values()),
+        "added": sum(not gone and key not in DEFAULT_KEYS for key, _, gone in overrides),
+        "moved": len(moved_words(overrides)),
+    }
 
 
 def role_options(guild: discord.Guild) -> List[Dict[str, Any]]:
@@ -77,18 +93,17 @@ async def swearjar(request: web.Request) -> web.Response:
     settings = await db.jar_settings(guild.id)
     overrides = await db.jar_word_overrides(guild.id)
     rules = await db.jar_channel_rules(guild.id)
+    words = word_lists(settings, overrides)
     me = guild.me
     return render(
         request,
         "server_swearjar.html",
         "dashboard",
         jar=settings,
-        tiers=[{"tier": tier, "name": TIER_NAMES[tier], "price": price, "money": money(settings, price)} for tier, price in prices(settings).items()],
+        tiers=words["tiers"],
+        words=words,
         unit=money(settings, 1),
         word_count=len(DEFAULT_ENTRIES),
-        custom=[f"{key} ({TIER_NAMES[tier]})" for key, tier, gone in overrides if not gone and key not in DEFAULT_KEYS],
-        removed=[word_label(key) for key, _, gone in overrides if gone],
-        moved=[f"{word_label(key)} ({TIER_NAMES[tier]})" for key, tier, gone in overrides if not gone and key in DEFAULT_KEYS],
         has_overrides=bool(overrides),
         rules=[{"id": cid, "label": channel_label(guild, cid), "rule": rule} for cid, rule in sorted(rules.items())],
         add_groups=channel_groups(guild, include_categories=True, exclude=tuple(rules)),
@@ -117,16 +132,29 @@ async def _fines(db, guild: discord.Guild, settings: Dict[str, Any], form) -> st
 
 
 async def _words(db, guild: discord.Guild, action: str, form) -> str:
-    tier = parse_tier(str(form.get("tier", ""))) if action != "remove" else None
-    if action != "remove" and tier is None:
-        return "bad_tier"
-    words = parse_keywords(str(form.get("words", ""))[:2000])
-    changes, forget, skipped = word_changes(action, words, tier, await db.jar_word_overrides(guild.id))
+    overrides = await db.jar_word_overrides(guild.id)
+    tier = parse_tier(str(form.get("tier", ""))) if action in ("add", "tier") else None
+    skipped: List[str] = []
+    if action == "add":
+        if tier is None:
+            return "bad_tier"
+        changes, forget, skipped = word_changes(action, parse_keywords(str(form.get("words", ""))[:2000]), tier, overrides)
+    else:
+        if action == "back":
+            allowed = {key for key, _, gone in overrides if gone}
+        else:
+            allowed = {entry.key for entry in build_entries(overrides)}
+        keys = [key for key in dict.fromkeys(form.getall("word", [])) if key in allowed]
+        if not keys:
+            return "no_words_selected"
+        if action == "tier" and tier is None:
+            return "bad_tier"
+        changes, forget = ([], keys) if action == "back" else key_changes(action, keys, tier)
     if changes:
         await db.jar_set_words(guild.id, changes)
     if forget:
         await db.jar_forget_words(guild.id, forget)
-    return "words_skipped" if skipped else "words_saved"
+    return "words_skipped" if skipped else WORD_RESULTS[action]
 
 
 async def _roles(db, guild: discord.Guild, form) -> str:
