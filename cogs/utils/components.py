@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Awaitable, Callable, Dict, Iterable, Optional, Sequence, Set, Tuple, Union
+from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import discord
 
 BRAND_COLOR = discord.Colour(0xB62402)
@@ -29,6 +29,18 @@ def make_button(
     if callback is not None:
         button.callback = callback
     return button
+
+
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+
+def rank_prefix(rank: int) -> str:
+    return MEDALS.get(rank, f"**{rank}.**")
+
+
+def member_name(guild: discord.Guild, user_id: int) -> str:
+    member = guild.get_member(user_id)
+    return member.display_name if member else f"<@{user_id}>"
 
 
 def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:
@@ -149,13 +161,24 @@ class AuthorOnlyView(discord.ui.LayoutView):
         return False
 
 
-def check_channel_with_config(
+def tab_rows(tabs: Dict[str, str], current: str, switch_to: Callable[[str], Callback]) -> List[discord.ui.ActionRow]:
+    buttons = [
+        make_button(
+            label,
+            discord.ButtonStyle.primary if key == current else discord.ButtonStyle.secondary,
+            switch_to(key),
+            disabled=key == current,
+        )
+        for key, label in tabs.items()
+    ]
+    return [discord.ui.ActionRow(*buttons[start:start + 5]) for start in range(0, len(buttons), 5)]
+
+
+def channel_family(
     guild: discord.Guild,
     channel_or_id: Union[discord.abc.GuildChannel, discord.Thread, int],
-    watched_ids: Set[int],
-    ignored_ids: Set[int],
     thread_parent_map: Optional[Dict[int, int]] = None,
-) -> Tuple[bool, int]:
+) -> Tuple[int, Set[int]]:
     if isinstance(channel_or_id, int):
         channel_id = channel_or_id
         channel = guild.get_channel_or_thread(channel_id)
@@ -179,10 +202,19 @@ def check_channel_with_config(
         parent = guild.get_channel(parent_id)
         category_id = getattr(parent, "category_id", None)
 
+    return effective_id, {channel_id, effective_id, parent_id, category_id} - {None}
+
+
+def check_channel_with_config(
+    guild: discord.Guild,
+    channel_or_id: Union[discord.abc.GuildChannel, discord.Thread, int],
+    watched_ids: Set[int],
+    ignored_ids: Set[int],
+    thread_parent_map: Optional[Dict[int, int]] = None,
+) -> Tuple[bool, int]:
+    effective_id, related = channel_family(guild, channel_or_id, thread_parent_map)
     if not watched_ids:
         return False, effective_id
-
-    related = {channel_id, effective_id, parent_id, category_id} - {None}
     if related & ignored_ids:
         return False, effective_id
     if 1 in watched_ids or related & watched_ids:
