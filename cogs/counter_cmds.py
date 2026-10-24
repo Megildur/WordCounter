@@ -6,21 +6,22 @@ from discord import app_commands
 from discord.ext import commands
 from cogs.utils.components import (
     BRAND_COLOR,
-    NEUTRAL_COLOR,
     SERVER_ONLY_MESSAGE,
     SUCCESS_COLOR,
     TRACKING_OFF_MESSAGE,
     WARNING_COLOR,
-    AuthorOnlyView,
     Callback,
     activity_line,
     create_v2_container,
-    create_v2_view,
     error_view,
     format_channel_or_category,
     make_button,
     manager_check_error,
+    member_name,
+    rank_prefix,
+    tab_rows,
 )
+from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
 
@@ -30,13 +31,6 @@ SECTIONS = (
     ("keywords", "Keywords", "Add, edit or remove keywords"),
     ("reset", "Data & Reset Tools", "Reset counts or allow re-analysis"),
 )
-
-MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-
-def rank_prefix(rank: int) -> str:
-    return MEDALS.get(rank, f"**{rank}.**")
-
 
 class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
     keywords_input = discord.ui.TextInput(
@@ -91,18 +85,13 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
         await self.menu_view.refresh_and_edit(interaction)
 
 
-class SettingsMenuView(AuthorOnlyView):
+class SettingsMenuView(SectionMenu):
+    sections = SECTIONS
+    title = "Settings"
+    closed_hint = "Run /settings to open them again."
+
     def __init__(self, bot: commands.Bot, guild: discord.Guild, author_id: int) -> None:
-        super().__init__(
-            author_id=author_id,
-            denied_message="Only the admin who opened these settings can use them.",
-            timeout=300.0,
-        )
-        self.bot = bot
-        self.guild = guild
-        self.active_tab = "overview"
-        self.pending_confirmation: Optional[str] = None
-        self.status_banner: Optional[Tuple[str, discord.Colour]] = None
+        super().__init__(bot, guild, author_id, denied_message="Only the admin who opened these settings can use them.")
         self.selected_reset_user_id: Optional[int] = None
         self.selected_reset_channel_id: Optional[int] = None
         self.watched_ids: Set[int] = set()
@@ -121,58 +110,8 @@ class SettingsMenuView(AuthorOnlyView):
     def is_enabled(self) -> bool:
         return bool(self.watched_ids)
 
-    def _confirmation(
-        self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback
-    ) -> None:
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(text))
-        container.add_item(
-            discord.ui.ActionRow(
-                make_button(confirm_label, style, on_confirm),
-                make_button("Cancel", discord.ButtonStyle.secondary, self._cancel_confirmation),
-            )
-        )
-
-    def build_ui(self) -> None:
-        self.clear_items()
-        container = discord.ui.Container(accent_colour=self.status_banner[1] if self.status_banner else BRAND_COLOR)
-
-        header = discord.ui.TextDisplay(f"### Settings\nTracking, channels, keywords and resets for **{self.guild.name}**.")
-        if self.guild.icon:
-            container.add_item(discord.ui.Section(header, accessory=discord.ui.Thumbnail(self.guild.icon.url)))
-        else:
-            container.add_item(header)
-
-        if self.status_banner:
-            container.add_item(discord.ui.Separator())
-            container.add_item(discord.ui.TextDisplay(self.status_banner[0]))
-
-        navigation = discord.ui.Select(
-            placeholder="Go to a section",
-            options=[
-                discord.SelectOption(label=label, value=value, description=description, default=self.active_tab == value)
-                for value, label, description in SECTIONS
-            ],
-        )
-        navigation.callback = self._on_tab_select
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(navigation))
-        container.add_item(discord.ui.Separator())
-
-        {
-            "overview": self._populate_overview_tab,
-            "channels": self._populate_channels_tab,
-            "keywords": self._populate_keywords_tab,
-            "reset": self._populate_reset_tab,
-        }[self.active_tab](container)
-
-        bottom = []
-        if self.active_tab != "overview":
-            bottom.append(make_button("Back to overview", discord.ButtonStyle.primary, self._on_back_to_overview))
-        bottom.append(make_button("Close", discord.ButtonStyle.secondary, self._on_close_menu))
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(*bottom))
-        self.add_item(container)
+    def description(self) -> str:
+        return f"Tracking, channels, keywords and resets for **{self.guild.name}**."
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         if not self.is_enabled:
@@ -237,7 +176,7 @@ class SettingsMenuView(AuthorOnlyView):
         container.add_item(
             discord.ui.ActionRow(
                 make_button("Data & resets", discord.ButtonStyle.primary, self._goto("reset")),
-                make_button("Turn off tracking", discord.ButtonStyle.danger, self._btn_disable_tracking, disabled=not self.is_enabled),
+                make_button("Turn off tracking", discord.ButtonStyle.danger, self._prompt("disable_server"), disabled=not self.is_enabled),
             )
         )
 
@@ -394,36 +333,19 @@ class SettingsMenuView(AuthorOnlyView):
         nothing_selected = self.selected_reset_user_id is None and self.selected_reset_channel_id is None
         container.add_item(
             discord.ui.ActionRow(
-                make_button("Reset all counts", discord.ButtonStyle.primary, self._prompt_scoped_reset, disabled=nothing_selected),
+                make_button("Reset all counts", discord.ButtonStyle.primary, self._prompt("scoped_reset"), disabled=nothing_selected),
                 make_button(
                     "Allow re-analysis" if self.selected_reset_user_id else "Allow re-analysis for everyone",
                     discord.ButtonStyle.secondary,
-                    self._prompt_reanalysis,
+                    self._prompt("reanalysis"),
                 ),
-                make_button("Reset everything", discord.ButtonStyle.danger, self._prompt_wipe_server),
+                make_button("Reset everything", discord.ButtonStyle.danger, self._prompt("wipe_server")),
             )
         )
 
-    def _goto(self, tab: str) -> Callback:
-        async def callback(interaction: discord.Interaction) -> None:
-            self.active_tab = tab
-            self.pending_confirmation = None
-            self.status_banner = None
-            await self.refresh_and_edit(interaction)
-
-        return callback
-
-    async def _on_tab_select(self, interaction: discord.Interaction) -> None:
-        values = interaction.data.get("values") or ["overview"]
-        await self._goto(values[0])(interaction)
-
-    async def _on_back_to_overview(self, interaction: discord.Interaction) -> None:
-        await self._goto("overview")(interaction)
-
     async def _btn_enable_whole_server(self, interaction: discord.Interaction) -> None:
         if any(cid != 1 for cid in self.watched_ids):
-            self.pending_confirmation = "whole_server"
-            await self.refresh_and_edit(interaction)
+            await self._prompt("whole_server")(interaction)
         else:
             await self._confirm_whole_server(interaction)
 
@@ -440,24 +362,12 @@ class SettingsMenuView(AuthorOnlyView):
         self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
-    async def _btn_disable_tracking(self, interaction: discord.Interaction) -> None:
-        self.pending_confirmation = "disable_server"
-        await self.refresh_and_edit(interaction)
-
     async def _confirm_disable_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.bot.db.disable_server_tracking(self.guild.id)
         self.pending_confirmation = None
         self.status_banner = ("Tracking is off.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
-
-    async def _cancel_confirmation(self, interaction: discord.Interaction) -> None:
-        self.pending_confirmation = None
-        self.status_banner = ("Cancelled.", NEUTRAL_COLOR)
-        await self.refresh_and_edit(interaction)
-
-    def _selected_ids(self, interaction: discord.Interaction) -> List[int]:
-        return [int(value) for value in interaction.data.get("values", [])]
 
     async def _on_channels_added(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -532,10 +442,6 @@ class SettingsMenuView(AuthorOnlyView):
             return f"<@{uid}> across the server"
         return f"everyone in <#{cid}>"
 
-    async def _prompt_scoped_reset(self, interaction: discord.Interaction) -> None:
-        self.pending_confirmation = "scoped_reset"
-        await self.refresh_and_edit(interaction)
-
     async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.pending_confirmation = None
@@ -545,10 +451,6 @@ class SettingsMenuView(AuthorOnlyView):
         elif self.selected_reset_user_id is not None or self.selected_reset_channel_id is not None:
             await self.bot.db.reset_counts(self.guild.id, self.selected_reset_user_id, self.selected_reset_channel_id)
             self.status_banner = (f"Reset all counts for {self._reset_scope_text()}.", SUCCESS_COLOR)
-        await self.refresh_and_edit(interaction)
-
-    async def _prompt_reanalysis(self, interaction: discord.Interaction) -> None:
-        self.pending_confirmation = "reanalysis"
         await self.refresh_and_edit(interaction)
 
     async def _execute_reanalysis(self, interaction: discord.Interaction) -> None:
@@ -572,10 +474,6 @@ class SettingsMenuView(AuthorOnlyView):
                 )
         await self.refresh_and_edit(interaction)
 
-    async def _prompt_wipe_server(self, interaction: discord.Interaction) -> None:
-        self.pending_confirmation = "wipe_server"
-        await self.refresh_and_edit(interaction)
-
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.pending_confirmation = None
@@ -590,24 +488,6 @@ class SettingsMenuView(AuthorOnlyView):
         self.active_tab = "overview"
         self.status_banner = ("Server reset. All stats, analysis history, channels and keywords were cleared.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
-
-    async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-        await self.load_state()
-        self.build_ui()
-        await interaction.edit_original_response(view=self)
-
-    async def _on_close_menu(self, interaction: discord.Interaction) -> None:
-        self.stop()
-        await interaction.response.defer()
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            await interaction.edit_original_response(
-                view=create_v2_view("Settings closed", "Run /settings to open them again.", color=NEUTRAL_COLOR)
-            )
-
 
 class LeaderboardPaginator(ButtonPaginator):
     def __init__(
@@ -625,10 +505,6 @@ class LeaderboardPaginator(ButtonPaginator):
         self.category = "words"
         self.entry_count = 0
         self.history: List[Tuple[str, str]] = []
-
-    def _name(self, user_id: int) -> str:
-        member = self.guild.get_member(user_id)
-        return member.display_name if member else f"<@{user_id}>"
 
     async def load(self, category: str) -> None:
         self.category = category
@@ -665,13 +541,13 @@ class LeaderboardPaginator(ButtonPaginator):
                 top = users[:10]
                 fields.append((
                     f'"{keyword}"',
-                    "\n".join(f"{rank_prefix(rank)} **{self._name(uid)}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
+                    "\n".join(f"{rank_prefix(rank)} **{member_name(self.guild, uid)}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"
         else:
             start = self.current_page * 10 + 1
             lines = [
-                f"{rank_prefix(rank)} **{self._name(uid)}** · {count:,} {self.category}"
+                f"{rank_prefix(rank)} **{member_name(self.guild, uid)}** · {count:,} {self.category}"
                 for rank, (uid, count) in enumerate(chunk, start=start)
             ]
             description = f"Top members in {where}\n\n" + ("\n".join(lines) or "Nothing recorded yet.")
@@ -686,17 +562,7 @@ class LeaderboardPaginator(ButtonPaginator):
         )
 
     def extra_rows(self) -> List[discord.ui.ActionRow]:
-        return [
-            discord.ui.ActionRow(*(
-                make_button(
-                    label,
-                    discord.ButtonStyle.primary if key == self.category else discord.ButtonStyle.secondary,
-                    self._switch_to(key),
-                    disabled=key == self.category,
-                )
-                for key, label in LEADERBOARDS.items()
-            ))
-        ]
+        return tab_rows(LEADERBOARDS, self.category, self._switch_to)
 
     def _switch_to(self, category: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
