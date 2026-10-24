@@ -4,7 +4,7 @@ import logging
 from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
 from cogs.utils.config import SITE_URL, WEB_HOST, WEB_PORT
-from web import dashboard, pages
+from web import dashboard, pages, swearjar
 from web.core import ROOT, load_templates, site_middleware
 
 log = logging.getLogger("web")
@@ -22,6 +22,7 @@ def create_app(bot) -> web.Application:
     app.router.add_static("/static", str(ROOT / "static"), name="static")
     app.router.add_routes(pages.routes)
     app.router.add_routes(dashboard.routes)
+    app.router.add_routes(swearjar.routes)
     return app
 
 

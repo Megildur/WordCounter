@@ -1,0 +1,244 @@
+{% extends "server_base.html" %}
+{% import "_macros.html" as ui with context %}
+
+{% block server_content %}
+<section class="panel" aria-labelledby="jar-status-title">
+  <h2 id="jar-status-title">Swear jar</h2>
+  {% if jar.enabled %}
+    <p>On. Every swear costs, and debt is only paid back by not swearing: each clean active day (5 or more messages, no swears) pays back {{ unit }}.</p>
+  {% else %}
+    <p>Off. Turn it on to start fining swears in this server.</p>
+  {% endif %}
+  <p class="form-hint">{{ spam_note }} Run <code>/analyze_chat swears</code> in Discord to add past swears to the Swears leaderboard. Past swears aren't fined.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="{{ 'jar_off' if jar.enabled else 'jar_on' }}">
+    <div class="form-actions">
+      {% if jar.enabled %}
+        <button type="submit" class="btn btn--ghost">Turn off the swear jar</button>
+      {% else %}
+        <button type="submit" class="btn btn--primary">Turn on the swear jar</button>
+      {% endif %}
+    </div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="jar-mode-title">
+  <h2 id="jar-mode-title">When someone swears</h2>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="mode">
+    <fieldset class="choices">
+      <legend class="sr-only">When someone swears</legend>
+      <label class="choice">
+        <input type="radio" name="mode" value="react" {% if not jar.delete_mode %}checked{% endif %}>
+        <span><b>Fine and react</b>The message stays up and gets a 🫙 reaction, or 🚫 while someone is spamming.</span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="mode" value="delete" {% if jar.delete_mode %}checked{% endif %}>
+        <span><b>Delete and fine</b>The message is deleted, and a notice saying why and what they were fined shows for 5 seconds.{% if not can_delete %} WordCounter needs the Manage Messages permission for this.{% endif %}</span>
+      </label>
+    </fieldset>
+    <div class="form-actions"><button type="submit" class="btn btn--primary">Save</button></div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="jar-fines-title">
+  <h2 id="jar-fines-title">Fines</h2>
+  <p>Each swear costs its tier's price in units, and a message is fined for at most its 3 priciest swears. One unit is worth {{ unit }} right now.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="fines">
+    <fieldset class="choices">
+      <legend class="form-label">Show fines as</legend>
+      <label class="choice">
+        <input type="radio" name="currency" value="money" {% if jar.currency == "money" %}checked{% endif %}>
+        <span><b>Money</b>Like $0.25 per unit.</span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="currency" value="tokens" {% if jar.currency == "tokens" %}checked{% endif %}>
+        <span><b>Tokens</b>Your own server currency, like Jar Dimes.</span>
+      </label>
+    </fieldset>
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="jar-unit">Money: value of one unit, in dollars</label>
+        <input class="input" id="jar-unit" name="unit" value="{{ '%.2f'|format(jar.unit_cents / 100) }}" inputmode="decimal" maxlength="10">
+      </div>
+      <div class="form-row">
+        <label for="jar-per-unit">Tokens: how many per unit</label>
+        <input class="input" id="jar-per-unit" name="tokens_per_unit" value="{{ jar.tokens_per_unit }}" inputmode="numeric" maxlength="6">
+      </div>
+      <div class="form-row">
+        <label for="jar-token-name">Tokens: name for one</label>
+        <input class="input" id="jar-token-name" name="token_name" value="{{ jar.token_name }}" maxlength="30">
+      </div>
+      <div class="form-row">
+        <label for="jar-token-plural">Tokens: name for more than one</label>
+        <input class="input" id="jar-token-plural" name="token_plural" value="{{ jar.token_plural }}" maxlength="30">
+      </div>
+    </div>
+    <div class="form-grid">
+      {% for tier in tiers %}
+        <div class="form-row">
+          <label for="jar-tier{{ tier.tier }}">{{ tier.name }}, in units</label>
+          <input class="input" id="jar-tier{{ tier.tier }}" name="tier{{ tier.tier }}" value="{{ tier.price }}" inputmode="numeric" maxlength="4">
+          <p class="form-hint">Now {{ tier.money }} per swear.</p>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="form-actions"><button type="submit" class="btn btn--primary">Save fines</button></div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="jar-words-title">
+  <h2 id="jar-words-title">Words</h2>
+  <p>The default list has {{ word_count|num }} English and Polish swear words and slurs in three tiers. Matching ignores case and accents, and catches leetspeak like <code>sh!t</code>, stretched letters and spaced-out letters like <code>f u c k</code>.</p>
+  <details class="disclosure">
+    <summary>Your changes to the list ({{ (custom|length + removed|length + moved|length)|num }})</summary>
+    <div class="disclosure__body">
+      <p><strong>Your words:</strong> {{ custom|join(", ") or "None" }}</p>
+      <p><strong>Removed from the default list:</strong> {{ removed|join(", ") or "None" }}</p>
+      <p><strong>Moved to another tier:</strong> {{ moved|join(", ") or "None" }}</p>
+    </div>
+  </details>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <div class="form-row">
+      <label for="jar-words">Words</label>
+      <textarea class="input" id="jar-words" name="words" maxlength="2000" spellcheck="false" placeholder="pog, yeet"></textarea>
+      <p class="form-hint">Separate them with commas or new lines. End a word with * to match its endings too, like yeet* for yeeted.</p>
+    </div>
+    <fieldset class="choices">
+      <legend class="form-label">Tier, for adding or moving words</legend>
+      {% for tier in tiers %}
+        <label class="choice">
+          <input type="radio" name="tier" value="{{ tier.tier }}" {% if tier.tier == 3 %}checked{% endif %}>
+          <span><b>{{ tier.name }}</b>{{ tier.money }} per swear.</span>
+        </label>
+      {% endfor %}
+    </fieldset>
+    <div class="form-actions">
+      <button type="submit" name="action" value="words_add" class="btn btn--primary">Add</button>
+      <button type="submit" name="action" value="words_tier" class="btn btn--ghost">Move to this tier</button>
+      <button type="submit" name="action" value="words_remove" class="btn btn--ghost">Remove</button>
+    </div>
+  </form>
+  {% if has_overrides %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="words_restore">
+      {{ ui.confirm("jar-restore-confirm", "Delete my words and put the default list back the way it was.") }}
+      <div class="form-actions"><button type="submit" class="btn btn--danger-solid">Restore the default list</button></div>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="jar-channels-title">
+  <h2 id="jar-channels-title">Channels</h2>
+  <p>The jar listens wherever WordCounter tracks messages (see the Settings tab), with these exceptions.</p>
+  {% if rules %}
+    <ul class="item-list">
+      {% for item in rules %}
+        <li>
+          <span>{{ item.label }} <span class="muted">{{ "also listens" if item.rule == "include" else "never listens" }}</span></span>
+          <form method="post" class="inline-form">
+            {{ ui.csrf_field() }}
+            <input type="hidden" name="action" value="rule_remove">
+            <input type="hidden" name="channel" value="{{ item.id }}">
+            <button type="submit" class="btn btn--sm btn--quiet">Remove<span class="sr-only"> {{ item.label }}</span></button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="form-hint">No exceptions.</p>
+  {% endif %}
+  {% if add_groups %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      {{ ui.checklist("channel", add_groups, "Channels or categories", hint="Tick as many as you like.") }}
+      <div class="form-actions">
+        <button type="submit" name="action" value="rule_include" class="btn btn--primary">Also listen here</button>
+        <button type="submit" name="action" value="rule_exclude" class="btn btn--ghost">Never listen here</button>
+      </div>
+    </form>
+  {% endif %}
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="age_toggle">
+    <p>Age-restricted channels are <strong>{{ "skipped" if jar.skip_age_restricted else "checked" }}</strong>.</p>
+    <div class="form-actions">
+      <button type="submit" class="btn btn--ghost">{{ "Check age-restricted channels" if jar.skip_age_restricted else "Skip age-restricted channels" }}</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="jar-roles-title">
+  <h2 id="jar-roles-title">Roles</h2>
+  <p>Potty Mouth goes to the member fined the most each week and moves every Monday (UTC). The clean streak role is given at a 14-day clean streak and taken away when they swear.</p>
+  {% if not can_manage_roles %}<p class="form-hint">WordCounter needs the Manage Roles permission to hand these out.</p>{% endif %}
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="roles">
+    {% set role_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + roles}] %}
+    {{ ui.checklist("potty_role_id", role_groups, "Potty Mouth role", kind="radio", selected=jar.potty_role_id or "") }}
+    {{ ui.checklist("clean_role_id", role_groups, "Clean streak role", kind="radio", selected=jar.clean_role_id or "", hint="Only roles below WordCounter's own role are listed.") }}
+    <div class="form-actions"><button type="submit" class="btn btn--primary">Save roles</button></div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="jar-goal-title">
+  <h2 id="jar-goal-title">Goal</h2>
+  {% if goal and not goal.completed_at %}
+    <p>Saving up for <strong>{{ goal.label }}</strong>: {{ goal.progress_text }} of {{ goal.target_text }} ({{ goal.percent }}%).</p>
+    <progress class="jar-progress" value="{{ goal.progress }}" max="{{ goal.target }}">{{ goal.percent }}%</progress>
+  {% elif goal %}
+    <p>The last goal, <strong>{{ goal.label }}</strong>, was reached. Set a new one below.</p>
+  {% else %}
+    <p>No goal right now. Set one, like $50 for a movie night, and the jar posts once when it's reached.</p>
+  {% endif %}
+  {% set active = goal and not goal.completed_at %}
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="goal_set">
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="jar-goal-label">What the jar is saving up for</label>
+        <input class="input" id="jar-goal-label" name="label" value="{{ goal.label if active else '' }}" maxlength="100" placeholder="Movie night">
+      </div>
+      <div class="form-row">
+        <label for="jar-goal-amount">Amount to reach</label>
+        <input class="input" id="jar-goal-amount" name="amount" value="{{ goal.target_input if active else '' }}" inputmode="decimal" maxlength="12" placeholder="50">
+      </div>
+    </div>
+    {% if goal_channels %}
+      {{ ui.checklist("channel", [{"label": None, "options": goal_channels}], "Announce it in", kind="radio", selected=goal.channel_id if active else None) }}
+    {% endif %}
+    <label class="check" for="jar-goal-ping">
+      <input type="checkbox" id="jar-goal-ping" name="ping" value="yes" {% if active and goal.ping %}checked{% endif %}>
+      <span>Ping @everyone when it's reached</span>
+    </label>
+    <div class="form-actions"><button type="submit" class="btn btn--primary">{{ "Save goal" if active else "Set goal" }}</button></div>
+  </form>
+  {% if active %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="goal_end">
+      {{ ui.confirm("jar-goal-end-confirm", "End this goal and delete its progress.") }}
+      <div class="form-actions"><button type="submit" class="btn btn--danger-solid">End goal</button></div>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel panel--danger" aria-labelledby="jar-reset-title">
+  <h3 id="jar-reset-title">Reset the whole jar</h3>
+  <p>Deletes every member's swear counts, fines, wallet and streak, and starts the goal again from zero. Settings and words stay. To reset one member, open them from Members.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="jar_reset">
+    {{ ui.confirm("jar-reset-confirm", "I understand this resets the swear jar for everyone.") }}
+    <div class="form-actions"><button type="submit" class="btn btn--danger-solid">Reset the whole jar</button></div>
+  </form>
+</section>
+{% endblock %}

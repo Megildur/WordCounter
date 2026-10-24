@@ -17,4 +17,5 @@
 {% else %}
   {{ ui.member_stats(stats, "Your") }}
 {% endif %}
+{% if jar %}{{ ui.jar_panel(jar, "Your") }}{% endif %}
 {% endblock %}

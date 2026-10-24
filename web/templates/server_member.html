@@ -19,6 +19,8 @@
   {{ ui.member_stats(stats, person.name) }}
 {% endif %}
 
+{% if jar %}{{ ui.jar_panel(jar, person.name ~ "'s") }}{% endif %}
+
 <h2 class="subhead display section-gap">Manage this member</h2>
 {% if busy %}
   <div class="alert alert--error" role="status">
@@ -53,4 +55,18 @@
     </div>
   </form>
 </section>
+{% if jar %}
+<section class="panel panel--danger" aria-labelledby="reset-jar-title">
+  <h3 id="reset-jar-title">Reset their swear jar</h3>
+  <p>Deletes this member's swear counts, fines, wallet and streak. Past swears aren't counted again.</p>
+  <form method="post" class="form">
+    {{ ui.csrf_field() }}
+    <input type="hidden" name="action" value="reset_jar">
+    {{ ui.confirm("reset-jar-confirm", "I understand this resets their swear jar.") }}
+    <div class="form-actions">
+      <button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Reset their swear jar</button>
+    </div>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

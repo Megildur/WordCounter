@@ -1,9 +1,12 @@
 from __future__ import annotations
 import math
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 import discord
 from aiohttp import web
+from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
 from web.core import ENV, current_user, error_page, redirect, render
@@ -151,6 +154,34 @@ async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any
     }
 
 
+async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    settings = await bot.db.jar_settings(guild_id)
+    if not settings["enabled"]:
+        return None
+    data = await bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
+    balance = data["balance"]
+    spam_until = data["spam_until"] if data["spam_until"] > time.time() else None
+    return {
+        "label": "Debt" if balance < 0 else "Wallet",
+        "balance": money(settings, balance),
+        "in_debt": balance < 0,
+        "streak": data["streak"],
+        "best": data["best_streak"],
+        "swears": data["swears"],
+        "week": money(settings, data["week_fines"]),
+        "days_to_clear": days_to_clear(-balance, data["streak"]) if balance < 0 else 0,
+        "spam_until": datetime.fromtimestamp(spam_until, timezone.utc).strftime("%H:%M UTC") if spam_until else None,
+        "spam_note": SPAM_NOTE,
+        "unit": unit_label(settings),
+    }
+
+
+def refresh_jar(request: web.Request, guild_id: int) -> None:
+    cog = request.app["bot"].get_cog("SwearJar")
+    if cog is not None:
+        cog.invalidate(guild_id)
+
+
 def guild_context(guild: discord.Guild, can_manage: bool, tab: str) -> Dict[str, Any]:
     return {"guild": {"id": guild.id, "name": guild.name, "icon_url": icon_url(guild)}, "can_manage": can_manage, "tab": tab}
 
@@ -195,6 +226,7 @@ async def own_stats(request: web.Request) -> web.Response:
         "dashboard",
         stats=await member_stats(bot, guild, member.id),
         tracking=await bot.db.has_tracking_enabled(guild.id),
+        jar=await jar_summary(bot, guild.id, member.id),
         **guild_context(guild, can_manage, "stats"),
     )
 
@@ -290,6 +322,7 @@ async def member_page(request: web.Request) -> web.Response:
         person=person(guild, member_id),
         stats=await member_stats(bot, guild, member_id),
         analyzed=await bot.db.is_user_analyzed(guild.id, member_id),
+        jar=await jar_summary(bot, guild.id, member_id),
         busy=busy,
         reset_menu=channel_menu(
             channel_groups(guild, include_categories=False),
@@ -320,6 +353,10 @@ async def member_action(request: web.Request) -> web.Response:
         elif result is None and action == "reanalyze_member":
             await db.allow_reanalysis(guild.id, member_id)
             result = "reanalysis_ready"
+        elif result is None and action == "reset_jar":
+            await db.jar_reset_members(guild.id, member_id)
+            refresh_jar(request, guild.id)
+            result = "jar_reset"
     return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
 
 
