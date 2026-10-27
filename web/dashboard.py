@@ -46,6 +46,8 @@ def require_user(request: web.Request) -> auth.User:
     user = current_user(request)
     if user is None:
         raise web.HTTPFound(f"/login?next={quote(request.path_qs, safe='/?=&')}")
+    if int(user["id"]) in request.app["bot"].blacklisted:
+        raise web.HTTPForbidden(text="You've been banned from using WordCounter, so its dashboard is closed to you.")
     return user
 
 
@@ -68,6 +70,8 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     guild = request.app["bot"].get_guild(int(request.match_info["guild_id"]))
     if guild is None:
         raise web.HTTPNotFound()
+    if guild.id in request.app["bot"].blacklisted:
+        raise web.HTTPForbidden(text="This server has been banned from using WordCounter, so its dashboard is closed.")
     member = await find_member(guild, int(user["id"]))
     if member is None:
         raise web.HTTPNotFound()
@@ -206,7 +210,7 @@ async def dashboard(request: web.Request) -> web.Response:
     servers = []
     for guild in sorted(request.app["bot"].guilds, key=lambda g: g.name.lower()):
         member = guild.get_member(user_id)
-        if member is not None:
+        if member is not None and guild.id not in request.app["bot"].blacklisted:
             servers.append({
                 "id": guild.id,
                 "name": guild.name,

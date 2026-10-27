@@ -199,6 +199,8 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = await handler(request)
     except web.HTTPNotFound:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
+    except web.HTTPForbidden as forbidden:
+        response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
     if request.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
         if request.path.endswith(".css"):

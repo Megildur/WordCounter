@@ -2,8 +2,10 @@ import asyncio
 import logging
 import os
 import sys
+from typing import Any, Set
 import discord
 from discord.ext import commands
+from cogs.utils import blacklist
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import WordCounterDatabase
 from cogs.utils.http import close_session
@@ -32,9 +34,17 @@ class MyBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="!wc", intents=discord.Intents.all())
         self.db = WordCounterDatabase(self)
+        self.blacklisted: Set[int] = set()
+
+    def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
+        if blacklist.ignores(self, args):
+            return
+        super().dispatch(event_name, *args, **kwargs)
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        self.blacklisted.update(await self.db.blacklisted_ids())
+        blacklist.install(self)
 
         def handle_async_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
             error = context.get("exception")

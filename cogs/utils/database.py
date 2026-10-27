@@ -6,6 +6,7 @@ from collections import defaultdict
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import aiosqlite
+from cogs.utils.stored_data import BLACKLIST_SCHEMA, StoredDataQueries
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
 
 MonthlyKey = Tuple[int, int, int]
@@ -195,7 +196,7 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
     return tuple(values[key] for key in COUNT_TABLES[table][0])
 
 
-class WordCounterDatabase(SwearJarQueries):
+class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
     def __init__(self, bot) -> None:
         self.db_path = "Data/WordCounter.db"
         self.db: Optional[aiosqlite.Connection] = None
@@ -224,7 +225,7 @@ class WordCounterDatabase(SwearJarQueries):
 
     async def initialize_database(self) -> None:
         async with self.db_lock:
-            for statement in (*SCHEMA, *JAR_SCHEMA):
+            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA):
                 await self.db.execute(statement)
             try:
                 await self.db.execute("ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0")
