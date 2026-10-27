@@ -779,6 +779,12 @@ class SwearJar(commands.Cog):
     def invalidate(self, guild_id: int) -> None:
         self.states.pop(guild_id, None)
 
+    def forget(self, target_id: int) -> None:
+        self.invalidate(target_id)
+        for store in (self.recent, self.spam_until, self.day_counts):
+            for key in [key for key in store if target_id in key]:
+                del store[key]
+
     async def state(self, guild_id: int) -> JarState:
         state = self.states.get(guild_id)
         if state is not None and time.monotonic() - state.loaded_at < STATE_TTL:

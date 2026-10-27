@@ -556,7 +556,7 @@ class AnalyzeChat(commands.Cog):
             except (discord.ClientException, asyncio.TimeoutError) as error:
                 log.warning("Could not load the member list for guild %s: %s", guild.id, error)
         analyzed = await self.bot.db.get_analyzed_users(guild.id)
-        humans = [member for member in guild.members if not member.bot]
+        humans = [member for member in guild.members if not member.bot and member.id not in self.bot.blacklisted]
         pending = [member for member in humans if member.id not in analyzed]
         return pending, len(humans) - len(pending)
 
@@ -772,6 +772,8 @@ class AnalyzeChat(commands.Cog):
                             run.cursors[channel.id] = message.id
                             progress.read += 1
                             author_id = message.author.id
+                            if author_id in self.bot.blacklisted:
+                                continue
                             if run.counts_swears:
                                 if not message.author.bot and not message.is_system() and run.coverage.counts(0, effective_id, message.id):
                                     run.add_swears(author_id, effective_id, message.content)
@@ -1120,6 +1122,8 @@ class AnalyzeChat(commands.Cog):
         reason = await self._blocked_reason(interaction)
         if reason is None and target.bot:
             reason = "Bots aren't counted."
+        if reason is None and target.id in self.bot.blacklisted:
+            reason = f"{target.mention} is banned from using WordCounter, so their messages aren't counted."
         if reason is None and await self.bot.db.is_user_analyzed(interaction.guild.id, target.id):
             reason = (
                 f"{target.mention} has already been analyzed in this server.\n"

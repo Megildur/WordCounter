@@ -71,6 +71,9 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | `/swearjar top` | Everyone | Who swears most, owes most, saved most and has the longest clean streak. |
 | `/swearjar goal` | Everyone | What the swear jar is saving up for. |
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
+| `/owner delete_data <User/Server> <id>` | Bot owner | Find everything stored under a user's or server's ID in every table, and delete it once you confirm. |
+| `/owner export_data <User/Server> <id>` | Bot owner | Post a text file in the channel with every row stored under the ID, table by table. |
+| `/owner blacklist <Add/Remove/List> [kind] [id] [reason]` | Bot owner | Ban a user or server from WordCounter, lift a ban, or list them. A banned user's messages aren't counted, and their commands, buttons and dashboard answer that they're banned. Adding a ban deletes their data once you confirm. |
 
 Right-click menus:
 - **User Stats**: right-click a member, then Apps > User Stats.
