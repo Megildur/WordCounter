@@ -757,6 +757,7 @@ class JarSettingsView(SectionMenu):
 
 class SwearJar(commands.Cog):
     jar = app_commands.Group(name="swearjar", description="Fines for swearing, paid back with clean streaks")
+    acts_on_blacklisted = True
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -819,7 +820,7 @@ class SwearJar(commands.Cog):
         if state.matcher is None:
             return
         allowed, channel_id = self._checks(message.guild, message.channel, state)
-        if not allowed:
+        if not allowed or await self._banned(message, state):
             return
         self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
         tiers = state.matcher.find(message.content)
@@ -834,7 +835,7 @@ class SwearJar(commands.Cog):
         if state.matcher is None or after.id < state.live_since:
             return
         allowed, channel_id = self._checks(after.guild, after.channel, state)
-        if not allowed:
+        if not allowed or await self._banned(after, state):
             return
         tiers = state.matcher.find(after.content)
         if tiers:
@@ -885,22 +886,31 @@ class SwearJar(commands.Cog):
         if reached is not None:
             await self._announce_goal(message.guild, state.settings, reached)
 
+    async def _banned(self, message: discord.Message, state: JarState) -> bool:
+        if message.author.id not in self.bot.blacklisted:
+            return False
+        if state.settings["delete_mode"] and state.matcher.find(message.content):
+            await self._remove(message, f"{message.author.mention}'s message was removed for swearing.")
+        return True
+
+    async def _remove(self, message: discord.Message, description: str) -> bool:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            return False
+        notice = create_v2_view("Message removed", description, color=WARNING_COLOR)
+        with contextlib.suppress(discord.HTTPException):
+            await message.channel.send(view=notice, delete_after=NOTICE_SECONDS, allowed_mentions=discord.AllowedMentions.none())
+        return True
+
     async def _answer(self, message: discord.Message, settings: Dict[str, Any], amount: int, balance: int, spam: bool) -> None:
         if settings["delete_mode"]:
-            try:
-                await message.delete()
-            except discord.HTTPException:
-                pass
-            else:
-                doubled = f" That's doubled: {SPAM_NOTE}" if spam else ""
-                notice = create_v2_view(
-                    "Message removed",
-                    f"{message.author.mention}'s message was removed for swearing and fined **{money(settings, amount)}**.{doubled}\n"
-                    f"Wallet: **{money(settings, balance)}**",
-                    color=WARNING_COLOR,
-                )
-                with contextlib.suppress(discord.HTTPException):
-                    await message.channel.send(view=notice, delete_after=NOTICE_SECONDS, allowed_mentions=discord.AllowedMentions.none())
+            doubled = f" That's doubled: {SPAM_NOTE}" if spam else ""
+            description = (
+                f"{message.author.mention}'s message was removed for swearing and fined **{money(settings, amount)}**.{doubled}\n"
+                f"Wallet: **{money(settings, balance)}**"
+            )
+            if await self._remove(message, description):
                 return
         with contextlib.suppress(discord.HTTPException):
             await message.add_reaction(SPAM_EMOJI if spam else JAR_EMOJI)

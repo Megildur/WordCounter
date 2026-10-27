@@ -37,9 +37,8 @@ class MyBot(commands.Bot):
         self.blacklisted: Set[int] = set()
 
     def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
-        if blacklist.ignores(self, args):
-            return
-        super().dispatch(event_name, *args, **kwargs)
+        if not blacklist.screen(self, event_name, args, kwargs):
+            super().dispatch(event_name, *args, **kwargs)
 
     async def setup_hook(self) -> None:
         await self.db.connect()

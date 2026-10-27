@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
-from typing import Any, Iterator, Optional, Sequence, Set
+from typing import Any, Dict, Iterator, Optional, Sequence, Set, Tuple
 import discord
 from cogs.utils.components import ERROR_COLOR, create_v2_view
 from cogs.utils.config import SUPPORT_URL
@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 USER = "user"
 SERVER = "server"
+GUARD = "acts_on_blacklisted"
 USER_TYPES = (discord.user.BaseUser, discord.Member)
 _TASKS: Set[asyncio.Task] = set()
 
@@ -21,39 +22,57 @@ def ids(bot: Any) -> Set[int]:
     return found
 
 
-def _ids_in(value: Any) -> Iterator[int]:
+def _ids_in(value: Any) -> Iterator[Tuple[str, int]]:
     if isinstance(value, discord.Guild):
-        yield value.id
+        yield SERVER, value.id
         return
     if isinstance(value, USER_TYPES):
-        yield value.id
+        yield USER, value.id
     guild = getattr(value, "guild", None)
     if isinstance(guild, discord.Guild):
-        yield guild.id
-    for name in ("guild_id", "user_id"):
+        yield SERVER, guild.id
+    for name, kind in (("guild_id", SERVER), ("user_id", USER)):
         found = getattr(value, name, None)
         if isinstance(found, int):
-            yield found
+            yield kind, found
     for name in ("author", "user"):
         found = getattr(value, name, None)
         if isinstance(found, USER_TYPES):
-            yield found.id
+            yield USER, found.id
     message = getattr(value, "message", None)
     if isinstance(message, discord.Message):
-        yield message.author.id
+        yield USER, message.author.id
         if message.guild is not None:
-            yield message.guild.id
+            yield SERVER, message.guild.id
 
 
-def ignores(bot: Any, args: Sequence[Any]) -> bool:
+def blocked_by(bot: Any, args: Sequence[Any]) -> Optional[str]:
     blocked = ids(bot)
     if not blocked:
-        return False
+        return None
     try:
-        return any(found in blocked for value in args for found in _ids_in(value))
+        kind = None
+        for found_kind, found in (pair for value in args for pair in _ids_in(value)):
+            if found in blocked:
+                if found_kind == SERVER:
+                    return SERVER
+                kind = USER
+        return kind
     except Exception as error:
         log.warning("Couldn't check an event against the blacklist: %s", error)
+        return None
+
+
+def screen(bot: Any, event: str, args: Sequence[Any], kwargs: Dict[str, Any]) -> bool:
+    kind = blocked_by(bot, args)
+    if kind is None:
         return False
+    if kind == USER:
+        name = "on_" + event
+        for listener in bot.extra_events.get(name, ()):
+            if getattr(getattr(listener, "__self__", None), GUARD, False):
+                bot._schedule_event(listener, name, *args, **kwargs)
+    return True
 
 
 def _snowflake(value: Any) -> Optional[int]:
