@@ -13,8 +13,8 @@
     <img src="https://img.shields.io/badge/Website-wordcounter.dev-D26B42?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v2.0.1">
-    <img src="https://img.shields.io/badge/Release-v2.0.1-908C90?style=for-the-badge" alt="Release v2.0.1" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v2.1.0">
+    <img src="https://img.shields.io/badge/Release-v2.1.0-908C90?style=for-the-badge" alt="Release v2.1.0" />
   </a>
 </p>
 
@@ -73,6 +73,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
 | `/owner delete_data <User/Server> <id>` | Bot owner | Find everything stored under a user's or server's ID in every table, and delete it once you confirm. |
 | `/owner export_data <User/Server> <id>` | Bot owner | Post a text file in the channel with every row stored under the ID, table by table. |
+| `/owner kept_data <User/Server> <id>` | Bot owner | After a deletion, post in the channel what WordCounter still keeps under the ID (a ban from WordCounter) and why, quoting the Privacy Policy's "What we keep after a deletion request" and the GDPR articles it relies on. Refuses until everything a deletion removes is gone. |
 | `/owner blacklist <Add/Remove/List> [kind] [id] [reason]` | Bot owner | Ban a user or server from WordCounter, lift a ban, or list them. A banned user's messages aren't counted, and their commands, buttons and dashboard answer that they're banned. In servers where the swear jar removes swearing, it still removes theirs, without a fine. Adding a ban deletes their data once you confirm. |
 
 Right-click menus:

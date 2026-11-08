@@ -13,7 +13,7 @@ from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
     create_v2_container, create_v2_view, error_view, make_button,
 )
-from cogs.utils.config import ALLOWED_GUILD_IDS
+from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,29 @@ def deleted_text(removed: Dict[str, int]) -> str:
     if not rows:
         return "There were no rows left to delete."
     return f"Deleted {plural(rows, 'row')} from {plural(len(removed), 'table')}."
+
+
+def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView()
+    if banned is None:
+        view.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(f"### Nothing kept\nWordCounter stores nothing about {target.label} any more."),
+            accent_colour=NEUTRAL_COLOR,
+        ))
+        return view
+    view.add_item(discord.ui.Container(
+        discord.ui.TextDisplay(
+            f"### Records WordCounter keeps\nEverything else WordCounter stored about {target.label} has been deleted. "
+            "This record stays, and it will not be deleted on request:\n"
+            f"- A ban from using WordCounter, since <t:{int(banned.added_at)}:D>"
+        ),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay("**From WordCounter's Privacy Policy, section 09: What we keep after a deletion request**"),
+        discord.ui.TextDisplay(">>> " + "\n\n".join(stored_data.KEPT_POLICY)),
+        discord.ui.TextDisplay(f"-# The whole policy: [Privacy Policy](<{PRIVACY_URL}#kept>)"),
+        accent_colour=BRAND_COLOR,
+    ))
+    return view
 
 
 class DataConfirmView(AuthorOnlyView):
@@ -376,6 +399,26 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         ))
         await interaction.followup.send(view=view, file=discord.File(io.BytesIO(data), filename=filename), allowed_mentions=NO_PINGS)
         log.info("Exported the data of %s: %s", target.plain, summary)
+
+    @app_commands.command(name="kept_data", description="Post what WordCounter keeps after a deletion, quoting the Privacy Policy and the GDPR")
+    @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
+    @app_commands.rename(target_id="id")
+    async def kept_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
+        if not await self._owner_only(interaction):
+            return
+        target, problem = await self._target(kind, target_id)
+        if target is None:
+            await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
+            return
+        if not (await self.bot.db.find_by_id(target.id)).empty:
+            await interaction.response.send_message(view=error_view(
+                f"WordCounter still stores data about {target.label} that a deletion removes. "
+                "Delete it with `/owner delete_data` first, then post this.",
+                title="Not deleted yet",
+            ), ephemeral=True)
+            return
+        view = kept_view(target, await self.bot.db.blacklist_entry(target.id))
+        await interaction.response.send_message(view=view, allowed_mentions=NO_PINGS)
 
     @app_commands.command(name="blacklist", description="Ban a user or server from using WordCounter, lift a ban, or list bans")
     @app_commands.describe(

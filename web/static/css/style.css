@@ -1218,6 +1218,9 @@ textarea.input { min-height: 8rem; resize: vertical; line-height: 1.5; }
   color: var(--text);
 }
 .prose h2 .num { font-family: var(--font-mono); font-weight: 500; font-size: 0.875rem; color: var(--accent); }
+.prose h3 { font-size: var(--step-0); color: var(--text); scroll-margin-top: calc(var(--header-h) + var(--s-5)); }
+.prose * + h3 { margin-top: var(--s-5); }
+.prose h3 + p { margin-top: var(--s-2); }
 .prose p + p, .prose p + ul, .prose ul + p, .prose dl + p, .prose p + dl { margin-top: var(--s-3); }
 .prose ul { margin-top: var(--s-3); padding-left: 1.25rem; list-style: disc; }
 .prose li + li { margin-top: var(--s-2); }

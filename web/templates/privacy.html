@@ -9,7 +9,7 @@
     <header class="page-head">
       <p class="eyebrow">Legal</p>
       <h1 class="page-title display">Privacy Policy</h1>
-      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised October 26, 2026</p>
+      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised November 8, 2026</p>
     </header>
 
     <div class="legal">
@@ -34,7 +34,7 @@
       <div>
         <div class="legal__summary">
           <h2>The short version</h2>
-          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. If a server turns on the swear jar, it also keeps each member's swear count, fines, wallet and clean streak. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. We never sell data or use it for ads.</p>
+          <p>WordCounter stores counts, not conversations. It keeps how many words, messages, attachments, emojis and keywords each member sends in each channel, month by month, plus your server's tracking settings. If a server turns on the swear jar, it also keeps each member's swear count, fines, wallet and clean streak. It reads messages to count them, then throws the text away. It never keeps message content, files or direct messages. When you ask us to delete your data, a ban from using WordCounter stays (section 09). We never sell data or use it for ads.</p>
         </div>
 
         <div class="prose">
@@ -89,7 +89,7 @@
               </div>
               <div>
                 <dt>Bans from WordCounter</dt>
-                <dd>If we ban a user or a server from using WordCounter, we keep its ID, whether it's a user or a server, the reason we noted, who added the ban and when, until the ban is lifted. Banning deletes everything else WordCounter stores under that ID, and while the ban lasts WordCounter ignores what they do, so none of it is saved. The one exception: in servers where the swear jar removes swearing, it still removes a banned user's swearing, without fining them or saving anything about it.</dd>
+                <dd>If we ban a user or a server from using WordCounter, we keep its ID, whether it's a user or a server, the reason we noted, who added the ban and when, until the ban is lifted, even if you ask us to delete your data (see section 09). Banning deletes everything else WordCounter stores under that ID, and while the ban lasts WordCounter ignores what they do, so none of it is saved. The one exception: in servers where the swear jar removes swearing, it still removes a banned user's swearing, without fining them or saving anything about it.</dd>
               </div>
             </dl>
             <p>Only in servers that turn on the swear jar, we also store:</p>
@@ -174,8 +174,13 @@
               <li><strong>Re-analysis:</strong> <strong>Allow re-analysis</strong> clears one member's counts so their history can be rebuilt.</li>
               <li><strong>Swear jar:</strong> server admins can reset one member's swear jar or the whole jar in <code>/swearjar settings</code> or on this website.</li>
               <li><strong>Website:</strong> log out at any time and your session cookie is deleted.</li>
-              <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request. You can ask there for a copy of everything stored under your ID too, and we'll send it to you as a text file.</li>
+              <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request. A ban from using WordCounter is kept, as described just below. You can ask there for a copy of everything stored under your ID too, and we'll send it to you as a text file.</li>
             </ul>
+
+            <h3 id="kept">What we keep after a deletion request</h3>
+            {% for paragraph in kept_policy %}
+            <p>{{ paragraph }}</p>
+            {% endfor %}
           </section>
 
           <section id="children">
