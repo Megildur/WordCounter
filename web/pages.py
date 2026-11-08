@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from aiohttp import web
 from discord import AppCommandOptionType, AppCommandType, app_commands
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
+from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
 from web.core import SECURE_COOKIES, client_id, current_user, redirect, render
 from web.developer import developer_profile
@@ -89,7 +90,7 @@ async def terms(request: web.Request) -> web.Response:
 
 @routes.get("/privacy")
 async def privacy(request: web.Request) -> web.Response:
-    return render(request, "privacy.html", "privacy")
+    return render(request, "privacy.html", "privacy", kept_policy=KEPT_POLICY)
 
 
 @routes.get("/invite")

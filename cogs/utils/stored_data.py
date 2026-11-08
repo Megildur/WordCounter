@@ -13,6 +13,19 @@ BLACKLIST_SCHEMA = (
         added_by INTEGER NOT NULL, added_at REAL NOT NULL)""",
 )
 UPLOAD_LIMIT = 8 * 1024 * 1024
+KEPT_POLICY = (
+    "When you ask us to delete your data, we delete everything WordCounter stores under your Discord ID, with one "
+    "exception: a ban from using WordCounter. If we've banned your account or your server, we keep its ID, whether "
+    "it's a user or a server, the reason we noted, who added the ban and when. We keep it for safety and security, "
+    "so a deletion request can't undo the ban or be used to get around it. It will not be deleted on request.",
+    "How long it stays: until we lift the ban, when it's deleted.",
+    "Under the GDPR (and the UK GDPR, which uses the same article numbers), we keep it because of our legitimate "
+    "interest in keeping WordCounter and the servers that use it safe (Article 6(1)(f); Recital 49 recognises "
+    "keeping a service secure against unlawful or malicious actions as a legitimate interest). The right to "
+    "erasure doesn't reach it: it is still needed for the purpose it was collected for (Article 17(1)(a)), and "
+    "keeping a ban in force is an overriding legitimate ground for keeping it (Articles 17(1)(c) and 21(1)). You "
+    "can still ask for a copy of it (Article 15) and complain to your data protection authority (Article 77).",
+)
 
 
 @dataclass
