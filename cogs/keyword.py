@@ -14,7 +14,16 @@ class Keyword(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @keyword.command(name="list", description="View the keywords watched in the server")
+    @keyword.command(
+        name="list",
+        description="View the keywords watched in the server",
+        extras={
+            "details": (
+                "Lists the keywords this server counts, 30 a page. Staff add and remove them in /settings, and "
+                "the keywords tab of /leaderboard shows who says each one most."
+            ),
+        },
+    )
     async def keyword_list(self, interaction: discord.Interaction) -> None:
         if interaction.guild_id is None:
             return

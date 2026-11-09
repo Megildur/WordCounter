@@ -1,29 +1,31 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui with context %}
-{% block title %}All {{ slash|length }} WordCounter commands{% endblock %}
+{% block title %}All {{ slash_total }} WordCounter commands{% endblock %}
 {% block meta_description %}Your guide to every WordCounter command and right-click app: what each one does, its options, who can use it and what WordCounter needs.{% endblock %}
-{% block og_title %}WordCounter commands ({{ slash|length }}){% endblock %}
+{% block og_title %}Your guide to every WordCounter command ({{ slash_total }}){% endblock %}
 {% block og_image %}{{ site_url }}/static/img/social/commands.png?v={{ social_version }}{% endblock %}
 {% block og_image_alt %}WordCounter, an orange pixel-art flip counter, floating above Earth beside its name and the words Your guide to every command{% endblock %}
 
-{% block content %}
-<div class="page">
-  <div class="wrap wrap--mid">
-    <header class="page-head">
-{{ ui.pixel_banner("commands.png") }}
-      <p class="eyebrow">Reference</p>
-      <h1 class="page-title display">Commands</h1>
-      <p class="page-lede">{{ slash|length }} slash commands and {{ apps|length }} right-click apps. Commands marked Manage Server only show up for members with that permission.</p>
-    </header>
-
-    <div class="cmd-list">
-      {% for cmd in slash %}
+{% macro entry(cmd) %}
         <article class="cmd">
           <div class="cmd__head">
             <h2 class="cmd__name">{{ cmd.name }}</h2>
-            {% if cmd.managers_only %}<span class="tag tag--accent">Manage Server</span>{% else %}<span class="tag">Everyone</span>{% endif %}
+            <span class="cmd__tags">
+              {% if cmd.reach == "anywhere" %}
+                <span class="reach reach--anywhere" title="Works in DMs, group chats and servers without WordCounter once you add it to your apps">Works anywhere</span>
+              {% else %}
+                <span class="reach reach--server" title="Only works in servers that have WordCounter">Server with WordCounter</span>
+              {% endif %}
+              <span class="cmd__module">{{ cmd.module }}</span>
+            </span>
           </div>
-          <p class="cmd__desc">{{ cmd.description }}</p>
+          <p class="cmd__desc">{{ cmd.details or cmd.description }}</p>
+          {% if cmd.user_perms or cmd.bot_perms %}
+            <dl class="cmd__perms" aria-label="Permissions for {{ cmd.name }}">
+              {% if cmd.user_perms %}<div><dt>You need</dt><dd>{{ cmd.user_perms }}</dd></div>{% endif %}
+              {% if cmd.bot_perms %}<div><dt>WordCounter needs</dt><dd>{{ cmd.bot_perms }}</dd></div>{% endif %}
+            </dl>
+          {% endif %}
           {% if cmd.options %}
             <dl class="cmd__opts" aria-label="Options for {{ cmd.name }}">
               {% for opt in cmd.options %}
@@ -39,21 +41,73 @@
             </dl>
           {% endif %}
         </article>
-      {% endfor %}
-    </div>
+{% endmacro %}
 
-    <h2 class="subhead display section-gap">Right-click apps</h2>
-    <div class="cmd-list">
-      {% for app in apps %}
-        <article class="cmd">
-          <div class="cmd__head">
-            <h3 class="cmd__name">{{ app.name }}</h3>
-            <span class="tag">Everyone</span>
-          </div>
-          <p class="cmd__desc">{{ app.place }}, then Apps &gt; {{ app.name }}.</p>
-        </article>
-      {% endfor %}
-    </div>
+{% block content %}
+<div class="page">
+  <div class="wrap wrap--mid">
+    <header class="page-head">
+{{ ui.pixel_banner("commands.png") }}
+      <p class="eyebrow">Reference</p>
+      <h1 class="page-title display">Commands</h1>
+      <p class="page-lede">Your guide to all {{ slash_total }} slash commands and {{ apps_total }} right-click apps, the same guide <code>/help</code> opens in Discord.</p>
+      <dl class="reach-key">
+        <div>
+          <dt><span class="reach reach--anywhere">Works anywhere</span></dt>
+          <dd>Add WordCounter to your apps and use these in DMs, group chats and servers without WordCounter.</dd>
+        </div>
+        <div>
+          <dt><span class="reach reach--server">Server with WordCounter</span></dt>
+          <dd>These only work in servers that have WordCounter. <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer">Add it to a server</a>.</dd>
+        </div>
+        <div>
+          <dt><span class="perm-tag">Permissions</span></dt>
+          <dd>A command that's only for staff says which permission you need. Every command needs WordCounter to have View Channel, Send Messages and Embed Links where you use it, and each one lists anything else it needs. The invite link gives WordCounter all of these.</dd>
+        </div>
+      </dl>
+    </header>
+
+    <form class="cmd-filter" method="get" action="/commands" role="search">
+      <label for="command-search" class="sr-only">Search commands</label>
+      <input type="search" id="command-search" name="q" class="input" value="{{ query }}" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Search, e.g. swear or keyword">
+      <label for="command-module" class="sr-only">Module</label>
+      <select id="command-module" name="module" class="input">
+        <option value="">All modules ({{ total }})</option>
+        {% for mod in modules %}
+          <option value="{{ mod.key }}"{% if mod.key == module %} selected{% endif %}>{{ mod.name }} ({{ mod.count }})</option>
+        {% endfor %}
+      </select>
+      <label class="cmd-filter__check"><input type="checkbox" name="anywhere" value="1"{% if anywhere %} checked{% endif %}> Only "Works anywhere" ({{ anywhere_count }})</label>
+      <div class="cmd-filter__actions">
+        <button type="submit" class="btn btn--primary">Filter</button>
+        {% if filtered %}<a class="btn btn--ghost" href="/commands">Clear</a>{% endif %}
+      </div>
+    </form>
+
+    <p class="results" aria-live="polite">
+      <span>Showing <b>{{ shown }}</b> of {{ total }}{% if module_name %} in <b>{{ module_name }}</b>{% endif %}{% if query %} matching <b>{{ query }}</b>{% endif %}</span>
+    </p>
+
+    {% if slash %}
+      <div class="cmd-list">
+        {% for cmd in slash %}{{ entry(cmd) }}{% endfor %}
+      </div>
+    {% endif %}
+
+    {% if apps %}
+      <h2 class="subhead display section-gap">Right-click apps</h2>
+      <div class="cmd-list">
+        {% for app in apps %}{{ entry(app) }}{% endfor %}
+      </div>
+    {% endif %}
+
+    {% if not shown %}
+      <div class="empty">
+        <p class="empty__title">Nothing matches that.</p>
+        <p>Try a shorter word, or search all modules.</p>
+        <a class="btn btn--ghost" href="/commands">Clear search and filter</a>
+      </div>
+    {% endif %}
 
     <aside class="callout" aria-labelledby="dash-title">
       <div>

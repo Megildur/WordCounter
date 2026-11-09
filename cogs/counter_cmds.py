@@ -578,7 +578,23 @@ class Counter_Cmds(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="settings", description="Choose what gets tracked, manage keywords and reset data")
+    @app_commands.command(
+        name="settings",
+        description="Choose what gets tracked, manage keywords and reset data",
+        extras={
+            "details": (
+                "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an "
+                "ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category "
+                "covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset "
+                "counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the "
+                "whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the "
+                "person who opened it can press its buttons."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+        },
+    )
     @app_commands.default_permissions(manage_guild=True)
     async def settings_command(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)
@@ -591,7 +607,20 @@ class Counter_Cmds(commands.Cog):
         menu.build_ui()
         await interaction.response.send_message(view=menu, ephemeral=True)
 
-    @app_commands.command(name="leaderboard", description="Leaderboards for words, messages, attachments, emojis and keywords")
+    @app_commands.command(
+        name="leaderboard",
+        description="Leaderboards for words, messages, attachments, emojis and keywords",
+        extras={
+            "details": (
+                "Shows who leads the server, ten members a page, with medals for the top three. Buttons switch "
+                "between words, messages, attachments (files, stickers and links), emojis, keywords and swears, "
+                "and Previous and Next page through. The keywords tab shows who says each tracked keyword most. "
+                "Pick a channel to rank only what was said there, with that channel's month-by-month history "
+                "under the list. Members who left show by name. Only the person who ran it can press its "
+                "buttons, and nobody is pinged. It works once tracking is on in /settings."
+            ),
+        },
+    )
     @app_commands.describe(channel="Only count activity in this channel")
     async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
         if interaction.guild is None:

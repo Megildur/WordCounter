@@ -287,7 +287,25 @@ class HelpCog(commands.Cog, name="Help"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="help", description="How to use WordCounter")
+    @app_commands.command(
+        name="help",
+        description="How to use WordCounter",
+        extras={
+            "details": (
+                "Opens WordCounter's guide. It starts on a welcome page under WordCounter's banner: what it "
+                "counts, how to find your way, and good commands to start with for everyone and for server "
+                "staff. Previous and Next flip through the pages on stats and leaderboards, settings, counting "
+                "past messages, the swear jar and WordCounter itself, and every page has Add to server, Support "
+                "server and Website buttons. Only you can turn the pages. Choose ephemeral to see it privately. "
+                "When WordCounter joins a server, it posts a welcome with the same banner in the server's system "
+                "channel, or the first channel where it can attach a picture, pointing staff to /settings and "
+                "/help, with Botzilla and its game from the same lab. Nobody is pinged."
+            ),
+            "bot_perms": (
+                "Attach Files, for the banner"
+            ),
+        },
+    )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(ephemeral="Only show the help menu to you (default: no)")
@@ -298,7 +316,22 @@ class HelpCog(commands.Cog, name="Help"):
             interaction, ephemeral=ephemeral, file=picture_file(HELP_BANNER), allowed_mentions=NO_PINGS,
         )
 
-    @app_commands.command(name="advertisement", description="Post a card about WordCounter with invite links")
+    @app_commands.command(
+        name="advertisement",
+        description="Post a card about WordCounter with invite links",
+        extras={
+            "details": (
+                "Posts a card about WordCounter for anyone to see: a pixel-art poster of WordCounter over Earth "
+                "with signs for what it counts, a short pitch, a line on each part of it, and Add to server, "
+                "Support server and Website buttons. Anyone can post it, to show a friend or a server what "
+                "WordCounter does. It's your reply to the command, so Discord shows who posted it. Nobody is "
+                "pinged."
+            ),
+            "bot_perms": (
+                "Attach Files, for the poster"
+            ),
+        },
+    )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:

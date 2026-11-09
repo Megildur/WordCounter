@@ -26,6 +26,36 @@ OPTION_TYPES = {
 APP_PLACES = {AppCommandType.user: "Right-click a member", AppCommandType.message: "Right-click a message"}
 
 
+MODULES = {
+    "leaderboard": "Stats",
+    "stats": "Stats",
+    "keyword": "Keywords",
+    "settings": "Settings",
+    "analyze_chat": "Past messages",
+    "swearjar": "Swear jar",
+    "help": "About WordCounter",
+    "advertisement": "About WordCounter",
+}
+APP_MODULES = {"Message Word Count": "Stats", "User Stats": "Stats", "Swear Jar": "Swear jar"}
+
+
+def module_key(name: str) -> str:
+    return name.lower().replace(" ", "-")
+
+
+def works_anywhere(*items) -> bool:
+    for item in items:
+        installs = getattr(item, "allowed_installs", None)
+        if installs is not None:
+            return bool(installs.user)
+    return False
+
+
+def extras_of(item) -> Dict[str, str]:
+    extras = getattr(item, "extras", None) or {}
+    return {key: str(extras.get(key) or "") for key in ("details", "user_perms", "bot_perms")}
+
+
 def command_reference(bot) -> Dict[str, List[Dict[str, Any]]]:
     slash = []
     for command in bot.tree.walk_commands():
@@ -33,10 +63,15 @@ def command_reference(bot) -> Dict[str, List[Dict[str, Any]]]:
             continue
         root = command.root_parent or command
         permissions = command.default_permissions or root.default_permissions
+        module = MODULES.get(root.name, "Other")
         slash.append({
             "name": f"/{command.qualified_name}",
             "description": command.description,
             "managers_only": bool(permissions and permissions.manage_guild),
+            "reach": "anywhere" if works_anywhere(command, root) else "server",
+            "module": module,
+            "module_key": module_key(module),
+            **extras_of(command),
             "options": [
                 {
                     "name": parameter.display_name,
@@ -47,12 +82,60 @@ def command_reference(bot) -> Dict[str, List[Dict[str, Any]]]:
                 for parameter in command.parameters
             ],
         })
-    apps = [
-        {"name": menu.name, "place": place}
-        for kind, place in APP_PLACES.items()
-        for menu in bot.tree.get_commands(type=kind)
-    ]
+    apps = []
+    for kind, place in APP_PLACES.items():
+        for menu in bot.tree.get_commands(type=kind):
+            module = APP_MODULES.get(menu.name, "Other")
+            apps.append({
+                "name": menu.name,
+                "place": place,
+                "description": f"{place}, then Apps > {menu.name}.",
+                "reach": "anywhere" if works_anywhere(menu) else "server",
+                "module": module,
+                "module_key": module_key(module),
+                **extras_of(menu),
+            })
     return {"slash": sorted(slash, key=lambda item: item["name"]), "apps": apps}
+
+
+def command_filters(request: web.Request, reference: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    everything = reference["slash"] + reference["apps"]
+    query = request.query.get("q", "").strip()[:80]
+    wanted = request.query.get("module", "")
+    anywhere = request.query.get("anywhere") == "1"
+    modules: Dict[str, Dict[str, Any]] = {}
+    for item in everything:
+        entry = modules.setdefault(item["module_key"], {"key": item["module_key"], "name": item["module"], "count": 0})
+        entry["count"] += 1
+    if wanted not in modules:
+        wanted = ""
+    needle = query.casefold()
+
+    def shown(item: Dict[str, Any]) -> bool:
+        if wanted and item["module_key"] != wanted:
+            return False
+        if anywhere and item["reach"] != "anywhere":
+            return False
+        haystack = " ".join((item["name"], item["description"], item["details"])).casefold()
+        return not needle or needle in haystack
+
+    slash = [item for item in reference["slash"] if shown(item)]
+    apps = [item for item in reference["apps"] if shown(item)]
+    return {
+        "slash": slash,
+        "apps": apps,
+        "slash_total": len(reference["slash"]),
+        "apps_total": len(reference["apps"]),
+        "total": len(everything),
+        "shown": len(slash) + len(apps),
+        "modules": sorted(modules.values(), key=lambda entry: entry["name"]),
+        "module": wanted,
+        "module_name": modules[wanted]["name"] if wanted else "",
+        "query": query,
+        "anywhere": anywhere,
+        "anywhere_count": sum(1 for item in everything if item["reach"] == "anywhere"),
+        "filtered": bool(query or wanted or anywhere),
+    }
 
 
 @routes.get("/")
@@ -79,7 +162,8 @@ async def home(request: web.Request) -> web.Response:
 
 @routes.get("/commands")
 async def commands_page(request: web.Request) -> web.Response:
-    return render(request, "commands.html", "commands", **command_reference(request.app["bot"]))
+    reference = command_reference(request.app["bot"])
+    return render(request, "commands.html", "commands", **command_filters(request, reference))
 
 
 @routes.get("/terms")

@@ -104,8 +104,26 @@ class Counter(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.word_count_menu = app_commands.ContextMenu(name="Message Word Count", callback=self.message_word_count)
-        self.user_stats_menu = app_commands.ContextMenu(name="User Stats", callback=self.user_stats)
+        self.word_count_menu = app_commands.ContextMenu(
+            name="Message Word Count",
+            callback=self.message_word_count,
+            extras={
+                "details": (
+                    "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot "
+                    "messages aren't counted."
+                ),
+            },
+        )
+        self.user_stats_menu = app_commands.ContextMenu(
+            name="User Stats",
+            callback=self.user_stats,
+            extras={
+                "details": (
+                    "Right-click a member, then Apps > User Stats, for the same totals and monthly pages as "
+                    "/stats user."
+                ),
+            },
+        )
         self.bot.tree.add_command(self.word_count_menu)
         self.bot.tree.add_command(self.user_stats_menu)
 
@@ -151,7 +169,18 @@ class Counter(commands.Cog):
     async def user_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
         await self._send_user_stats(interaction, user)
 
-    @stats.command(name="user", description="Show detailed statistics for a user")
+    @stats.command(
+        name="user",
+        description="Show detailed statistics for a user",
+        extras={
+            "details": (
+                "A member's totals at the top (words, messages, attachments, emojis and keywords), then a page "
+                "for each month with a channel-by-channel breakdown. Pick a month from the menu or page through "
+                "with Previous and Next. Only you can use the controls. It works once tracking is on in "
+                "/settings."
+            ),
+        },
+    )
     @app_commands.describe(user="The user to show statistics for")
     async def user_stats_slash(self, interaction: discord.Interaction, user: discord.Member) -> None:
         await self._send_user_stats(interaction, user)

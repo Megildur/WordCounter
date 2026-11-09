@@ -767,7 +767,16 @@ class SwearJar(commands.Cog):
         self.spam_until: Dict[Tuple[int, int], float] = {}
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
         self.last_daily = 0.0
-        self.fine_menu = app_commands.ContextMenu(name="Swear Jar", callback=self.message_fine)
+        self.fine_menu = app_commands.ContextMenu(
+            name="Swear Jar",
+            callback=self.message_fine,
+            extras={
+                "details": (
+                    "Right-click a message, then Apps > Swear Jar, to see what it was fined and for how many "
+                    "swears."
+                ),
+            },
+        )
         self.bot.tree.add_command(self.fine_menu)
 
     async def cog_load(self) -> None:
@@ -1026,7 +1035,17 @@ class SwearJar(commands.Cog):
     async def _member_data(self, guild_id: int, user_id: int) -> Dict[str, Any]:
         return await self.bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
 
-    @jar.command(name="wallet", description="See a member's swear jar wallet, debt and clean streak")
+    @jar.command(
+        name="wallet",
+        description="See a member's swear jar wallet, debt and clean streak",
+        extras={
+            "details": (
+                "Shows a member's swear jar: what they owe or have saved, their clean streak and how many swears "
+                "they've been fined for. Leave member empty to see your own. It works once staff turn the jar on "
+                "in /swearjar settings."
+            ),
+        },
+    )
     @app_commands.describe(member="Whose wallet to show (yours if you leave it empty)")
     async def wallet(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
         settings = await self._enabled_settings(interaction)
@@ -1048,7 +1067,17 @@ class SwearJar(commands.Cog):
             )
         )
 
-    @jar.command(name="top", description="Who swears most, owes most, saved most and has the longest clean streak")
+    @jar.command(
+        name="top",
+        description="Who swears most, owes most, saved most and has the longest clean streak",
+        extras={
+            "details": (
+                "Four rankings: who swears most, who owes most, who has saved most and who has the longest clean "
+                "streak, with buttons to switch between them and pages of ten. Members who left show by name, "
+                "and nobody is pinged."
+            ),
+        },
+    )
     async def top(self, interaction: discord.Interaction) -> None:
         settings = await self._enabled_settings(interaction)
         if settings is None:
@@ -1057,7 +1086,17 @@ class SwearJar(commands.Cog):
         await paginator.load("swears")
         await paginator.start(interaction)
 
-    @jar.command(name="goal", description="See what the swear jar is saving up for")
+    @jar.command(
+        name="goal",
+        description="See what the swear jar is saving up for",
+        extras={
+            "details": (
+                "What the swear jar is saving up for, like a movie night, and how close it is. When the jar "
+                "collects enough, WordCounter posts once in the goal's channel, and pings @everyone there only "
+                "if staff chose that."
+            ),
+        },
+    )
     async def goal(self, interaction: discord.Interaction) -> None:
         settings = await self._enabled_settings(interaction)
         if settings is None:
@@ -1083,7 +1122,27 @@ class SwearJar(commands.Cog):
             )
         await interaction.response.send_message(view=view)
 
-    @jar.command(name="settings", description="Turn the swear jar on and choose fines, words, channels, roles and goals")
+    @jar.command(
+        name="settings",
+        description="Turn the swear jar on and choose fines, words, channels, roles and goals",
+        extras={
+            "details": (
+                "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server "
+                "tokens and what each tier costs, add, remove or move words on the list, choose where it listens "
+                "with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick "
+                "the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by "
+                "tier, and debt is only paid back by clean days. It stays off until you turn it on."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+            "bot_perms": (
+                "Add Reactions for the 🫙 reaction, Manage Messages for delete mode, Manage Roles for the Potty "
+                "Mouth and clean streak roles (its role above them), and Mention Everyone if a goal pings "
+                "@everyone"
+            ),
+        },
+    )
     @app_commands.default_permissions(manage_guild=True)
     async def settings(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)
