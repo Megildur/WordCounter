@@ -22,7 +22,7 @@ from cogs.utils.components import (
     format_channel_or_category,
     make_button,
     manager_check_error,
-    member_name,
+    member_names,
     rank_prefix,
     tab_rows,
 )
@@ -192,9 +192,10 @@ class JarTopPaginator(ButtonPaginator):
             return f"{value:,} day(s)"
         return money(self.settings, value)
 
-    def format_page(self, chunk: List[Tuple[int, int]]) -> discord.ui.Container:
+    async def format_page(self, chunk: List[Tuple[int, int]]) -> discord.ui.Container:
+        names = await member_names(self.bot, self.guild, [uid for uid, _ in chunk])
         lines = [
-            f"{rank_prefix(rank)} **{member_name(self.guild, uid)}** · {self._value(value)}"
+            f"{rank_prefix(rank)} **{names[uid]}** · {self._value(value)}"
             for rank, (uid, value) in enumerate(chunk, start=self.current_page * 10 + 1)
         ]
         return create_v2_container(
