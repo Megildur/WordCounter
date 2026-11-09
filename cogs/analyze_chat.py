@@ -31,7 +31,7 @@ from cogs.utils.components import (
 )
 from cogs.utils.counting import MessageStats
 from cogs.utils.jar import JAR_OFF_MESSAGE, jar_checks
-from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, matcher_for
+from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, languages_for, matcher_for
 
 log = logging.getLogger(__name__)
 
@@ -965,7 +965,9 @@ class AnalyzeChat(commands.Cog):
                 coverage = await self._coverage(guild.id, record["cutoff"])
             run = CrawlRun(guild.id, record, coverage)
             if run.counts_swears:
-                run.matcher = await asyncio.to_thread(matcher_for, tuple(await self.bot.db.jar_word_overrides(guild.id)))
+                overrides = tuple(await self.bot.db.jar_word_overrides(guild.id))
+                languages = languages_for(await self.bot.db.jar_settings(guild.id))
+                run.matcher = await asyncio.to_thread(matcher_for, overrides, languages)
             progress = Progress(
                 started=time.monotonic() - max(0.0, time.time() - record["started_at"]),
                 read=record["messages_read"],

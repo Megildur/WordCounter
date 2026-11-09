@@ -93,12 +93,32 @@
 
 <section class="panel" aria-labelledby="jar-words-title">
   <h2 id="jar-words-title">Words</h2>
-  <p>The default list has {{ word_count|num }} English and Polish swears and slurs in three tiers. Add your own words, move words to another tier, or take them off. Matching ignores case and accents, and catches leetspeak like <code>sh!t</code>, stretched letters and spaced-out letters like <code>f u c k</code>.</p>
-  {% if has_overrides %}<p class="form-hint">Your changes: {{ words.added|num }} added, {{ words.moved|num }} moved, {{ words.removed|length|num }} taken off. The jar fines {{ words.total|num }} words now.</p>{% endif %}
+  <p>The default list has {% for lang in words.languages %}{{ lang.size|num }} {{ lang.name }}{% if not loop.last %} and {% endif %}{% endfor %} swears and slurs in three tiers. Turn on the languages your server speaks: words in a language that's off aren't fined. Add your own words, move words to another tier, or take them off. Matching ignores case and accents, and catches leetspeak like <code>sh!t</code>, stretched letters and spaced-out letters like <code>f u c k</code>.</p>
+  {% for lang in words.languages %}
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="language">
+      <input type="hidden" name="lang" value="{{ lang.code }}">
+      <input type="hidden" name="state" value="{{ 'off' if lang.on else 'on' }}">
+      <input type="hidden" name="tab" value="{{ words.tab }}">
+      <p>{{ lang.name }} swears are <strong>{{ "on" if lang.on else "off" }}</strong>.{% if not lang.on and lang.code != "en" %} <span class="form-hint">Off unless you turn it on.</span>{% endif %}</p>
+      <div class="form-actions">
+        <button type="submit" class="btn {{ 'btn--ghost' if lang.on else 'btn--primary' }}">{{ "Turn off" if lang.on else "Turn on" }} {{ lang.name }}</button>
+      </div>
+    </form>
+  {% endfor %}
+  {% if has_overrides %}<p class="form-hint">Your changes: {{ words.added|num }} added, {{ words.moved|num }} moved, {{ words.removed|length|num }} taken off in {{ words.tab_name }}. The jar fines {{ words.total|num }} words now.</p>{% endif %}
 
   <h3 class="panel__sub">On the list</h3>
+  <nav class="segmented" aria-label="Word lists">
+    {% for item in words.tabs %}
+      <a href="?lang={{ item.key }}#jar-words-title" {% if item.key == words.tab %}aria-current="true"{% endif %}>{{ item.name }} ({{ item.count|num }}){% if item.off %} &middot; off{% endif %}</a>
+    {% endfor %}
+  </nav>
+  {% if words.tab_off %}<p class="form-hint">{{ words.tab_name }} is off, so these words aren't fined. You can still change them, ready for when it's on.</p>{% endif %}
   <form method="post" class="form">
     {{ ui.csrf_field() }}
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <p class="form-hint">A * means endings count too, so <code>yeet*</code> also catches yeeted. A word between stars, like <code>*yeet*</code>, also counts inside longer words. Tick words, then move them or take them off the list.</p>
     {% for tier in tiers %}
       <fieldset class="word-tier">
@@ -133,6 +153,7 @@
     <form method="post" class="form">
       {{ ui.csrf_field() }}
       <input type="hidden" name="action" value="words_back">
+      <input type="hidden" name="tab" value="{{ words.tab }}">
       <fieldset class="word-tier">
         <legend><span class="word-tier__count">{{ ui.counted(words.removed|length, "default word") }} the jar ignores</span></legend>
         <div class="word-grid">
@@ -149,10 +170,11 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="words_add">
+    <input type="hidden" name="tab" value="yours">
     <div class="form-row">
       <label for="jar-words">Words</label>
       <textarea class="input" id="jar-words" name="words" maxlength="2000" spellcheck="false" placeholder="pog, yeet*"></textarea>
-      <p class="form-hint">Separate them with commas or new lines. A word that's already on the list moves to the tier you pick.</p>
+      <p class="form-hint">Separate them with commas or new lines. A word that's already on the list moves to the tier you pick. Your words count whichever languages are on.</p>
     </div>
     <fieldset class="tier-pick">
       <legend class="form-label">Tier</legend>
@@ -168,6 +190,7 @@
     <form method="post" class="form">
       {{ ui.csrf_field() }}
       <input type="hidden" name="action" value="words_restore">
+      <input type="hidden" name="tab" value="{{ words.tab }}">
       {{ ui.confirm("jar-restore-confirm", "Delete my words and put the default list back the way it was.") }}
       <div class="form-actions"><button type="submit" class="btn btn--danger-solid">Restore the default list</button></div>
     </form>

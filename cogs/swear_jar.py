@@ -38,7 +38,9 @@ from cogs.utils.jar import (
     SPAM_PENALTY,
     SPAM_WINDOW,
     credit_for,
+    YOURS,
     days_to_clear,
+    default_counts,
     jar_checks,
     listed_words,
     money,
@@ -52,6 +54,7 @@ from cogs.utils.jar import (
     removed_words,
     role_problem,
     shown_word,
+    tab_name,
     unit_label,
     utc_day,
     week_index,
@@ -62,15 +65,15 @@ from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from cogs.utils.swear_filter import (
-    DEFAULT_ENTRIES,
     DEFAULT_KEYS,
     MAX_FINED_PER_MESSAGE,
     SwearMatcher,
     fine_for,
+    languages_for,
     matcher_for,
 )
 from cogs.utils.swear_store import DAY_HISTORY_DAYS
-from cogs.utils.swear_words import TIER_NAMES
+from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, TIER_NAMES
 from paginator import ButtonPaginator
 
 log = logging.getLogger(__name__)
@@ -335,11 +338,28 @@ class JarSettingsView(SectionMenu):
         removed = [word for _, word, _ in removed_words(self.overrides)]
         moved = [f"{shown_word(key)} → {TIER_NAMES[tier]}" for key, tier in moved_words(self.overrides).items()]
         custom = [f"{key} ({TIER_NAMES[tier]})" for key, tier, gone in self.overrides if not gone and key not in DEFAULT_KEYS]
+        counts = default_counts()
+        sizes = " and ".join(f"**{counts[code]}** {name}" for code, (name, _) in LANGUAGES.items())
         container.add_item(
             discord.ui.TextDisplay(
-                f"### Words\nThe default list has **{len(DEFAULT_ENTRIES)}** English and Polish swear words and slurs in three tiers. "
-                "Matching ignores case and accents, and catches leetspeak like `sh!t`, stretched letters and spacing like `f u c k`. "
-                "Press **View the list** to see every word.\n\n"
+                f"### Words\nThe default list has {sizes} swear words and slurs in three tiers. Turn on the languages your "
+                "server speaks: words in a language that's off aren't fined. Matching ignores case and accents, and catches "
+                "leetspeak like `sh!t`, stretched letters and spacing like `f u c k`."
+            )
+        )
+        for code, (name, _) in LANGUAGES.items():
+            on = bool(self.settings.get(LANGUAGE_COLUMNS[code]))
+            note = "" if on or code == "en" else "\n-# Off unless you turn it on"
+            container.add_item(discord.ui.Section(
+                discord.ui.TextDisplay(f"**{name} swears:** {'On' if on else 'Off'}{note}"),
+                accessory=make_button(
+                    "Turn off" if on else "Turn on",
+                    discord.ButtonStyle.secondary if on else discord.ButtonStyle.success,
+                    self._toggle_language(code),
+                ),
+            ))
+        container.add_item(
+            discord.ui.TextDisplay(
                 f"**Your words ({len(custom)}):** {word_list(custom)}\n"
                 f"**Removed from the default list ({len(removed)}):** {word_list(removed)}\n"
                 f"**Moved to another tier ({len(moved)}):** {word_list(moved)}"
@@ -363,7 +383,8 @@ class JarSettingsView(SectionMenu):
         )
         container.add_item(
             discord.ui.ActionRow(
-                make_button("View the list", discord.ButtonStyle.primary, self._view_list),
+                *(make_button(f"View {name} words", discord.ButtonStyle.primary, self._view_list(code)) for code, (name, _) in LANGUAGES.items()),
+                make_button("View your words", discord.ButtonStyle.primary, self._view_list(YOURS)),
                 make_button("Restore defaults", discord.ButtonStyle.danger, self._prompt("restore_words"), disabled=not self.overrides),
             )
         )
@@ -626,20 +647,43 @@ class JarSettingsView(SectionMenu):
         self._done("The default word list is back.")
         await self.refresh_and_edit(interaction)
 
-    async def _view_list(self, interaction: discord.Interaction) -> None:
-        pages = []
-        for tier, words in listed_words(self.overrides).items():
-            for start in range(0, max(1, len(words)), WORDS_PER_PAGE):
-                chunk = [f"{word} ({note})" if note else word for _, word, note in words[start:start + WORDS_PER_PAGE]]
-                pages.append(
-                    create_v2_container(
-                        title=f"{TIER_NAMES[tier]}: {money(self.settings, prices(self.settings)[tier])} each",
-                        description=word_list(chunk, WORDS_PER_PAGE) if chunk else "No words in this tier.",
-                        footer=f"{len(words)} word(s) in this tier · a * means endings count too, and *word* also counts inside longer words",
-                        color=BRAND_COLOR,
+    def _toggle_language(self, code: str) -> Callback:
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            column = LANGUAGE_COLUMNS[code]
+            turning_on = not self.settings.get(column)
+            name = LANGUAGES[code][0]
+            if not turning_on and not any(self.settings.get(other) for other in LANGUAGE_COLUMNS.values() if other != column):
+                self._done(f"Keep at least one language on. Turn the other one on before turning {name} off.", WARNING_COLOR)
+            else:
+                await self.bot.db.jar_update(self.guild.id, **{column: int(turning_on)})
+                self._done(f"{name} swears are fined now." if turning_on else f"{name} swears aren't fined any more.")
+            await self.refresh_and_edit(interaction)
+
+        return callback
+
+    def _view_list(self, tab: str) -> Callback:
+        async def callback(interaction: discord.Interaction) -> None:
+            name = tab_name(tab)
+            off = tab in LANGUAGE_COLUMNS and not self.settings.get(LANGUAGE_COLUMNS[tab])
+            pages = []
+            for tier, words in listed_words(self.overrides, tab).items():
+                for start in range(0, max(1, len(words)), WORDS_PER_PAGE):
+                    chunk = [f"{word} ({note})" if note else word for _, word, note in words[start:start + WORDS_PER_PAGE]]
+                    footer = f"{len(words)} word(s) in this tier · a * means endings count too, and *word* also counts inside longer words"
+                    if off:
+                        footer = f"{name} is off, so these aren't fined · " + footer
+                    pages.append(
+                        create_v2_container(
+                            title=f"{name}, {TIER_NAMES[tier]}: {money(self.settings, prices(self.settings)[tier])} each",
+                            description=word_list(chunk, WORDS_PER_PAGE) if chunk else "No words in this tier.",
+                            footer=footer,
+                            color=NEUTRAL_COLOR if off else BRAND_COLOR,
+                        )
                     )
-                )
-        await ButtonPaginator(pages, author_id=interaction.user.id).start(interaction, ephemeral=True)
+            await ButtonPaginator(pages, author_id=interaction.user.id).start(interaction, ephemeral=True)
+
+        return callback
 
     def _on_rule(self, rule: Optional[str]) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
@@ -812,7 +856,7 @@ class SwearJar(commands.Cog):
             live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
             state = JarState(
                 settings,
-                await asyncio.to_thread(matcher_for, overrides),
+                await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
                 await db.jar_channel_rules(guild_id),
                 watched,
                 ignored,
@@ -1157,7 +1201,8 @@ class SwearJar(commands.Cog):
         extras={
             "details": (
                 "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server "
-                "tokens and what each tier costs, add, remove or move words on the list, choose where it listens "
+                "tokens and what each tier costs, turn English and Polish swears on or off (English is on and "
+                "Polish off until you choose), add, remove or move words on the list, choose where it listens "
                 "with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick "
                 "the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by "
                 "tier, and debt is only paid back by clean days. It stays off until you turn it on."

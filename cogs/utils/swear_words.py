@@ -59,4 +59,5 @@ POLISH: Dict[int, Tuple[str, ...]] = {
 
 SAFE_WORDS: FrozenSet[str] = frozenset({"shiitake", "shiitakes", "pissarro", "crappie", "crappies"})
 
-DEFAULT_WORDS: Dict[int, Tuple[str, ...]] = {tier: ENGLISH[tier] + POLISH[tier] for tier in (MILD, EXPLICIT, SLUR)}
+LANGUAGES: Dict[str, Tuple[str, Dict[int, Tuple[str, ...]]]] = {"en": ("English", ENGLISH), "pl": ("Polish", POLISH)}
+LANGUAGE_COLUMNS: Dict[str, str] = {"en": "english", "pl": "polish"}

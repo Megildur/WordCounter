@@ -4,8 +4,8 @@ import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 import discord
 from cogs.utils.components import channel_family, check_channel_with_config
-from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, build_entries, custom_key, default_keys_for, fold
-from cogs.utils.swear_words import EXPLICIT, MILD, SLUR
+from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, DEFAULT_LANGUAGE, build_entries, custom_key, default_keys_for, fold
+from cogs.utils.swear_words import EXPLICIT, LANGUAGES, MILD, SLUR
 
 ACTIVE_DAY_MESSAGES = 5
 CLEAN_DAY_CREDIT = 1
@@ -157,10 +157,32 @@ def moved_words(overrides: Iterable[Override]) -> Dict[str, int]:
     }
 
 
-def listed_words(overrides: Sequence[Override]) -> Dict[int, List[ListedWord]]:
+YOURS = "yours"
+WORD_TABS = (*LANGUAGES, YOURS)
+
+
+def word_tab(value: Optional[str]) -> str:
+    return value if value in WORD_TABS else next(iter(LANGUAGES))
+
+
+def tab_name(tab: str) -> str:
+    return LANGUAGES[tab][0] if tab in LANGUAGES else "Your words"
+
+
+def in_tab(key: str, tab: Optional[str]) -> bool:
+    if tab is None:
+        return True
+    if tab == YOURS:
+        return key not in DEFAULT_LANGUAGE
+    return DEFAULT_LANGUAGE.get(key) == tab
+
+
+def listed_words(overrides: Sequence[Override], tab: Optional[str] = None) -> Dict[int, List[ListedWord]]:
     moved = moved_words(overrides)
     tiers: Dict[int, List[ListedWord]] = {MILD: [], EXPLICIT: [], SLUR: []}
     for entry in sorted(build_entries(overrides), key=lambda entry: fold(entry.word)):
+        if not in_tab(entry.key, tab):
+            continue
         if entry.key not in DEFAULT_TIERS:
             note = "yours"
         elif entry.key in moved:
@@ -171,12 +193,26 @@ def listed_words(overrides: Sequence[Override]) -> Dict[int, List[ListedWord]]:
     return tiers
 
 
-def removed_words(overrides: Iterable[Override]) -> List[ListedWord]:
+def removed_words(overrides: Iterable[Override], tab: Optional[str] = None) -> List[ListedWord]:
     return [
         (key, shown_word(key), SHORT_TIER_NAMES[DEFAULT_TIERS[key]])
         for key, _, gone in overrides
-        if gone and key in DEFAULT_TIERS
+        if gone and key in DEFAULT_TIERS and in_tab(key, tab)
     ]
+
+
+def tab_counts(overrides: Sequence[Override]) -> Dict[str, int]:
+    counts = dict.fromkeys(WORD_TABS, 0)
+    for entry in build_entries(overrides):
+        counts[YOURS if entry.key not in DEFAULT_LANGUAGE else DEFAULT_LANGUAGE[entry.key]] += 1
+    return counts
+
+
+def default_counts() -> Dict[str, int]:
+    counts = dict.fromkeys(LANGUAGES, 0)
+    for entry in DEFAULT_ENTRIES:
+        counts[entry.language] += 1
+    return counts
 
 
 def key_changes(action: str, keys: Iterable[str], tier: Optional[int]) -> Tuple[List[Override], List[str]]:

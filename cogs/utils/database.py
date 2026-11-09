@@ -227,10 +227,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         async with self.db_lock:
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA):
                 await self.db.execute(statement)
-            try:
-                await self.db.execute("ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0")
-            except aiosqlite.OperationalError:
-                pass
+            for statement in (
+                "ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE jar_settings ADD COLUMN english INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE jar_settings ADD COLUMN polish INTEGER NOT NULL DEFAULT 0",
+            ):
+                try:
+                    await self.db.execute(statement)
+                except aiosqlite.OperationalError:
+                    pass
             await self.db.commit()
 
             for file_name, table_name in LEGACY_FILES:

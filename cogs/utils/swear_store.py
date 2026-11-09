@@ -18,6 +18,8 @@ JAR_DEFAULTS: Dict[str, Any] = {
     "tier2": 4,
     "tier3": 10,
     "skip_age_restricted": 1,
+    "english": 1,
+    "polish": 0,
     "potty_role_id": None,
     "clean_role_id": None,
     "processed_day": 0,
@@ -33,7 +35,8 @@ JAR_SCHEMA = (
         tokens_per_unit INTEGER NOT NULL DEFAULT 1, tier1 INTEGER NOT NULL DEFAULT 1, tier2 INTEGER NOT NULL DEFAULT 4,
         tier3 INTEGER NOT NULL DEFAULT 10, skip_age_restricted INTEGER NOT NULL DEFAULT 1, potty_role_id INTEGER,
         clean_role_id INTEGER, processed_day INTEGER NOT NULL DEFAULT 0, rotated_week INTEGER NOT NULL DEFAULT 0,
-        lifetime_fines INTEGER NOT NULL DEFAULT 0)""",
+        lifetime_fines INTEGER NOT NULL DEFAULT 0, english INTEGER NOT NULL DEFAULT 1,
+        polish INTEGER NOT NULL DEFAULT 0)""",
     """CREATE TABLE IF NOT EXISTS jar_words (
         guild_id INTEGER NOT NULL, word TEXT NOT NULL, tier INTEGER NOT NULL, removed INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, word))""",
