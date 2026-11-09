@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, create_v2_container, error_view, make_button
+from cogs.utils.components import BRAND_COLOR, can_attach, create_v2_container, make_button
 from cogs.utils.config import BOTZILLA_URL, PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
 from cogs.utils.jar import SPAM_NOTE
 from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE
@@ -17,10 +17,6 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 GAME_URL = f"{BOTZILLA_URL}/game"
 NO_PINGS = discord.AllowedMentions.none()
 WELCOME_NEEDS = ("view_channel", "send_messages", "embed_links", "attach_files")
-ATTACH_FILES_NEEDED = (
-    "WordCounter needs the Attach Files permission in this channel to post its picture. "
-    "Ask a server admin to allow it, or try another channel."
-)
 
 Picture = Tuple[str, str, str]
 HELP_BANNER: Picture = (
@@ -274,13 +270,6 @@ class AdvertisementView(discord.ui.LayoutView):
             discord.ui.ActionRow(*link_buttons(bot)),
             accent_colour=BRAND_COLOR,
         ))
-
-
-async def can_attach(interaction: discord.Interaction, title: str) -> bool:
-    if interaction.app_permissions.attach_files:
-        return True
-    await interaction.response.send_message(view=error_view(ATTACH_FILES_NEEDED, title=title), ephemeral=True)
-    return False
 
 
 class HelpCog(commands.Cog, name="Help"):

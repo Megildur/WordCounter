@@ -1,6 +1,7 @@
 from __future__ import annotations
+import asyncio
 import calendar
-from typing import List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -17,10 +18,13 @@ from cogs.utils.components import (
     format_channel_or_category,
     make_button,
     manager_check_error,
+    can_attach,
+    display_names,
     member_names,
     rank_prefix,
     tab_rows,
 )
+from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
@@ -504,6 +508,7 @@ class LeaderboardPaginator(ButtonPaginator):
         self.channel = channel
         self.category = "words"
         self.entry_count = 0
+        self.podium: Optional[bytes] = None
         self.history: List[Tuple[str, str]] = []
 
     async def load(self, category: str) -> None:
@@ -529,6 +534,30 @@ class LeaderboardPaginator(ButtonPaginator):
             size = 10
         self.entry_count = len(entries)
         self.set_pages([entries[i:i + size] for i in range(0, len(entries), size)] or [[]])
+        self.podium = await self._draw_podium(entries[:3]) if category != "keywords" and entries else None
+
+    async def _draw_podium(self, top: List[Tuple[int, int]]) -> bytes:
+        names = await display_names(self.bot, self.guild, [uid for uid, _ in top])
+        people = [self.guild.get_member(uid) or self.bot.get_user(uid) for uid, _ in top]
+        faces = await asyncio.gather(*(cards.avatar(person) for person in people))
+        entries = [(names[uid], face, f"{count:,} {self.category}") for (uid, count), face in zip(top, faces)]
+        return await asyncio.to_thread(cards.podium, entries)
+
+    async def get_page_kwargs(self, page: Any, skip_formatting: bool = False) -> Dict[str, Any]:
+        kwargs = await super().get_page_kwargs(page, skip_formatting)
+        if self.podium and self.current_page == 0:
+            kwargs["files"] = [cards.picture_file(self.podium, cards.PODIUM_FILE)]
+        return kwargs
+
+    async def update_page(self, interaction: discord.Interaction) -> None:
+        if self.message is None:
+            self.message = interaction.message
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
+        if "files" in kwargs:
+            kwargs["attachments"] = kwargs.pop("files")
+        await interaction.edit_original_response(**kwargs)
 
     async def format_page(self, chunk: List) -> discord.ui.Container:
         where = self.channel.mention if self.channel else "this server"
@@ -555,19 +584,24 @@ class LeaderboardPaginator(ButtonPaginator):
             description = f"Top members in {where}\n\n" + ("\n".join(lines) or "Nothing recorded yet.")
             footer = f"{self.entry_count} member(s)"
 
-        return create_v2_container(
+        container = create_v2_container(
             title=f"{LEADERBOARDS[self.category]} leaderboard",
             description=description,
             fields=(fields + self.history) or None,
             footer=footer,
             color=BRAND_COLOR,
         )
+        if not (self.podium and self.current_page == 0):
+            return container
+        picture = cards.gallery(cards.PODIUM_FILE, f"The top three for {self.category} on podium blocks on Cradle Station's observation deck")
+        return discord.ui.Container(picture, *container.children, accent_colour=container.accent_colour)
 
     def extra_rows(self) -> List[discord.ui.ActionRow]:
         return tab_rows(LEADERBOARDS, self.category, self._switch_to)
 
     def _switch_to(self, category: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
             await self.load(category)
             await self.update_page(interaction)
 
@@ -612,12 +646,16 @@ class Counter_Cmds(commands.Cog):
         description="Leaderboards for words, messages, attachments, emojis and keywords",
         extras={
             "details": (
-                "Shows who leads the server, ten members a page, with medals for the top three. Buttons switch "
+                "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's "
+                "observation deck, with their pictures, then ten members a page. Buttons switch "
                 "between words, messages, attachments (files, stickers and links), emojis, keywords and swears, "
                 "and Previous and Next page through. The keywords tab shows who says each tracked keyword most. "
                 "Pick a channel to rank only what was said there, with that channel's month-by-month history "
                 "under the list. Members who left show by name. Only the person who ran it can press its "
                 "buttons, and nobody is pinged. It works once tracking is on in /settings."
+            ),
+            "bot_perms": (
+                "Attach Files, for the podium"
             ),
         },
     )
@@ -630,6 +668,9 @@ class Counter_Cmds(commands.Cog):
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE), ephemeral=True)
             return
 
+        if not await can_attach(interaction, "Can't show the leaderboard here"):
+            return
+        await interaction.response.defer()
         paginator = LeaderboardPaginator(self.bot, interaction.guild, interaction.user.id, channel)
         await paginator.load("words")
         await paginator.start(interaction)

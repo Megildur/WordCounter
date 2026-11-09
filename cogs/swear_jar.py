@@ -16,6 +16,7 @@ from cogs.utils.components import (
     SUCCESS_COLOR,
     WARNING_COLOR,
     Callback,
+    can_attach,
     create_v2_container,
     create_v2_view,
     error_view,
@@ -57,6 +58,7 @@ from cogs.utils.jar import (
     week_start,
     word_changes,
 )
+from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from cogs.utils.swear_filter import (
@@ -1040,9 +1042,13 @@ class SwearJar(commands.Cog):
         description="See a member's swear jar wallet, debt and clean streak",
         extras={
             "details": (
-                "Shows a member's swear jar: what they owe or have saved, their clean streak and how many swears "
-                "they've been fined for. Leave member empty to see your own. It works once staff turn the jar on "
-                "in /swearjar settings."
+                "Shows a member's swear jar on an archive shelf, filled with gold coins for what they've saved or "
+                "red IOU slips for what they owe, beside their picture, the amount, their clean streak and how "
+                "many swears they've been fined for. Leave member empty to see your own. It works once staff turn "
+                "the jar on in /swearjar settings."
+            ),
+            "bot_perms": (
+                "Attach Files, for the jar picture"
             ),
         },
     )
@@ -1055,17 +1061,40 @@ class SwearJar(commands.Cog):
         if member.bot:
             await interaction.response.send_message(view=error_view("Bots don't have a swear jar wallet."), ephemeral=True)
             return
+        if not await can_attach(interaction, "Can't show the wallet here"):
+            return
+        await interaction.response.defer()
         data = await self._member_data(interaction.guild.id, member.id)
-        await interaction.response.send_message(
-            view=create_v2_view(
-                "Swear jar wallet",
-                f"{member.mention}'s swear jar in **{interaction.guild.name}**.",
-                fields=wallet_fields(settings, data),
-                footer=earning_footer(settings),
-                thumbnail_url=member.display_avatar.url,
-                color=WARNING_COLOR if data["balance"] < 0 else SUCCESS_COLOR,
-            )
+        balance = data["balance"]
+        if balance < 0:
+            headline = f"Owes {money(settings, -balance)}"
+        elif balance > 0:
+            headline = f"Saved {money(settings, balance)}"
+        else:
+            headline = "Nothing owed"
+        lines = [
+            f"Clean streak: {data['streak']:,} day(s), best {data['best_streak']:,}",
+            f"Swears: {data['swears']:,} counted",
+            f"About {days_to_clear(-balance, data['streak']):,} more clean day(s) to pay it off"
+            if balance < 0 else f"{money(settings, data['week_fines'])} fined this week",
+        ]
+        picture = await asyncio.to_thread(
+            cards.jar_card, member.display_name, await cards.avatar(member), headline, lines, balance < 0, abs(balance),
         )
+        container = create_v2_container(
+            "Swear jar wallet",
+            f"{member.mention}'s swear jar in **{interaction.guild.name}**.",
+            fields=wallet_fields(settings, data),
+            footer=earning_footer(settings),
+            color=WARNING_COLOR if balance < 0 else SUCCESS_COLOR,
+        )
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(discord.ui.Container(
+            cards.gallery(cards.JAR_FILE, f"{member.display_name}'s swear jar on an archive shelf: {headline}"),
+            *container.children,
+            accent_colour=container.accent_colour,
+        ))
+        await interaction.followup.send(view=view, file=cards.picture_file(picture, cards.JAR_FILE))
 
     @jar.command(
         name="top",

@@ -74,6 +74,10 @@ def safe_name(name: str) -> str:
 
 
 async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
+    return {user_id: safe_name(name) for user_id, name in (await display_names(client, guild, user_ids)).items()}
+
+
+async def display_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
     names: Dict[int, str] = {}
     missing: List[int] = []
     for user_id in dict.fromkeys(user_ids):
@@ -93,7 +97,20 @@ async def member_names(client: discord.Client, guild: discord.Guild, user_ids: I
         await asyncio.wait(lookups, timeout=NAME_WAIT)
         for user_id in missing:
             names[user_id] = _cached_name(user_id) or FORMER_MEMBER
-    return {user_id: safe_name(name) for user_id, name in names.items()}
+    return names
+
+
+ATTACH_FILES_NEEDED = (
+    "WordCounter needs the Attach Files permission in this channel to post its picture. "
+    "Ask a server admin to allow it, or try another channel."
+)
+
+
+async def can_attach(interaction: discord.Interaction, title: str) -> bool:
+    if interaction.app_permissions.attach_files:
+        return True
+    await interaction.response.send_message(view=error_view(ATTACH_FILES_NEEDED, title=title), ephemeral=True)
+    return False
 
 
 def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:

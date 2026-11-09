@@ -61,14 +61,14 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | :--- | :--- | :--- |
 | `/help [ephemeral]` | Everyone | A guide to every command, opening on a pixel-art banner, with invite links. Needs Attach Files where it's used. |
 | `/advertisement` | Everyone | Posts a card about WordCounter with its pixel-art poster and invite links. Needs Attach Files where it's used. |
-| `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears. |
-| `/stats user <member>` | Everyone | A member's totals with monthly and per-channel history. |
+| `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears, with the top three on a pixel-art podium. Needs Attach Files. |
+| `/stats user <member>` | Everyone | A member's stats card (their words on WordCounter's flip counter), totals and monthly and per-channel history. Needs Attach Files. |
 | `/keyword list` | Everyone | The keywords this server tracks. |
 | `/settings` | Manage Server | Tracking mode, channels, keywords and data resets. |
 | `/analyze_chat single_user <member>` | Manage Server | Counts one member's past messages. |
 | `/analyze_chat whole_server` | Manage Server | Counts past messages for every member not analyzed yet. |
 | `/analyze_chat swears` | Manage Server | Adds past swears to the Swears leaderboard. Nobody is fined. |
-| `/swearjar wallet [member]` | Everyone | A member's swear jar wallet or debt, clean streak and swears. |
+| `/swearjar wallet [member]` | Everyone | A member's swear jar wallet or debt, clean streak and swears, with their jar drawn full of coins or IOU slips. Needs Attach Files. |
 | `/swearjar top` | Everyone | Who swears most, owes most, saved most and has the longest clean streak. |
 | `/swearjar goal` | Everyone | What the swear jar is saving up for. |
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
