@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import discord
+from cogs.utils.mysql import TABLE_OPTIONS
 
 FINE_HISTORY_DAYS = 30
 DAY_HISTORY_DAYS = 14
@@ -27,49 +28,49 @@ JAR_DEFAULTS: Dict[str, Any] = {
     "lifetime_fines": 0,
 }
 
-JAR_SCHEMA = (
+JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS jar_settings (
-        guild_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, delete_mode INTEGER NOT NULL DEFAULT 0,
-        currency TEXT NOT NULL DEFAULT 'money', unit_cents INTEGER NOT NULL DEFAULT 25,
-        token_name TEXT NOT NULL DEFAULT 'token', token_plural TEXT NOT NULL DEFAULT 'tokens',
-        tokens_per_unit INTEGER NOT NULL DEFAULT 1, tier1 INTEGER NOT NULL DEFAULT 1, tier2 INTEGER NOT NULL DEFAULT 4,
-        tier3 INTEGER NOT NULL DEFAULT 10, skip_age_restricted INTEGER NOT NULL DEFAULT 1, potty_role_id INTEGER,
-        clean_role_id INTEGER, processed_day INTEGER NOT NULL DEFAULT 0, rotated_week INTEGER NOT NULL DEFAULT 0,
-        lifetime_fines INTEGER NOT NULL DEFAULT 0, english INTEGER NOT NULL DEFAULT 1,
-        polish INTEGER NOT NULL DEFAULT 0)""",
+        guild_id BIGINT PRIMARY KEY, enabled INT NOT NULL DEFAULT 0, delete_mode INT NOT NULL DEFAULT 0,
+        currency VARCHAR(16) NOT NULL DEFAULT 'money', unit_cents BIGINT NOT NULL DEFAULT 25,
+        token_name VARCHAR(64) NOT NULL DEFAULT 'token', token_plural VARCHAR(64) NOT NULL DEFAULT 'tokens',
+        tokens_per_unit BIGINT NOT NULL DEFAULT 1, tier1 INT NOT NULL DEFAULT 1, tier2 INT NOT NULL DEFAULT 4,
+        tier3 INT NOT NULL DEFAULT 10, skip_age_restricted INT NOT NULL DEFAULT 1, potty_role_id BIGINT,
+        clean_role_id BIGINT, processed_day BIGINT NOT NULL DEFAULT 0, rotated_week BIGINT NOT NULL DEFAULT 0,
+        lifetime_fines BIGINT NOT NULL DEFAULT 0, english INT NOT NULL DEFAULT 1,
+        polish INT NOT NULL DEFAULT 0)""",
     """CREATE TABLE IF NOT EXISTS jar_words (
-        guild_id INTEGER NOT NULL, word TEXT NOT NULL, tier INTEGER NOT NULL, removed INTEGER NOT NULL DEFAULT 0,
+        guild_id BIGINT NOT NULL, word VARCHAR(100) NOT NULL, tier INT NOT NULL, removed INT NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, word))""",
     """CREATE TABLE IF NOT EXISTS jar_channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, rule TEXT NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, rule VARCHAR(16) NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS jar_members (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, balance INTEGER NOT NULL DEFAULT 0,
-        streak INTEGER NOT NULL DEFAULT 0, best_streak INTEGER NOT NULL DEFAULT 0, fines INTEGER NOT NULL DEFAULT 0,
-        spam_until REAL NOT NULL DEFAULT 0,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, balance BIGINT NOT NULL DEFAULT 0,
+        streak BIGINT NOT NULL DEFAULT 0, best_streak BIGINT NOT NULL DEFAULT 0, fines BIGINT NOT NULL DEFAULT 0,
+        spam_until DOUBLE NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS jar_days (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, day INTEGER NOT NULL,
-        messages INTEGER NOT NULL DEFAULT 0, fined INTEGER NOT NULL DEFAULT 0,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, day BIGINT NOT NULL,
+        messages BIGINT NOT NULL DEFAULT 0, fined INT NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id, day))""",
     """CREATE TABLE IF NOT EXISTS jar_fines (
-        message_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-        channel_id INTEGER NOT NULL, swears INTEGER NOT NULL, amount INTEGER NOT NULL, fined_at REAL NOT NULL)""",
+        message_id BIGINT PRIMARY KEY, guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+        channel_id BIGINT NOT NULL, swears BIGINT NOT NULL, amount BIGINT NOT NULL, fined_at DOUBLE NOT NULL,
+        INDEX idx_jar_fines_guild (guild_id, fined_at))""",
     """CREATE TABLE IF NOT EXISTS jar_goals (
-        guild_id INTEGER PRIMARY KEY, label TEXT NOT NULL, target INTEGER NOT NULL, channel_id INTEGER,
-        ping INTEGER NOT NULL DEFAULT 0, progress INTEGER NOT NULL DEFAULT 0, started_at REAL NOT NULL,
-        completed_at REAL)""",
+        guild_id BIGINT PRIMARY KEY, label VARCHAR(255) NOT NULL, target BIGINT NOT NULL, channel_id BIGINT,
+        ping INT NOT NULL DEFAULT 0, progress BIGINT NOT NULL DEFAULT 0, started_at DOUBLE NOT NULL,
+        completed_at DOUBLE)""",
     """CREATE TABLE IF NOT EXISTS jar_coverage (
-        guild_id INTEGER NOT NULL, started INTEGER NOT NULL, ended INTEGER,
+        guild_id BIGINT NOT NULL, started BIGINT NOT NULL, ended BIGINT,
         PRIMARY KEY (guild_id, started))""",
     """CREATE TABLE IF NOT EXISTS swears_channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS swears_users (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
-    "CREATE INDEX IF NOT EXISTS idx_jar_fines_guild ON jar_fines (guild_id, fined_at)",
-)
+))
 
 JAR_PLAYER_TABLES = ("jar_members", "jar_days", "jar_fines", "swears_channels", "swears_users")
 JAR_TABLES = ("jar_settings", "jar_words", "jar_channels", "jar_goals", "jar_coverage", *JAR_PLAYER_TABLES)
@@ -86,9 +87,9 @@ JAR_LEADERBOARDS = {
 }
 
 SWEAR_CHANNEL_UPSERT = """INSERT INTO swears_channels (guild_id, channel_id, user_id, count) VALUES (?, ?, ?, ?)
-    ON CONFLICT(guild_id, channel_id, user_id) DO UPDATE SET count = count + excluded.count"""
+    ON DUPLICATE KEY UPDATE count = count + VALUES(count)"""
 SWEAR_USER_UPSERT = """INSERT INTO swears_users (guild_id, user_id, count) VALUES (?, ?, ?)
-    ON CONFLICT(guild_id, user_id) DO UPDATE SET count = count + excluded.count"""
+    ON DUPLICATE KEY UPDATE count = count + VALUES(count)"""
 
 SwearCounts = Mapping[int, Mapping[int, int]]
 
@@ -111,9 +112,9 @@ class SwearJarQueries:
             raise ValueError(f"unknown swear jar settings: {', '.join(sorted(unknown))}")
         columns = ", ".join(fields)
         marks = ", ".join("?" * len(fields))
-        updates = ", ".join(f"{name} = excluded.{name}" for name in fields)
+        updates = ", ".join(f"{name} = VALUES({name})" for name in fields)
         await self._write([(
-            f"INSERT INTO jar_settings (guild_id, {columns}) VALUES (?, {marks}) ON CONFLICT(guild_id) DO UPDATE SET {updates}",
+            f"INSERT INTO jar_settings (guild_id, {columns}) VALUES (?, {marks}) ON DUPLICATE KEY UPDATE {updates}",
             [(guild_id, *fields.values())],
         )])
 
@@ -124,12 +125,12 @@ class SwearJarQueries:
             statements += [
                 (
                     """INSERT INTO jar_settings (guild_id, enabled, processed_day, rotated_week) VALUES (?, 1, ?, ?)
-                    ON CONFLICT(guild_id) DO UPDATE SET enabled = 1, processed_day = excluded.processed_day,
-                    rotated_week = MAX(rotated_week, excluded.rotated_week)""",
+                    ON DUPLICATE KEY UPDATE enabled = 1, processed_day = VALUES(processed_day),
+                    rotated_week = GREATEST(rotated_week, VALUES(rotated_week))""",
                     [(guild_id, today - 1, week)],
                 ),
                 (
-                    """INSERT INTO jar_coverage (guild_id, started, ended) SELECT ?, ?, NULL
+                    """INSERT INTO jar_coverage (guild_id, started, ended) SELECT ?, ?, NULL FROM DUAL
                     WHERE NOT EXISTS (SELECT 1 FROM jar_coverage WHERE guild_id = ? AND ended IS NULL)""",
                     [(guild_id, stamp, guild_id)],
                 ),
@@ -158,7 +159,7 @@ class SwearJarQueries:
     async def jar_set_words(self, guild_id: int, words: Iterable[Tuple[str, int, bool]]) -> None:
         await self._write([(
             """INSERT INTO jar_words (guild_id, word, tier, removed) VALUES (?, ?, ?, ?)
-            ON CONFLICT(guild_id, word) DO UPDATE SET tier = excluded.tier, removed = excluded.removed""",
+            ON DUPLICATE KEY UPDATE tier = VALUES(tier), removed = VALUES(removed)""",
             [(guild_id, word, tier, int(removed)) for word, tier, removed in words],
         )])
 
@@ -180,7 +181,7 @@ class SwearJarQueries:
             return
         await self._write([(
             """INSERT INTO jar_channels (guild_id, channel_id, rule) VALUES (?, ?, ?)
-            ON CONFLICT(guild_id, channel_id) DO UPDATE SET rule = excluded.rule""",
+            ON DUPLICATE KEY UPDATE rule = VALUES(rule)""",
             [(guild_id, cid, rule) for cid in channel_ids],
         )])
 
@@ -241,19 +242,19 @@ class SwearJarQueries:
             await self.db.execute(
                 """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, fined_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(message_id) DO UPDATE SET swears = excluded.swears, amount = excluded.amount""",
+                ON DUPLICATE KEY UPDATE swears = VALUES(swears), amount = VALUES(amount)""",
                 (message_id, guild_id, user_id, channel_id, total_swears, total_amount, now),
             )
             await self.db.execute(
                 """INSERT INTO jar_members (guild_id, user_id, balance, streak, best_streak, fines, spam_until)
                 VALUES (?, ?, ?, 0, 0, ?, ?)
-                ON CONFLICT(guild_id, user_id) DO UPDATE SET balance = balance - ?, streak = 0,
-                fines = fines + ?, spam_until = MAX(spam_until, excluded.spam_until)""",
+                ON DUPLICATE KEY UPDATE balance = balance - ?, streak = 0,
+                fines = fines + ?, spam_until = GREATEST(spam_until, VALUES(spam_until))""",
                 (*member, -amount, amount, spam_until, amount, amount),
             )
             await self.db.execute(
                 """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, 0, 1)
-                ON CONFLICT(guild_id, user_id, day) DO UPDATE SET fined = 1""",
+                ON DUPLICATE KEY UPDATE fined = 1""",
                 (*member, day),
             )
             if swears:
@@ -261,7 +262,7 @@ class SwearJarQueries:
                 await self.db.execute(SWEAR_USER_UPSERT, (*member, swears))
             await self.db.execute(
                 """INSERT INTO jar_settings (guild_id, lifetime_fines) VALUES (?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET lifetime_fines = lifetime_fines + excluded.lifetime_fines""",
+                ON DUPLICATE KEY UPDATE lifetime_fines = lifetime_fines + VALUES(lifetime_fines)""",
                 (guild_id, amount),
             )
             cursor = await self.db.execute(
@@ -286,7 +287,7 @@ class SwearJarQueries:
     async def jar_add_day_messages(self, rows: Iterable[Tuple[int, int, int, int]]) -> None:
         await self._write([(
             """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, 0)
-            ON CONFLICT(guild_id, user_id, day) DO UPDATE SET messages = messages + excluded.messages""",
+            ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages)""",
             list(rows),
         )])
 
@@ -309,8 +310,8 @@ class SwearJarQueries:
                 credited.append((user_id, streak))
             await self.db.executemany(
                 """INSERT INTO jar_members (guild_id, user_id, balance, streak, best_streak) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id, user_id) DO UPDATE SET balance = excluded.balance, streak = excluded.streak,
-                best_streak = excluded.best_streak""",
+                ON DUPLICATE KEY UPDATE balance = VALUES(balance), streak = VALUES(streak),
+                best_streak = VALUES(best_streak)""",
                 rows,
             )
             await self.db.execute("UPDATE jar_settings SET processed_day = ? WHERE guild_id = ?", (day, guild_id))
@@ -358,8 +359,8 @@ class SwearJarQueries:
         await self._write([(
             """INSERT INTO jar_goals (guild_id, label, target, channel_id, ping, progress, started_at, completed_at)
             VALUES (?, ?, ?, ?, ?, 0, ?, NULL)
-            ON CONFLICT(guild_id) DO UPDATE SET label = excluded.label, target = excluded.target,
-            channel_id = excluded.channel_id, ping = excluded.ping, progress = 0, started_at = excluded.started_at,
+            ON DUPLICATE KEY UPDATE label = VALUES(label), target = VALUES(target),
+            channel_id = VALUES(channel_id), ping = VALUES(ping), progress = 0, started_at = VALUES(started_at),
             completed_at = NULL""",
             [(guild_id, label, target, channel_id, int(ping), time.time())],
         )])
@@ -380,7 +381,7 @@ class SwearJarQueries:
         scope = "guild_id = ?" + (" AND user_id = ?" if user_id is not None else "")
         params = (guild_id,) + ((user_id,) if user_id is not None else ())
         statements: List[Tuple[str, Sequence[Sequence[Any]]]] = [
-            (f"DELETE FROM {table} WHERE {scope}", [params]) for table in JAR_PLAYER_TABLES
+            (f"DELETE FROM `{table}` WHERE {scope}", [params]) for table in JAR_PLAYER_TABLES
         ]
         if user_id is None:
             statements += [
@@ -409,6 +410,6 @@ class SwearJarQueries:
     async def _cover_swear_history(self, guild_id: int, before: int) -> None:
         await self.db.execute(
             """INSERT INTO jar_coverage (guild_id, started, ended) VALUES (?, 0, ?)
-            ON CONFLICT(guild_id, started) DO UPDATE SET ended = MAX(ended, excluded.ended)""",
+            ON DUPLICATE KEY UPDATE ended = GREATEST(ended, VALUES(ended))""",
             (guild_id, before),
         )

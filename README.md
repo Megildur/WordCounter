@@ -86,6 +86,7 @@ Right-click menus:
 
 ### Requirements
 - Python 3.10 or newer
+- A MySQL 8 (or MariaDB 10.5+) database for WordCounter, separate from Botzilla's
 - A [Discord application](https://discord.com/developers/applications) with the **Message Content** and **Server Members** intents turned on
 
 ### Install
@@ -120,6 +121,11 @@ Right-click menus:
    WEB_PORT=8080
    DISCORD_CLIENT_SECRET=your_client_secret_here
    SESSION_SECRET=a_long_random_string
+   MYSQL_HOST=your_mysql_host
+   MYSQL_PORT=3306
+   MYSQL_USER=wordcounter
+   MYSQL_PASSWORD=your_mysql_password
+   MYSQL_DB=wordcounter
    ```
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
@@ -129,13 +135,21 @@ Right-click menus:
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
+   - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
-5. Run the bot:
+5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. With the bot stopped, copy it into MySQL once:
+   ```bash
+   python tools/migrate_sqlite_to_mysql.py --dry-run
+   python tools/migrate_sqlite_to_mysql.py
+   ```
+   It copies every table, checks each one's row count, and can be run again safely. Until it has run, WordCounter won't start while that file is there, so the two can't drift apart. Keep the file as a backup until you've checked everything, then move it out of `Data/`.
+
+6. Run the bot:
    ```bash
    python main.py
    ```
 
-6. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
+7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
    - View Channels, Read Message History, Send Messages, Send Messages in Threads
    - Embed Links, Attach Files, Add Reactions, Use Slash Commands, Use External Apps
    - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings), Manage Channels

@@ -2,9 +2,9 @@ from __future__ import annotations
 import logging
 import random
 from typing import List, Optional
-import aiosqlite
 import discord
 from discord.ext import commands, tasks
+from cogs.utils.mysql import DatabaseError
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class Status(commands.Cog):
     async def cycle(self) -> None:
         try:
             messages, words = await self.bot.db.get_global_totals()
-        except aiosqlite.Error as error:
+        except (DatabaseError, OSError) as error:
             log.warning("Could not read totals for the status: %s", error)
             messages, words = 0, 0
         choice = random.choice([line for line in self.statuses(messages or 0, words or 0) if line != self.last])

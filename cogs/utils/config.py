@@ -23,6 +23,12 @@ ALLOWED_GUILD_IDS: List[int] = [
 SITE_URL = _env("BASE_URL", "https://wordcounter.dev").rstrip("/")
 WEB_HOST = _env("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))
+MYSQL_HOST = _env("MYSQL_HOST")
+MYSQL_PORT = int(_env("MYSQL_PORT")) if _env("MYSQL_PORT").isdigit() else 3306
+MYSQL_USER = _env("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DB = _env("MYSQL_DB", "wordcounter")
+SQLITE_PATH = "Data/WordCounter.db"
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
 SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()
 

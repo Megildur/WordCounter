@@ -5,8 +5,9 @@ import time
 from collections import defaultdict
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
-import aiosqlite
-from cogs.utils.stored_data import BLACKLIST_SCHEMA, StoredDataQueries
+from cogs.utils import config
+from cogs.utils.mysql import TABLE_OPTIONS, SessionLock, create_pool
+from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
 
 MonthlyKey = Tuple[int, int, int]
@@ -45,19 +46,19 @@ MONTHLY_KEYS = "guild_id = ? AND user_id = ? AND channel_id = ? AND year = ? AND
 MONTHLY_UPSERT = """
     INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(guild_id, user_id, channel_id, year, month) DO UPDATE SET
-        words = MAX(0, words + ?),
-        messages = MAX(0, messages + ?),
-        attachments = MAX(0, attachments + ?),
-        emojis = MAX(0, emojis + ?)
+    ON DUPLICATE KEY UPDATE
+        words = GREATEST(0, words + ?),
+        messages = GREATEST(0, messages + ?),
+        attachments = GREATEST(0, attachments + ?),
+        emojis = GREATEST(0, emojis + ?)
 """
 
 MONTHLY_DECREMENT = f"""
     UPDATE monthly_user_stats SET
-        words = MAX(0, words + ?),
-        messages = MAX(0, messages + ?),
-        attachments = MAX(0, attachments + ?),
-        emojis = MAX(0, emojis + ?)
+        words = GREATEST(0, words + ?),
+        messages = GREATEST(0, messages + ?),
+        attachments = GREATEST(0, attachments + ?),
+        emojis = GREATEST(0, emojis + ?)
     WHERE {MONTHLY_KEYS}
 """
 
@@ -66,93 +67,81 @@ MONTHLY_PRUNE = f"""
     WHERE {MONTHLY_KEYS} AND words <= 0 AND messages <= 0 AND attachments <= 0 AND emojis <= 0
 """
 
-SCHEMA = (
+KEYWORD_LIMIT = 255
+
+SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS counters (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS server (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
-    """CREATE TABLE IF NOT EXISTS ignore (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
+    """CREATE TABLE IF NOT EXISTS `ignore` (
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS keyword (
-        guild_id INTEGER NOT NULL, keyword TEXT NOT NULL,
+        guild_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL,
         PRIMARY KEY (guild_id, keyword))""",
     """CREATE TABLE IF NOT EXISTS keyword_channel (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, keyword TEXT NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL, user_id BIGINT NOT NULL,
+        count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, keyword, user_id))""",
     """CREATE TABLE IF NOT EXISTS keyword_user (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, keyword TEXT NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, keyword))""",
     """CREATE TABLE IF NOT EXISTS attachments_channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS attachments_users (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS message_channels (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, messages INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, messages BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS message_user (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, messages INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, messages BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS analyzed_users (
-        user_id INTEGER NOT NULL, guild_id INTEGER NOT NULL,
+        user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL,
         PRIMARY KEY (user_id, guild_id))""",
     """CREATE TABLE IF NOT EXISTS emojis_channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS emojis_users (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, count INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS monthly_user_stats (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
-        year INTEGER NOT NULL, month INTEGER NOT NULL,
-        words INTEGER NOT NULL DEFAULT 0, messages INTEGER NOT NULL DEFAULT 0,
-        attachments INTEGER NOT NULL DEFAULT 0, emojis INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id, channel_id, year, month))""",
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
+        year INT NOT NULL, month INT NOT NULL,
+        words BIGINT NOT NULL DEFAULT 0, messages BIGINT NOT NULL DEFAULT 0,
+        attachments BIGINT NOT NULL DEFAULT 0, emojis BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id, channel_id, year, month),
+        INDEX idx_monthly_user (guild_id, user_id, year, month),
+        INDEX idx_monthly_channel (guild_id, channel_id, year, month))""",
     """CREATE TABLE IF NOT EXISTS monthly_user_keywords (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, keyword TEXT NOT NULL,
-        year INTEGER NOT NULL, month INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL,
+        year INT NOT NULL, month INT NOT NULL, count BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id, channel_id, keyword, year, month))""",
     """CREATE TABLE IF NOT EXISTS tracking_periods (
-        guild_id INTEGER NOT NULL, started INTEGER NOT NULL, ended INTEGER,
+        guild_id BIGINT NOT NULL, started BIGINT NOT NULL, ended BIGINT,
         PRIMARY KEY (guild_id, started))""",
     """CREATE TABLE IF NOT EXISTS count_resets (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, reset_at INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, reset_at BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS analysis_runs (
-        guild_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, cutoff INTEGER NOT NULL,
-        status_channel_id INTEGER, status_message_id INTEGER, started_at REAL NOT NULL,
-        messages_read INTEGER NOT NULL DEFAULT 0, totals TEXT NOT NULL DEFAULT '{}')""",
+        guild_id BIGINT PRIMARY KEY, kind VARCHAR(32) NOT NULL, cutoff BIGINT NOT NULL,
+        status_channel_id BIGINT, status_message_id BIGINT, started_at DOUBLE NOT NULL,
+        messages_read BIGINT NOT NULL DEFAULT 0, totals MEDIUMTEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS analysis_run_members (
-        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS analysis_run_channels (
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, before_id INTEGER, status TEXT NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, before_id BIGINT, status VARCHAR(32) NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
-    "CREATE INDEX IF NOT EXISTS idx_monthly_user ON monthly_user_stats (guild_id, user_id, year DESC, month DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_monthly_channel ON monthly_user_stats (guild_id, channel_id, year DESC, month DESC)",
-)
-
-LEGACY_FILES = (
-    ("channels.db", "channels"),
-    ("ignore.db", "ignore"),
-    ("server.db", "server"),
-    ("counter.db", "counters"),
-    ("keyword.db", "keyword"),
-    ("keyword_channel.db", "keyword_channel"),
-    ("keyword_user.db", "keyword_user"),
-    ("attachments_channels.db", "attachments_channels"),
-    ("attachments_users.db", "attachments_users"),
-    ("message_channels.db", "message_channels"),
-    ("message_user.db", "message_user"),
-    ("analyzed_users.db", "analyzed_users"),
-)
+))
 
 COUNT_DATA_TABLES = (
     "server", "counters", "message_user", "message_channels", "attachments_users", "attachments_channels",
@@ -178,7 +167,7 @@ def _increment_sql(table: str) -> str:
     marks = ", ".join("?" * (len(keys) + 1))
     return (
         f"INSERT INTO {table} ({names}, {column}) VALUES ({marks}) "
-        f"ON CONFLICT({names}) DO UPDATE SET {column} = {column} + excluded.{column}"
+        f"ON DUPLICATE KEY UPDATE {column} = {column} + VALUES({column})"
     )
 
 
@@ -187,7 +176,7 @@ def _decrement_sql(table: str) -> Tuple[str, str]:
     keys, column = COUNT_TABLES[table]
     where = " AND ".join(f"{key} = ?" for key in keys)
     return (
-        f"UPDATE {table} SET {column} = MAX(0, {column} - ?) WHERE {where}",
+        f"UPDATE {table} SET {column} = GREATEST(0, {column} - ?) WHERE {where}",
         f"DELETE FROM {table} WHERE {where} AND {column} <= 0",
     )
 
@@ -196,62 +185,70 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
     return tuple(values[key] for key in COUNT_TABLES[table][0])
 
 
+SQLITE_IMPORT = "sqlite_import"
+ADDED_COLUMNS = (
+    ("monthly_user_stats", "emojis", "BIGINT NOT NULL DEFAULT 0"),
+    ("jar_settings", "english", "INT NOT NULL DEFAULT 1"),
+    ("jar_settings", "polish", "INT NOT NULL DEFAULT 0"),
+)
+
+
+class NotMigrated(RuntimeError):
+    pass
+
+
 class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
     def __init__(self, bot) -> None:
-        self.db_path = "Data/WordCounter.db"
-        self.db: Optional[aiosqlite.Connection] = None
-        self.db_lock = asyncio.Lock()
+        self.pool = None
+        self.db = None
+        self.db_lock = SessionLock(self)
         self.bot = bot
 
+    async def connect_pool(self) -> None:
+        if self.pool is None:
+            self.pool = await create_pool()
+
     async def connect(self) -> None:
-        dir_name = os.path.dirname(self.db_path)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
-        self.db = await aiosqlite.connect(self.db_path)
-        await self.db.execute("PRAGMA journal_mode=WAL;")
-        await self.db.execute("PRAGMA synchronous=NORMAL;")
-        await self.db.commit()
+        await self.connect_pool()
         await self.initialize_database()
 
     async def ensure_connected(self) -> None:
-        if self.db is None:
+        if self.pool is None:
             await self.connect()
 
     async def close(self) -> None:
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            pool.close()
+            await pool.wait_closed()
+
+    async def create_tables(self) -> None:
         async with self.db_lock:
-            if self.db is not None:
-                await self.db.close()
-                self.db = None
+            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA):
+                await self.db.execute(statement)
+            cursor = await self.db.execute(
+                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
+            )
+            present = {(table, column) for table, column in await cursor.fetchall()}
+            for table, column, definition in ADDED_COLUMNS:
+                if (table, column) not in present:
+                    await self.db.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
+
+    async def sqlite_imported(self) -> bool:
+        async with self.db_lock:
+            return bool(await self._fetch_value("SELECT COUNT(*) FROM db_meta WHERE name = ?", (SQLITE_IMPORT,)))
+
+    async def mark_sqlite_imported(self, note: str) -> None:
+        await self._write([("REPLACE INTO db_meta (name, value) VALUES (?, ?)", [(SQLITE_IMPORT, note)])])
 
     async def initialize_database(self) -> None:
-        async with self.db_lock:
-            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA):
-                await self.db.execute(statement)
-            for statement in (
-                "ALTER TABLE monthly_user_stats ADD COLUMN emojis INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE jar_settings ADD COLUMN english INTEGER NOT NULL DEFAULT 1",
-                "ALTER TABLE jar_settings ADD COLUMN polish INTEGER NOT NULL DEFAULT 0",
-            ):
-                try:
-                    await self.db.execute(statement)
-                except aiosqlite.OperationalError:
-                    pass
-            await self.db.commit()
-
-            for file_name, table_name in LEGACY_FILES:
-                if not os.path.isfile(file_name):
-                    continue
-                try:
-                    await self.db.execute(f"ATTACH DATABASE '{file_name}' AS legacy_db")
-                    await self.db.execute(f"INSERT OR IGNORE INTO main.{table_name} SELECT * FROM legacy_db.{table_name}")
-                    await self.db.commit()
-                except aiosqlite.Error:
-                    pass
-                finally:
-                    try:
-                        await self.db.execute("DETACH DATABASE legacy_db")
-                    except aiosqlite.Error:
-                        pass
+        await self.create_tables()
+        if os.path.isfile(config.SQLITE_PATH) and not await self.sqlite_imported():
+            raise NotMigrated(
+                f"WordCounter's data is still in {config.SQLITE_PATH} and hasn't been copied to MySQL. Stop the bot, run "
+                "`python tools/migrate_sqlite_to_mysql.py`, then start it again. To start MySQL empty instead, move "
+                f"{config.SQLITE_PATH} somewhere else."
+            )
 
     async def _fetch_value(self, sql: str, params: Sequence[Any]) -> int:
         cursor = await self.db.execute(sql, params)
@@ -274,7 +271,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         )
         if enabled and not is_open:
             await self.db.execute(
-                "INSERT OR IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
+                "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
                 (guild_id, now_snowflake()),
             )
         elif is_open and not enabled:
@@ -292,7 +289,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             )
             if enabled and not is_open:
                 await self.db.execute(
-                    "INSERT OR IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
+                    "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
                     (guild_id, started),
                 )
                 await self.db.commit()
@@ -311,7 +308,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         async with self.db_lock:
             cursor = await self.db.execute("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,))
             watched_ids = {row[0] for row in await cursor.fetchall()}
-            cursor = await self.db.execute("SELECT channel_id FROM ignore WHERE guild_id = ?", (guild_id,))
+            cursor = await self.db.execute("SELECT channel_id FROM `ignore` WHERE guild_id = ?", (guild_id,))
             ignored_ids = {row[0] for row in await cursor.fetchall()}
             return watched_ids, ignored_ids
 
@@ -340,14 +337,14 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self._write(
             [
                 ("DELETE FROM channels WHERE guild_id = ?", [(guild_id,)]),
-                ("DELETE FROM ignore WHERE guild_id = ?", [(guild_id,)]),
+                ("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)]),
             ],
             sync_tracking_for=guild_id,
         )
 
     async def add_watched_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write(
-            [("INSERT OR IGNORE INTO channels (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])],
+            [("INSERT IGNORE INTO channels (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])],
             sync_tracking_for=guild_id,
         )
 
@@ -364,13 +361,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         )
 
     async def add_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
-        await self._write([("INSERT OR IGNORE INTO ignore (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])])
+        await self._write([("INSERT IGNORE INTO `ignore` (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])])
 
     async def remove_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
-        await self._write([("DELETE FROM ignore WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])])
+        await self._write([("DELETE FROM `ignore` WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])])
 
     async def clear_ignored_channels(self, guild_id: int) -> None:
-        await self._write([("DELETE FROM ignore WHERE guild_id = ?", [(guild_id,)])])
+        await self._write([("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)])])
 
     async def apply_activity(
         self,
@@ -466,7 +463,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
         await self.db.executemany(
-            "INSERT OR IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
+            "INSERT IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
             [(user_id, guild_id) for user_id in user_ids],
         )
 
@@ -494,14 +491,14 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self.ensure_connected()
         async with self.db_lock:
             for table in ANALYSIS_RUN_TABLES:
-                await self.db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+                await self.db.execute(f"DELETE FROM `{table}` WHERE guild_id = ?", (guild_id,))
             await self.db.execute(
-                """INSERT INTO analysis_runs (guild_id, kind, cutoff, status_channel_id, status_message_id, started_at)
-                VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO analysis_runs (guild_id, kind, cutoff, status_channel_id, status_message_id, started_at, totals)
+                VALUES (?, ?, ?, ?, ?, ?, '{}')""",
                 (guild_id, kind, cutoff, status_channel_id, status_message_id, time.time()),
             )
             await self.db.executemany(
-                "INSERT OR IGNORE INTO analysis_run_members (guild_id, user_id) VALUES (?, ?)",
+                "INSERT IGNORE INTO analysis_run_members (guild_id, user_id) VALUES (?, ?)",
                 [(guild_id, user_id) for user_id in user_ids],
             )
             await self.db.commit()
@@ -565,7 +562,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             if swears:
                 await self._write_swear_counts(guild_id, swears)
             await self.db.executemany(
-                "INSERT OR REPLACE INTO analysis_run_channels (guild_id, channel_id, before_id, status) VALUES (?, ?, ?, ?)",
+                "REPLACE INTO analysis_run_channels (guild_id, channel_id, before_id, status) VALUES (?, ?, ?, ?)",
                 [(guild_id, cid, before, "reading") for cid, before in cursors.items()]
                 + [(guild_id, cid, None, status) for cid, status in finished.items()],
             )
@@ -592,7 +589,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             if swear_history_before is not None:
                 await self._cover_swear_history(guild_id, swear_history_before)
             for table in ANALYSIS_RUN_TABLES[1:]:
-                await self.db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+                await self.db.execute(f"DELETE FROM `{table}` WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
             return True
 
@@ -660,7 +657,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
                 cleaned = keyword.strip().lower()
                 if not cleaned:
                     continue
-                if cleaned in existing:
+                if cleaned in existing or len(cleaned) > KEYWORD_LIMIT:
                     skipped.append(cleaned)
                     continue
                 await self.db.execute("INSERT INTO keyword (guild_id, keyword) VALUES (?, ?)", (guild_id, cleaned))
@@ -672,7 +669,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
     async def replace_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
         await self._write([
             ("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)]),
-            ("INSERT OR IGNORE INTO keyword (guild_id, keyword) VALUES (?, ?)", [(guild_id, k.strip().lower()) for k in keywords]),
+            (
+                "INSERT IGNORE INTO keyword (guild_id, keyword) VALUES (?, ?)",
+                [(guild_id, k.strip().lower()) for k in keywords if k.strip() and len(k.strip()) <= KEYWORD_LIMIT],
+            ),
         ])
 
     async def remove_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
@@ -717,7 +717,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             scope = "guild_id = ?" + (" AND user_id = ?" if user_id is not None else "")
             params = (guild_id,) + ((user_id,) if user_id is not None else ())
             for table in COUNT_DATA_TABLES:
-                await self.db.execute(f"DELETE FROM {table} WHERE {scope}", params)
+                await self.db.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
         else:
             scope = "guild_id = ? AND channel_id = ?" + (" AND user_id = ?" if user_id is not None else "")
             params = (guild_id, channel_id) + ((user_id,) if user_id is not None else ())
@@ -734,11 +734,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self._subtract("keyword_user", removed)
 
             for table in ("monthly_user_stats", "monthly_user_keywords"):
-                await self.db.execute(f"DELETE FROM {table} WHERE {scope}", params)
+                await self.db.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
 
         await self.db.execute(
             """INSERT INTO count_resets (guild_id, user_id, channel_id, reset_at) VALUES (?, ?, ?, ?)
-            ON CONFLICT(guild_id, user_id, channel_id) DO UPDATE SET reset_at = excluded.reset_at""",
+            ON DUPLICATE KEY UPDATE reset_at = VALUES(reset_at)""",
             (guild_id, user_id or 0, channel_id or 0, now_snowflake()),
         )
 
@@ -748,7 +748,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self.db.executemany(prune, [_key_values(table, row) for row in removed])
 
     async def reset_entire_server(self, guild_id: int) -> None:
-        await self._write([(f"DELETE FROM {table} WHERE guild_id = ?", [(guild_id,)]) for table in GUILD_TABLES])
+        await self._write([(f"DELETE FROM `{table}` WHERE guild_id = ?", [(guild_id,)]) for table in GUILD_TABLES])
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()
