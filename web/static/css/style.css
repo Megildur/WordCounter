@@ -21,20 +21,20 @@
 }
 
 :root {
-  --accent: #D26B42;
-  --accent-hi: #E58A62;
+  --accent: #F08A3A;
+  --accent-hi: #FFB066;
   --accent-ink: #1F0A03;
-  --mark: #D9D4D9;
-  --brand: #B62402;
-  --base: #140C0A;
-  --base-0: #0C0706;
-  --base-2: #1F1310;
-  --base-3: #2C1813;
-  --line: #3B2620;
-  --line-soft: #2A1A15;
-  --text: #F2EDEA;
-  --text-2: #CDBFB9;
-  --text-3: #A6948D;
+  --mark: #FFE66B;
+  --brand: #B85A24;
+  --base: #0A1224;
+  --base-0: #070D1B;
+  --base-2: #101B33;
+  --base-3: #1D335B;
+  --line: #24365A;
+  --line-soft: #18243F;
+  --text: #EDE8DC;
+  --text-2: #B4BBCB;
+  --text-3: #8C96AC;
   --danger: #F87171;
 
   --blurple: #5865F2;
@@ -461,7 +461,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
   aspect-ratio: 1;
   overflow: hidden;
   border-radius: var(--radius);
-  background: linear-gradient(to top right, var(--accent), var(--brand));
+  background: var(--base-3);
 }
 .mascot__frame img { width: 100%; max-width: 260px; border-radius: var(--radius); }
 .mascot figcaption {
@@ -614,7 +614,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
   gap: 0.45rem;
   padding: 0.3rem 0.6rem;
   border-radius: var(--radius);
-  background: rgba(20, 12, 10, 0.9);
+  background: rgba(10, 18, 36, 0.9);
   font-size: 0.8125rem;
   font-weight: 700;
 }
