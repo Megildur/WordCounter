@@ -157,3 +157,7 @@
   <a href="/dashboard/{{ guild_id }}/members/{{ row.id }}">{{ row.name }}</a>
 </span>
 {% endmacro %}
+
+{% macro pixel_banner(name, width=240, height=48) %}
+      <img class="pixel-art pixel-banner" src="/static/img/pixel/{{ name }}?v={{ pixel_version }}" alt="" aria-hidden="true" width="{{ width }}" height="{{ height }}" decoding="async">
+{% endmacro %}

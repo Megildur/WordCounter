@@ -675,6 +675,17 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 .profile__listening { margin-top: var(--s-2); font-size: 0.8125rem; color: var(--accent-hi); overflow-wrap: anywhere; }
 .profile__foot { margin-top: var(--s-4); }
 
+.pixel-art { image-rendering: crisp-edges; image-rendering: pixelated; }
+.pixel-banner {
+  display: block; width: 100%; height: auto; margin-bottom: var(--s-5);
+  border: 1px solid var(--line-soft); border-radius: var(--radius);
+}
+
+.lost { display: grid; gap: var(--s-6); align-items: center; }
+@media (min-width: 900px) { .lost { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: var(--s-7); } }
+.lost__picture { display: block; width: 100%; height: auto; border: 1px solid var(--line-soft); border-radius: var(--radius); }
+.lost__links { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-5); }
+
 .specimen {
   display: grid;
   gap: var(--s-5);

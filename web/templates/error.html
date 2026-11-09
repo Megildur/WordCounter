@@ -3,6 +3,22 @@
 {% block robots %}<meta name="robots" content="noindex">{% endblock %}
 
 {% block content %}
+{% if code == 404 %}
+<div class="page">
+  <div class="wrap wrap--mid lost">
+    <img class="pixel-art lost__picture" src="/static/img/pixel/lost.png?v={{ pixel_version }}" alt="WordCounter floating above Earth with 404 on its flip display and a question mark in a chat bubble beside it" width="160" height="100" decoding="async">
+    <div class="lost__copy">
+      <p class="eyebrow">Error 404</p>
+      <h1 class="page-title display">Not in the archive</h1>
+      <p class="page-lede">WordCounter checked every shelf and couldn't find this page. The address may be mistyped, or the page has moved.</p>
+      <div class="lost__links">
+        <a class="btn btn--primary" href="/">Back to the home page</a>
+        <a class="btn btn--ghost" href="/commands">Browse the commands</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% else %}
 <div class="page">
   <div class="wrap wrap--mid">
     <header class="page-head">
@@ -16,4 +32,5 @@
     </div>
   </div>
 </div>
+{% endif %}
 {% endblock %}

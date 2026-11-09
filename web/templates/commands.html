@@ -1,13 +1,16 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui with context %}
 {% block title %}All {{ slash|length }} WordCounter commands{% endblock %}
-{% block meta_description %}Every WordCounter slash command and right-click app, with options and who can use them.{% endblock %}
+{% block meta_description %}Your guide to every WordCounter command and right-click app: what each one does, its options, who can use it and what WordCounter needs.{% endblock %}
 {% block og_title %}WordCounter commands ({{ slash|length }}){% endblock %}
+{% block og_image %}{{ site_url }}/static/img/social/commands.png?v={{ social_version }}{% endblock %}
+{% block og_image_alt %}WordCounter, an orange pixel-art flip counter, floating above Earth beside its name and the words Your guide to every command{% endblock %}
 
 {% block content %}
 <div class="page">
   <div class="wrap wrap--mid">
     <header class="page-head">
+{{ ui.pixel_banner("commands.png") }}
       <p class="eyebrow">Reference</p>
       <h1 class="page-title display">Commands</h1>
       <p class="page-lede">{{ slash|length }} slash commands and {{ apps|length }} right-click apps. Commands marked Manage Server only show up for members with that permission.</p>

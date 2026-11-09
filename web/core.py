@@ -83,13 +83,20 @@ ICON_FILES = (
 )
 
 
-def _icon_version() -> str:
+IMG = ROOT / "static" / "img"
+
+
+def _files_version(paths) -> str:
     digest = hashlib.sha1()
-    for name in ICON_FILES:
-        path = ROOT / "static" / "img" / name
+    for path in sorted(paths):
         if path.is_file():
+            digest.update(path.name.encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()[:10]
+
+
+def _icon_version() -> str:
+    return _files_version(IMG / name for name in ICON_FILES)
 
 
 def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
@@ -146,6 +153,8 @@ ENV.globals.update(
     botzilla_url=BOTZILLA_URL,
     asset_version=_asset_version(),
     icon_version=_icon_version(),
+    pixel_version=_files_version([*(IMG / "pixel").glob("*.png"), IMG / "game-title.png"]),
+    social_version=_files_version((IMG / "social").glob("*.png")),
     showcase=_showcase(),
     month_name=lambda month: calendar.month_name[month],
 )

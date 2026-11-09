@@ -1,12 +1,16 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
 {% block title %}Terms of Service, WordCounter{% endblock %}
 {% block meta_description %}The terms for using the WordCounter Discord bot and its website.{% endblock %}
 {% block og_title %}WordCounter Terms of Service{% endblock %}
+{% block og_image %}{{ site_url }}/static/img/social/legal.png?v={{ social_version }}{% endblock %}
+{% block og_image_alt %}WordCounter, an orange pixel-art flip counter, floating above Earth beside its name and the words Terms and privacy{% endblock %}
 
 {% block content %}
 <div class="page">
   <div class="wrap">
     <header class="page-head">
+{{ ui.pixel_banner("legal.png") }}
       <p class="eyebrow">Legal</p>
       <h1 class="page-title display">Terms of Service</h1>
       <p class="legal__dates">Effective October 5, 2026 &middot; Last revised November 8, 2026</p>

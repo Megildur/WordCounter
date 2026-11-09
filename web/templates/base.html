@@ -3,25 +3,25 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}WordCounter, a Discord bot that counts words, messages and more{% endblock %}</title>
-  <meta name="description" content="{% block meta_description %}WordCounter counts words, messages, attachments, emojis and keywords for each member and channel, keeps monthly history, and can count messages sent before it joined.{% endblock %}">
+  <title>{% block title %}WordCounter, see who talks the most in your Discord server{% endblock %}</title>
+  <meta name="description" content="{% block meta_description %}See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own keywords for every member and channel, keeps a monthly history, can count messages sent before it joined, and can run a swear jar. Free.{% endblock %}">
   <link rel="canonical" href="{{ current_url }}">
 
   <meta name="theme-color" content="#F08A3A">
   <meta property="og:site_name" content="WordCounter">
   <meta property="og:type" content="website">
   <meta property="og:url" content="{{ current_url }}">
-  <meta property="og:title" content="{% block og_title %}WordCounter, a Discord bot that counts words, messages and more{% endblock %}">
+  <meta property="og:title" content="{% block og_title %}WordCounter, see who talks the most in your Discord server{% endblock %}">
   <meta property="og:description" content="{{ self.meta_description() }}">
-  <meta property="og:image" content="{{ site_url }}/static/img/wordcounter-512.png?v={{ icon_version }}">
+  <meta property="og:image" content="{% block og_image %}{{ site_url }}/static/img/social/home.png?v={{ social_version }}{% endblock %}">
   <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="512">
-  <meta property="og:image:height" content="512">
-  <meta property="og:image:alt" content="WordCounter, an orange flip counter showing 02, floating in space above Earth">
-  <meta name="twitter:card" content="summary">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="{% block og_image_alt %}WordCounter, an orange pixel-art flip counter showing 02, floating above Earth beside its name and the words Who talks the most{% endblock %}">
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ self.og_title() }}">
   <meta name="twitter:description" content="{{ self.meta_description() }}">
-  <meta name="twitter:image" content="{{ site_url }}/static/img/wordcounter-512.png?v={{ icon_version }}">
+  <meta name="twitter:image" content="{{ self.og_image() }}">
   {% block robots %}{% endblock %}
 
   <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png?v={{ icon_version }}">

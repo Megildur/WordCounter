@@ -3,6 +3,8 @@
 {% block title %}{{ guild.name }}, WordCounter{% endblock %}
 {% block meta_description %}WordCounter stats for {{ guild.name }}.{% endblock %}
 {% block og_title %}{{ guild.name }} on WordCounter{% endblock %}
+{% block og_image %}{{ site_url }}/static/img/social/dashboard.png?v={{ social_version }}{% endblock %}
+{% block og_image_alt %}WordCounter, an orange pixel-art flip counter, floating above Earth beside its name and the words Your stats in every server{% endblock %}
 {% block robots %}<meta name="robots" content="noindex">{% endblock %}
 
 {% block content %}
