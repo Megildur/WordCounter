@@ -48,6 +48,21 @@ class Status(commands.Cog):
             "📖 Reading the dictionary for fun",
             "🧪 Specimen 02 from the Botzilla lab",
             "⌛ New status every 5 minutes",
+            "🛰️ Archivist on duty at Cradle Station",
+            "🗄️ Filing today's messages in the archive",
+            "🗂️ Cross-checking who said lol the most",
+            "🔍 Double-checking the count. Still right",
+            "🔁 Recounting. Just to be sure",
+            "🧮 Counting out loud again. Sorry, habit",
+            "🧾 Logged that typo. And that one",
+            "🗃️ The archive never forgets a keyword",
+            "💾 Every word made it into the archive",
+            "🌍 Counting chats from orbit",
+            "📋 Every word, every step, every mistake",
+            "🔢 Zero, one, two. Specimen 02 reporting",
+            "🎮 Find me in Botzilla: Specimen 01",
+            "🥚 Still writing up the hatchery log",
+            "📚 Shelving another million words",
         ]
         if words:
             lines.append(f"🔢 {words:,} words counted so far")
