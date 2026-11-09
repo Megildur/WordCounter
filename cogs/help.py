@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 import discord
@@ -10,9 +11,12 @@ from cogs.utils.jar import SPAM_NOTE
 from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE
 from paginator import ButtonPaginator
 
+log = logging.getLogger(__name__)
+
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 GAME_URL = f"{BOTZILLA_URL}/game"
 NO_PINGS = discord.AllowedMentions.none()
+WELCOME_NEEDS = ("view_channel", "send_messages", "embed_links", "attach_files")
 ATTACH_FILES_NEEDED = (
     "WordCounter needs the Attach Files permission in this channel to post its picture. "
     "Ask a server admin to allow it, or try another channel."
@@ -24,6 +28,11 @@ HELP_BANNER: Picture = (
     "wordcounter_help.png",
     "WordCounter, an orange flip counter showing 02, floating above Earth beside its name",
 )
+WELCOME_BANNER: Picture = (
+    "welcome.png",
+    "wordcounter_welcome.png",
+    "WordCounter floating above Earth beside its name, thanking the server for adding it",
+)
 AD_POSTER: Picture = (
     "advertisement.png",
     "wordcounter_ad.png",
@@ -34,6 +43,15 @@ AD_POSTER: Picture = (
 ABOUT_TEXT = (
     "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and "
     "channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
+)
+BOTZILLA_TEXT = (
+    "### Meet Specimen 01\n"
+    "WordCounter comes from the same lab as **Botzilla**, one bot for your whole server: moderation and AutoMod, "
+    "welcome cards, levels, an economy, pixel-art pets and games with friends."
+)
+GAME_TEXT = (
+    "**Botzilla: Specimen 01** is a free pixel adventure about how Botzilla began, on a research station in orbit. "
+    "WordCounter is in it too, as the station's archivist. Play in your browser, on Discord or on Android."
 )
 AD_PITCH = (
     "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own "
@@ -209,6 +227,40 @@ def help_paginator(bot: commands.Bot, author_id: int) -> ButtonPaginator:
     return paginator
 
 
+def welcome_view(bot: commands.Bot) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(discord.ui.Container(
+        discord.ui.TextDisplay("## 👋 Thanks for adding WordCounter"),
+        gallery(WELCOME_BANNER),
+        discord.ui.TextDisplay(
+            f"{ABOUT_TEXT}\n\n"
+            "- **Turn counting on:** nothing is counted until staff pick channels in `/settings`, or turn on whole server mode there.\n"
+            "- **Count the past:** `/analyze_chat whole_server` adds messages sent before WordCounter joined.\n"
+            "- **See who's on top:** `/leaderboard` and `/stats user`, or sign in on the website.\n"
+            "- **Start here:** `/help` explains every command."
+        ),
+        discord.ui.Separator(),
+        discord.ui.Section(discord.ui.TextDisplay(BOTZILLA_TEXT), accessory=make_button("Meet Botzilla", url=BOTZILLA_URL)),
+        discord.ui.Section(discord.ui.TextDisplay(GAME_TEXT), accessory=make_button("Play the game", url=GAME_URL)),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay("-# Questions? The support server is one button away."),
+        discord.ui.ActionRow(*link_buttons(bot)),
+        accent_colour=BRAND_COLOR,
+    ))
+    return view
+
+
+def welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    me = guild.me
+    if me is None:
+        return None
+    candidates = [guild.system_channel] + sorted(guild.text_channels, key=lambda c: (c.position, c.id))
+    for channel in candidates:
+        if channel is not None and all(getattr(channel.permissions_for(me), name) for name in WELCOME_NEEDS):
+            return channel
+    return None
+
+
 class AdvertisementView(discord.ui.LayoutView):
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__(timeout=None)
@@ -255,6 +307,17 @@ class HelpCog(commands.Cog, name="Help"):
         await interaction.response.send_message(
             view=AdvertisementView(self.bot), file=picture_file(AD_POSTER), allowed_mentions=NO_PINGS,
         )
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        channel = welcome_channel(guild)
+        if channel is None:
+            return
+        try:
+            await channel.send(view=welcome_view(self.bot), file=picture_file(WELCOME_BANNER), allowed_mentions=NO_PINGS)
+        except discord.HTTPException:
+            log.info("Could not post the welcome in %s", guild.id, exc_info=True)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(HelpCog(bot))
