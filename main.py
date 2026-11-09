@@ -32,7 +32,7 @@ CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands
 
 class MyBot(commands.Bot):
     def __init__(self) -> None:
-        super().__init__(command_prefix="!wc", intents=discord.Intents.all())
+        super().__init__(command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none())
         self.db = WordCounterDatabase(self)
         self.blacklisted: Set[int] = set()
 
