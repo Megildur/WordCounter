@@ -4,10 +4,10 @@ import time
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import discord
 
-BRAND_COLOR = discord.Colour(0xB62402)
-WARNING_COLOR = discord.Colour(0xD26B42)
-NEUTRAL_COLOR = discord.Colour(0x908C90)
-SUCCESS_COLOR = discord.Colour(0x5C8A3E)
+BRAND_COLOR = discord.Colour(0xF08A3A)
+WARNING_COLOR = discord.Colour(0xFBBF24)
+NEUTRAL_COLOR = discord.Colour(0x8C96AC)
+SUCCESS_COLOR = discord.Colour(0x5FAE5A)
 ERROR_COLOR = discord.Colour(0xE04B3C)
 
 TEXT_BUDGET = 3800

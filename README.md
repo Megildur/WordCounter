@@ -2,19 +2,19 @@
 
 <p align="center">
   <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0">
-    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B62402?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
+    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B85A24?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
   <a href="https://discord.gg/prUsgFHvRS">
-    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-D26B42?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
+    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-1D335B?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
   <a href="https://wordcounter.dev">
-    <img src="https://img.shields.io/badge/Website-wordcounter.dev-D26B42?style=for-the-badge" alt="Website" />
+    <img src="https://img.shields.io/badge/Website-wordcounter.dev-1D335B?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
   <a href="https://github.com/Megildur/WordCounter/releases/tag/v2.1.0">
-    <img src="https://img.shields.io/badge/Release-v2.1.0-908C90?style=for-the-badge" alt="Release v2.1.0" />
+    <img src="https://img.shields.io/badge/Release-v2.1.0-8C96AC?style=for-the-badge" alt="Release v2.1.0" />
   </a>
 </p>
 
