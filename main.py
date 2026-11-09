@@ -5,7 +5,7 @@ import sys
 from typing import Any, Set
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist
+from cogs.utils import blacklist, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import WordCounterDatabase
 from cogs.utils.http import close_session
@@ -44,6 +44,7 @@ class MyBot(commands.Bot):
         await self.db.connect()
         self.blacklisted.update(await self.db.blacklisted_ids())
         blacklist.install(self)
+        startup.install(self)
 
         def handle_async_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
             error = context.get("exception")
