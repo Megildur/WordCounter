@@ -266,10 +266,10 @@ class SwearJarQueries:
                 (guild_id, amount),
             )
             cursor = await self.db.execute(
-                """UPDATE jar_goals SET progress = progress + ?,
-                completed_at = CASE WHEN progress + ? >= target THEN ? ELSE NULL END
+                """UPDATE jar_goals SET completed_at = CASE WHEN progress + ? >= target THEN ? ELSE NULL END,
+                progress = progress + ?
                 WHERE guild_id = ? AND completed_at IS NULL""",
-                (amount, amount, now, guild_id),
+                (amount, now, amount, guild_id),
             )
             reached = None
             if cursor.rowcount:
