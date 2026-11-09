@@ -58,8 +58,8 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 
 | Command | Who can use it | What it does |
 | :--- | :--- | :--- |
-| `/help [ephemeral]` | Everyone | Command guide and invite links. |
-| `/advertisement` | Everyone | Posts a card about WordCounter with invite links. |
+| `/help [ephemeral]` | Everyone | A guide to every command, opening on a pixel-art banner, with invite links. Needs Attach Files where it's used. |
+| `/advertisement` | Everyone | Posts a card about WordCounter with its pixel-art poster and invite links. Needs Attach Files where it's used. |
 | `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears. |
 | `/stats user <member>` | Everyone | A member's totals with monthly and per-channel history. |
 | `/keyword list` | Everyone | The keywords this server tracks. |

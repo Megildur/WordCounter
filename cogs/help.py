@@ -1,13 +1,54 @@
 from __future__ import annotations
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, create_v2_container, make_button
-from cogs.utils.config import PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
+from cogs.utils.components import BRAND_COLOR, create_v2_container, error_view, make_button
+from cogs.utils.config import BOTZILLA_URL, PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
 from cogs.utils.jar import SPAM_NOTE
 from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE
 from paginator import ButtonPaginator
+
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+GAME_URL = f"{BOTZILLA_URL}/game"
+NO_PINGS = discord.AllowedMentions.none()
+ATTACH_FILES_NEEDED = (
+    "WordCounter needs the Attach Files permission in this channel to post its picture. "
+    "Ask a server admin to allow it, or try another channel."
+)
+
+Picture = Tuple[str, str, str]
+HELP_BANNER: Picture = (
+    "help.png",
+    "wordcounter_help.png",
+    "WordCounter, an orange flip counter showing 02, floating above Earth beside its name",
+)
+AD_POSTER: Picture = (
+    "advertisement.png",
+    "wordcounter_ad.png",
+    "WordCounter floating above Earth beside its name and the words Who talks the most, with chat bubbles rising "
+    "toward it, above signs for words, emojis, files, keywords, ranks, history, swears and stats",
+)
+
+ABOUT_TEXT = (
+    "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and "
+    "channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
+)
+AD_PITCH = (
+    "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own "
+    "keywords for every member and channel, and turns them into leaderboards."
+)
+AD_FEATURES = (
+    "### What it does\n"
+    "- **Leaderboards:** `/leaderboard` ranks words, messages, attachments, emojis, keywords and swears, for the "
+    "whole server or one channel.\n"
+    "- **Member stats:** `/stats user` shows anyone's totals, month by month and channel by channel.\n"
+    "- **Keywords:** count an inside joke or a catchphrase and see who says it most.\n"
+    "- **Past messages:** `/analyze_chat` counts what was said before WordCounter joined.\n"
+    "- **Swear jar:** every swear costs, debt is paid back with clean streaks, and the server can save up for a goal.\n"
+    "- **Website:** see your stats in every server you share with WordCounter, and manage the servers you run."
+)
 
 HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
     (
@@ -103,12 +144,27 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("/advertisement", "Post a card about WordCounter with invite links."),
             ("Website", f"See your stats in every server you share with WordCounter, and manage settings for servers you run: {SITE_URL}"),
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
+            (
+                "From the same lab",
+                f"WordCounter is Specimen 02. Specimen 01 is [Botzilla]({BOTZILLA_URL}), and its free game "
+                f"[Botzilla: Specimen 01]({GAME_URL}) has WordCounter in it as the station's archivist.",
+            ),
         ],
     ),
 ]
 
 
-def link_buttons(bot: commands.Bot, invite_label: str, support_label: str) -> List[discord.ui.Button]:
+def picture_file(picture: Picture) -> discord.File:
+    name, filename, _ = picture
+    return discord.File(ASSETS / name, filename=filename)
+
+
+def gallery(picture: Picture) -> discord.ui.MediaGallery:
+    _, filename, description = picture
+    return discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{filename}", description=description))
+
+
+def link_buttons(bot: commands.Bot, invite_label: str = "Add to server", support_label: str = "Support server") -> List[discord.ui.Button]:
     client_id = bot.user.id if bot.user else None
     return [
         make_button(invite_label, url=invite_url(client_id)),
@@ -117,16 +173,38 @@ def link_buttons(bot: commands.Bot, invite_label: str, support_label: str) -> Li
     ]
 
 
+def welcome_page() -> discord.ui.Container:
+    pages = "\n".join(f"{number}. **{title}**" for number, (title, _, _) in enumerate(HELP_PAGES, start=2))
+    return discord.ui.Container(
+        gallery(HELP_BANNER),
+        discord.ui.TextDisplay(f"# Welcome to WordCounter\n{ABOUT_TEXT}"),
+        discord.ui.TextDisplay(
+            "### Finding your way\n"
+            "- **Flip through** the pages with Previous and Next.\n"
+            "- **Everything is a slash command:** type `/` and pick WordCounter.\n"
+            "- **Right-click menus** count one message or show a member's stats."
+        ),
+        discord.ui.TextDisplay(
+            "### Good places to start\n"
+            "**For everyone**\n"
+            "- `/leaderboard` to see who talks the most\n"
+            "- `/stats user` for anyone's totals and monthly history\n"
+            "**For server staff**\n"
+            "- `/settings` to choose what gets counted. Nothing is counted until you pick channels or turn on whole server mode.\n"
+            "- `/analyze_chat whole_server` to count messages from before WordCounter joined"
+        ),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay(f"### Pages\n{pages}"),
+        accent_colour=BRAND_COLOR,
+    )
+
+
 def help_paginator(bot: commands.Bot, author_id: int) -> ButtonPaginator:
-    pages = [
+    pages = [welcome_page()] + [
         create_v2_container(title=title, description=description, fields=fields, color=BRAND_COLOR)
         for title, description, fields in HELP_PAGES
     ]
-    paginator = ButtonPaginator(
-        pages,
-        author_id=author_id,
-        custom_buttons=link_buttons(bot, "Add to a server", "Support server"),
-    )
+    paginator = ButtonPaginator(pages, author_id=author_id, custom_buttons=link_buttons(bot))
     paginator.denied_message = "Only the person who opened this help menu can change pages."
     return paginator
 
@@ -134,48 +212,23 @@ def help_paginator(bot: commands.Bot, author_id: int) -> ButtonPaginator:
 class AdvertisementView(discord.ui.LayoutView):
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__(timeout=None)
-        avatar_url = bot.user.display_avatar.url if bot.user else None
-        description = (
-            "Ever wonder who *actually* sends the most messages, who lives in `#general`, "
-            "or who spams that one inside joke non-stop?\n\n"
-            "**WordCounter** tracks your server's activity in real time and turns everyday chatter "
-            "into leaderboards, member stats and monthly rankings for your community."
-        )
-        fields = [
-            (
-                "Leaderboards (`/leaderboard`)",
-                "Compete for the top spot in words, messages, memes and attachments, emojis, and keywords. "
-                "Filter by channel to see who runs `#general` or who's dominating `#media`.",
-            ),
-            (
-                "Chat profiles (`/stats user`)",
-                "Check your own stats or a friend's, with monthly history and your most active channels.",
-            ),
-            (
-                "Inside jokes and catchphrases (`/settings`)",
-                "Got an iconic server meme or quote? Add it as a keyword and watch the race for who repeats it most.",
-            ),
-            (
-                "Catch up on past messages (`/analyze_chat`)",
-                "Added WordCounter to an existing server? Count the history so nobody loses credit for what they said before the bot joined.",
-            ),
-            (
-                "The swear jar (`/swearjar`)",
-                "Every swear costs, and the debt only goes away with clean streaks. Fight over the weekly Potty Mouth role, "
-                "earn a clean streak role, and save up for a goal together.",
-            ),
-        ]
-        self.add_item(
-            create_v2_container(
-                title="WordCounter: who talks the most in your server?",
-                description=description,
-                fields=fields,
-                thumbnail_url=avatar_url,
-                footer="Use /help to get started",
-                color=BRAND_COLOR,
-                action_rows=[discord.ui.ActionRow(*link_buttons(bot, "Add to your server", "Join the community server"))],
-            )
-        )
+        self.add_item(discord.ui.Container(
+            gallery(AD_POSTER),
+            discord.ui.TextDisplay(f"# WordCounter\n{AD_PITCH}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(AD_FEATURES),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay("-# Specimen 02 from the Botzilla lab. After adding it, type `/help` to get started."),
+            discord.ui.ActionRow(*link_buttons(bot)),
+            accent_colour=BRAND_COLOR,
+        ))
+
+
+async def can_attach(interaction: discord.Interaction, title: str) -> bool:
+    if interaction.app_permissions.attach_files:
+        return True
+    await interaction.response.send_message(view=error_view(ATTACH_FILES_NEEDED, title=title), ephemeral=True)
+    return False
 
 
 class HelpCog(commands.Cog, name="Help"):
@@ -187,14 +240,21 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(ephemeral="Only show the help menu to you (default: no)")
     async def help_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
-        await help_paginator(self.bot, interaction.user.id).start(interaction, ephemeral=ephemeral)
+        if not await can_attach(interaction, "Can't show the help here"):
+            return
+        await help_paginator(self.bot, interaction.user.id).start(
+            interaction, ephemeral=ephemeral, file=picture_file(HELP_BANNER), allowed_mentions=NO_PINGS,
+        )
 
     @app_commands.command(name="advertisement", description="Post a card about WordCounter with invite links")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def advertisement_command(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(view=AdvertisementView(self.bot))
-
+        if not await can_attach(interaction, "Can't post the card here"):
+            return
+        await interaction.response.send_message(
+            view=AdvertisementView(self.bot), file=picture_file(AD_POSTER), allowed_mentions=NO_PINGS,
+        )
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(HelpCog(bot))
