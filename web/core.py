@@ -77,6 +77,21 @@ def _asset_version() -> str:
     return hashlib.sha1((ROOT / "static" / "css" / "style.css").read_bytes()).hexdigest()[:10]
 
 
+ICON_FILES = (
+    "wordcounter-96.webp", "wordcounter-256.png", "wordcounter-256.webp", "wordcounter-512.png",
+    "wordcounter-512.webp", "favicon-32.png", "apple-touch-icon.png",
+)
+
+
+def _icon_version() -> str:
+    digest = hashlib.sha1()
+    for name in ICON_FILES:
+        path = ROOT / "static" / "img" / name
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
 def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
     if data.startswith(PNG_SIGNATURE) and len(data) >= 24:
         return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
@@ -130,6 +145,7 @@ ENV.globals.update(
     source_url=SOURCE_URL,
     botzilla_url=BOTZILLA_URL,
     asset_version=_asset_version(),
+    icon_version=_icon_version(),
     showcase=_showcase(),
     month_name=lambda month: calendar.month_name[month],
 )

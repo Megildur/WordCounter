@@ -13,19 +13,19 @@
   <meta property="og:url" content="{{ current_url }}">
   <meta property="og:title" content="{% block og_title %}WordCounter, a Discord bot that counts words, messages and more{% endblock %}">
   <meta property="og:description" content="{{ self.meta_description() }}">
-  <meta property="og:image" content="{{ site_url }}/static/img/wordcounter-512.png">
+  <meta property="og:image" content="{{ site_url }}/static/img/wordcounter-512.png?v={{ icon_version }}">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="512">
   <meta property="og:image:height" content="512">
-  <meta property="og:image:alt" content="WordCounter's icon, a flip counter showing 0 1 2 on an orange background">
+  <meta property="og:image:alt" content="WordCounter, an orange flip counter showing 02, floating in space above Earth">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="{{ self.og_title() }}">
   <meta name="twitter:description" content="{{ self.meta_description() }}">
-  <meta name="twitter:image" content="{{ site_url }}/static/img/wordcounter-512.png">
+  <meta name="twitter:image" content="{{ site_url }}/static/img/wordcounter-512.png?v={{ icon_version }}">
   {% block robots %}{% endblock %}
 
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
-  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png?v={{ icon_version }}">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ icon_version }}">
 
   <link rel="preload" href="/static/fonts/big-shoulders-display-800.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/atkinson-next.woff2" as="font" type="font/woff2" crossorigin>
@@ -45,7 +45,7 @@
   <header class="site-header">
     <div class="wrap site-header__bar">
       <a href="/" class="brand">
-        <img src="/static/img/wordcounter-96.webp" alt="" width="40" height="40">
+        <img src="/static/img/wordcounter-96.webp?v={{ icon_version }}" alt="" width="40" height="40">
         <span class="brand__name">WordCounter</span>
       </a>
 
@@ -143,7 +143,7 @@
       <div class="site-footer__grid">
         <div class="site-footer__brand">
           <a href="/" class="brand">
-            <img src="/static/img/wordcounter-96.webp" alt="" width="36" height="36" loading="lazy">
+            <img src="/static/img/wordcounter-96.webp?v={{ icon_version }}" alt="" width="36" height="36" loading="lazy">
             <span class="brand__name">WordCounter</span>
           </a>
           <p>Counts who says what in your Discord server. Built and run by one developer.</p>
