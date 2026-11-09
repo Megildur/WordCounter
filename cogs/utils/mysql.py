@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import decimal
+import warnings
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import aiomysql
 import pymysql
@@ -9,7 +10,9 @@ from cogs.utils import config
 
 DatabaseError = pymysql.err.MySQLError
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
-RECYCLE_SECONDS = 300
+RECYCLE_SECONDS = 120
+
+warnings.filterwarnings("ignore", module="aiomysql")
 
 
 def mysql_sql(sql: str) -> str:

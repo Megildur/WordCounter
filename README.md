@@ -137,12 +137,7 @@ Right-click menus:
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
    - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
-5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. With the bot stopped, copy it into MySQL once:
-   ```bash
-   python tools/migrate_sqlite_to_mysql.py --dry-run
-   python tools/migrate_sqlite_to_mysql.py
-   ```
-   It copies every table, checks each one's row count, and can be run again safely. Until it has run, WordCounter won't start while that file is there, so the two can't drift apart. Keep the file as a backup until you've checked everything, then move it out of `Data/`.
+5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
 
 6. Run the bot:
    ```bash

@@ -5,10 +5,15 @@ import time
 from collections import defaultdict
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+import logging
+from pathlib import Path
 from cogs.utils import config
 from cogs.utils.mysql import TABLE_OPTIONS, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
+from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
+
+log = logging.getLogger(__name__)
 
 MonthlyKey = Tuple[int, int, int]
 MonthlyKeywordKey = Tuple[int, str, int, int]
@@ -244,11 +249,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
     async def initialize_database(self) -> None:
         await self.create_tables()
         if os.path.isfile(config.SQLITE_PATH) and not await self.sqlite_imported():
-            raise NotMigrated(
-                f"WordCounter's data is still in {config.SQLITE_PATH} and hasn't been copied to MySQL. Stop the bot, run "
-                "`python tools/migrate_sqlite_to_mysql.py`, then start it again. To start MySQL empty instead, move "
-                f"{config.SQLITE_PATH} somewhere else."
-            )
+            log.info("Copying %s into MySQL before starting", config.SQLITE_PATH)
+            result = await copy_sqlite(self, Path(config.SQLITE_PATH))
+            if not result.ok:
+                raise NotMigrated(result.problem())
+            log.info("Copied %s rows from %s into MySQL", f"{sum(result.copied.values()):,}", config.SQLITE_PATH)
 
     async def _fetch_value(self, sql: str, params: Sequence[Any]) -> int:
         cursor = await self.db.execute(sql, params)
