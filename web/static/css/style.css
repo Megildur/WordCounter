@@ -671,8 +671,8 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
   text-transform: uppercase;
   color: var(--text-3);
 }
-.profile__status p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.profile__listening { margin-top: var(--s-2); font-size: 0.8125rem; color: var(--accent-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile__status p { overflow-wrap: anywhere; }
+.profile__listening { margin-top: var(--s-2); font-size: 0.8125rem; color: var(--accent-hi); overflow-wrap: anywhere; }
 .profile__foot { margin-top: var(--s-4); }
 
 .specimen {
