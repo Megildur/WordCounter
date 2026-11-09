@@ -721,6 +721,30 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
   --text-3: #8C96AC;
 }
 
+.specimen + .specimen { margin-top: var(--s-5); }
+.specimen--game .specimen__img { width: 100%; max-width: 20rem; height: auto; aspect-ratio: 16 / 9; }
+@media (min-width: 768px) {
+  .specimen--game { grid-template-columns: 16rem minmax(0, 1fr); }
+  .specimen--game .specimen__img { width: 16rem; }
+}
+@media (min-width: 1024px) {
+  .specimen--game { grid-template-columns: 16rem minmax(0, 1fr) auto; }
+}
+
+.theme-game {
+  --accent: #4FC8D8;
+  --accent-hi: #9AF2F2;
+  --accent-ink: #0B1A26;
+  --mark: #E2C400;
+  --base: #0D1830;
+  --base-2: #13213D;
+  --base-3: #182A4A;
+  --line: #2A4470;
+  --text: #EDE8DC;
+  --text-2: #B9C3D6;
+  --text-3: #8F9BB3;
+}
+
 .cta-band { position: relative; margin-top: var(--s-8); background: var(--accent); color: var(--accent-ink); }
 .cta-band::before {
   content: "";
