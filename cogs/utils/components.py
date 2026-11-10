@@ -1,11 +1,13 @@
 from __future__ import annotations
+import asyncio
+import time
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import discord
 
-BRAND_COLOR = discord.Colour(0xB62402)
-WARNING_COLOR = discord.Colour(0xD26B42)
-NEUTRAL_COLOR = discord.Colour(0x908C90)
-SUCCESS_COLOR = discord.Colour(0x5C8A3E)
+BRAND_COLOR = discord.Colour(0xF08A3A)
+WARNING_COLOR = discord.Colour(0xFBBF24)
+NEUTRAL_COLOR = discord.Colour(0x8C96AC)
+SUCCESS_COLOR = discord.Colour(0x5FAE5A)
 ERROR_COLOR = discord.Colour(0xE04B3C)
 
 TEXT_BUDGET = 3800
@@ -38,9 +40,77 @@ def rank_prefix(rank: int) -> str:
     return MEDALS.get(rank, f"**{rank}.**")
 
 
-def member_name(guild: discord.Guild, user_id: int) -> str:
-    member = guild.get_member(user_id)
-    return member.display_name if member else f"<@{user_id}>"
+FORMER_MEMBER = "Former member"
+NAME_TTL = 3600.0
+NAME_WAIT = 1.5
+NAME_CACHE_LIMIT = 5000
+_fetched_names: Dict[int, Tuple[float, str]] = {}
+_name_lookups: Set[asyncio.Task] = set()
+
+
+def _cached_name(user_id: int) -> Optional[str]:
+    entry = _fetched_names.get(user_id)
+    if entry and time.monotonic() - entry[0] < NAME_TTL:
+        return entry[1]
+    return None
+
+
+async def _fetch_name(client: discord.Client, user_id: int) -> None:
+    try:
+        user = await client.fetch_user(user_id)
+    except discord.NotFound:
+        name = FORMER_MEMBER
+    except discord.HTTPException:
+        return
+    else:
+        name = user.display_name
+    if len(_fetched_names) >= NAME_CACHE_LIMIT:
+        _fetched_names.clear()
+    _fetched_names[user_id] = (time.monotonic(), name)
+
+
+def safe_name(name: str) -> str:
+    return discord.utils.escape_mentions(discord.utils.escape_markdown(name))
+
+
+async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
+    return {user_id: safe_name(name) for user_id, name in (await display_names(client, guild, user_ids)).items()}
+
+
+async def display_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
+    names: Dict[int, str] = {}
+    missing: List[int] = []
+    for user_id in dict.fromkeys(user_ids):
+        member = guild.get_member(user_id)
+        user = member or client.get_user(user_id)
+        if user is not None:
+            names[user_id] = user.display_name
+        elif _cached_name(user_id):
+            names[user_id] = _cached_name(user_id)
+        else:
+            missing.append(user_id)
+    if missing:
+        lookups = [asyncio.ensure_future(_fetch_name(client, user_id)) for user_id in missing]
+        _name_lookups.update(lookups)
+        for lookup in lookups:
+            lookup.add_done_callback(_name_lookups.discard)
+        await asyncio.wait(lookups, timeout=NAME_WAIT)
+        for user_id in missing:
+            names[user_id] = _cached_name(user_id) or FORMER_MEMBER
+    return names
+
+
+ATTACH_FILES_NEEDED = (
+    "WordCounter needs the Attach Files permission in this channel to post its picture. "
+    "Ask a server admin to allow it, or try another channel."
+)
+
+
+async def can_attach(interaction: discord.Interaction, title: str) -> bool:
+    if interaction.app_permissions.attach_files:
+        return True
+    await interaction.response.send_message(view=error_view(ATTACH_FILES_NEEDED, title=title), ephemeral=True)
+    return False
 
 
 def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:

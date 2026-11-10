@@ -2,19 +2,19 @@
 
 <p align="center">
   <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0">
-    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B62402?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
+    <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B85A24?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
   <a href="https://discord.gg/prUsgFHvRS">
-    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-D26B42?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
+    <img src="https://img.shields.io/badge/Support%20Server-Join%20Community-1D335B?style=for-the-badge&logo=discord&logoColor=white" alt="Support Server" />
   </a>
   &nbsp;
   <a href="https://wordcounter.dev">
-    <img src="https://img.shields.io/badge/Website-wordcounter.dev-D26B42?style=for-the-badge" alt="Website" />
+    <img src="https://img.shields.io/badge/Website-wordcounter.dev-1D335B?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v2.1.0">
-    <img src="https://img.shields.io/badge/Release-v2.1.0-908C90?style=for-the-badge" alt="Release v2.1.0" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v3.0.0">
+    <img src="https://img.shields.io/badge/Release-v3.0.0-8C96AC?style=for-the-badge" alt="Release v3.0.0" />
   </a>
 </p>
 
@@ -45,9 +45,10 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
   - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
 - **Website** ([wordcounter.dev](https://wordcounter.dev)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the same settings and resets as `/settings`, and the swear jar's settings.
 - **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
+- **A hello when it joins.** WordCounter posts a short welcome with its banner in the server's system channel (or the first channel where it can attach a picture): how to turn counting on, `/help`, and Botzilla and its game from the same lab. Nobody is pinged.
 - **Swear jar** (`/swearjar`). Off until an admin turns it on in `/swearjar settings`. Every swear costs, and debt is only paid back by not swearing:
   - Swears are fined by tier: mild (1 unit), explicit (4) and slurs or the server's own words (10). A message is fined for at most its 3 priciest swears. Fines show as money ($0.25 a unit by default) or the server's own tokens.
-  - The default list covers English and Polish swears and slurs, including Polish word forms. Matching ignores case and accents and catches leetspeak (`sh!t`), stretched letters (`fuuuck`), spaced letters (`f u c k`) and starred words (`f*ck`). Staff can add, remove or move words.
+  - The default list covers English swears and slurs, and Polish ones (with their word forms) for servers that turn Polish on. English is on by default and Polish is off; staff switch each language in `/swearjar settings` or on the dashboard, which shows one language's words at a time. Matching ignores case and accents and catches leetspeak (`sh!t`), stretched letters (`fuuuck`), spaced letters (`f u c k`) and starred words (`f*ck`). Staff can add, remove or move words.
   - WordCounter reacts with 🫙 and posts nothing. In delete mode it deletes the message instead and shows a notice for 5 seconds saying why and what the fine was. Deleting or editing a message never refunds a fine.
   - More than 3 fined messages in a minute doubles fines for 10 minutes (reaction 🚫).
   - A clean active day (5 or more messages, no fines, UTC) pays back 1 unit, with bonuses at 7 days (+3) and every 30 days (+10). Members who never swear build up a wallet.
@@ -58,16 +59,16 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 
 | Command | Who can use it | What it does |
 | :--- | :--- | :--- |
-| `/help [ephemeral]` | Everyone | Command guide and invite links. |
-| `/advertisement` | Everyone | Posts a card about WordCounter with invite links. |
-| `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears. |
-| `/stats user <member>` | Everyone | A member's totals with monthly and per-channel history. |
+| `/help [ephemeral]` | Everyone | A guide to every command, opening on a pixel-art banner, with invite links. Needs Attach Files where it's used. |
+| `/advertisement` | Everyone | Posts a card about WordCounter with its pixel-art poster and invite links. Needs Attach Files where it's used. |
+| `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears, with the top three on a pixel-art podium. Needs Attach Files. |
+| `/stats user <member>` | Everyone | A member's stats card (their words on WordCounter's flip counter), totals and monthly and per-channel history. Needs Attach Files. |
 | `/keyword list` | Everyone | The keywords this server tracks. |
 | `/settings` | Manage Server | Tracking mode, channels, keywords and data resets. |
 | `/analyze_chat single_user <member>` | Manage Server | Counts one member's past messages. |
 | `/analyze_chat whole_server` | Manage Server | Counts past messages for every member not analyzed yet. |
 | `/analyze_chat swears` | Manage Server | Adds past swears to the Swears leaderboard. Nobody is fined. |
-| `/swearjar wallet [member]` | Everyone | A member's swear jar wallet or debt, clean streak and swears. |
+| `/swearjar wallet [member]` | Everyone | A member's swear jar wallet or debt, clean streak and swears, with their jar drawn full of coins or IOU slips. Needs Attach Files. |
 | `/swearjar top` | Everyone | Who swears most, owes most, saved most and has the longest clean streak. |
 | `/swearjar goal` | Everyone | What the swear jar is saving up for. |
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
@@ -85,6 +86,7 @@ Right-click menus:
 
 ### Requirements
 - Python 3.10 or newer
+- A MySQL 8 (or MariaDB 10.5+) database for WordCounter, separate from Botzilla's
 - A [Discord application](https://discord.com/developers/applications) with the **Message Content** and **Server Members** intents turned on
 
 ### Install
@@ -119,6 +121,11 @@ Right-click menus:
    WEB_PORT=8080
    DISCORD_CLIENT_SECRET=your_client_secret_here
    SESSION_SECRET=a_long_random_string
+   MYSQL_HOST=your_mysql_host
+   MYSQL_PORT=3306
+   MYSQL_USER=wordcounter
+   MYSQL_PASSWORD=your_mysql_password
+   MYSQL_DB=wordcounter
    ```
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
@@ -128,13 +135,16 @@ Right-click menus:
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
+   - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
-5. Run the bot:
+5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
+
+6. Run the bot:
    ```bash
    python main.py
    ```
 
-6. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
+7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
    - View Channels, Read Message History, Send Messages, Send Messages in Threads
    - Embed Links, Attach Files, Add Reactions, Use Slash Commands, Use External Apps
    - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings), Manage Channels

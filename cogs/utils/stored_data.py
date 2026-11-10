@@ -5,13 +5,20 @@ import time
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
+from cogs.utils.mysql import TABLE_OPTIONS
 
 BLACKLIST_TABLE = "blacklist"
+META_TABLE = "db_meta"
 BLACKLIST_SCHEMA = (
     """CREATE TABLE IF NOT EXISTS blacklist (
-        target_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, reason TEXT,
-        added_by INTEGER NOT NULL, added_at REAL NOT NULL)""",
+        target_id BIGINT PRIMARY KEY, kind VARCHAR(16) NOT NULL, reason TEXT,
+        added_by BIGINT NOT NULL, added_at DOUBLE NOT NULL)""" + TABLE_OPTIONS,
 )
+META_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS db_meta (
+        name VARCHAR(64) PRIMARY KEY, value TEXT)""" + TABLE_OPTIONS,
+)
+INTEGER_TYPES = ("bigint", "int", "integer", "mediumint", "smallint", "tinyint")
 UPLOAD_LIMIT = 8 * 1024 * 1024
 KEPT_POLICY = (
     "When you ask us to delete your data, we delete everything WordCounter stores under your Discord ID, with one "
@@ -104,15 +111,15 @@ def pack(text: str, stem: str) -> Optional[Tuple[str, bytes]]:
 class StoredDataQueries:
     async def _id_columns(self) -> Dict[str, List[str]]:
         cursor = await self.db.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            """SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION"""
         )
-        names = [row[0] for row in await cursor.fetchall() if row[0] != BLACKLIST_TABLE]
         found: Dict[str, List[str]] = {}
-        for name in names:
-            cursor = await self.db.execute(f'PRAGMA table_info("{name}")')
-            columns = [row[1] for row in await cursor.fetchall() if row[1].endswith("_id") and "INT" in (row[2] or "").upper()]
-            if columns:
-                found[name] = columns
+        for table, column, kind in await cursor.fetchall():
+            if table in (BLACKLIST_TABLE, META_TABLE):
+                continue
+            if column.endswith("_id") and str(kind).lower() in INTEGER_TYPES:
+                found.setdefault(table, []).append(column)
         return found
 
     async def find_by_id(self, target_id: int) -> Found:
@@ -120,8 +127,8 @@ class StoredDataQueries:
         tables: List[Table] = []
         async with self.db_lock:
             for name, columns in (await self._id_columns()).items():
-                where = " OR ".join(f'"{column}" = ?' for column in columns)
-                cursor = await self.db.execute(f'SELECT * FROM "{name}" WHERE {where}', (target_id,) * len(columns))
+                where = " OR ".join(f"`{column}` = ?" for column in columns)
+                cursor = await self.db.execute(f"SELECT * FROM `{name}` WHERE {where}", (target_id,) * len(columns))
                 rows = [tuple(row) for row in await cursor.fetchall()]
                 if rows:
                     names = [description[0] for description in cursor.description]
@@ -134,8 +141,8 @@ class StoredDataQueries:
         removed: Dict[str, int] = {}
         async with self.db_lock:
             for name, columns in (await self._id_columns()).items():
-                where = " OR ".join(f'"{column}" = ?' for column in columns)
-                cursor = await self.db.execute(f'DELETE FROM "{name}" WHERE {where}', (target_id,) * len(columns))
+                where = " OR ".join(f"`{column}` = ?" for column in columns)
+                cursor = await self.db.execute(f"DELETE FROM `{name}` WHERE {where}", (target_id,) * len(columns))
                 if cursor.rowcount and cursor.rowcount > 0:
                     removed[name] = cursor.rowcount
             await self.db.commit()
@@ -167,7 +174,7 @@ class StoredDataQueries:
     async def add_to_blacklist(self, target_id: int, kind: str, reason: Optional[str], added_by: int) -> None:
         await self._write([(
             """INSERT INTO blacklist (target_id, kind, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(target_id) DO UPDATE SET reason = excluded.reason""",
+            ON DUPLICATE KEY UPDATE reason = VALUES(reason)""",
             [(target_id, kind, reason, added_by, time.time())],
         )])
 

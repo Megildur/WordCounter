@@ -4,6 +4,9 @@ import discord
 from aiohttp import web
 from cogs.utils.jar import (
     SPAM_NOTE,
+    WORD_TABS,
+    YOURS,
+    default_counts,
     key_changes,
     listed_words,
     money,
@@ -16,13 +19,16 @@ from cogs.utils.jar import (
     prices,
     removed_words,
     role_problem,
+    tab_counts,
+    tab_name,
     utc_day,
     week_index,
     word_changes,
+    word_tab,
 )
 from cogs.utils.server_settings import parse_keywords
-from cogs.utils.swear_filter import DEFAULT_ENTRIES, DEFAULT_KEYS, Override, build_entries
-from cogs.utils.swear_words import TIER_NAMES
+from cogs.utils.swear_filter import DEFAULT_KEYS, Override, build_entries, languages_for
+from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, TIER_NAMES
 from web.core import redirect, render
 from web.dashboard import (
     channel_groups,
@@ -44,18 +50,26 @@ RULE_ACTIONS = {"rule_include": "include", "rule_exclude": "exclude"}
 ROLE_COLUMNS = ("potty_role_id", "clean_role_id")
 
 
-def word_lists(settings: Dict[str, Any], overrides: List[Override]) -> Dict[str, Any]:
-    listed = listed_words(overrides)
+def word_lists(settings: Dict[str, Any], overrides: List[Override], tab: str) -> Dict[str, Any]:
+    listed = listed_words(overrides, tab)
     tiers = [
         {"tier": tier, "name": TIER_NAMES[tier], "price": price, "money": money(settings, price), "words": listed[tier]}
         for tier, price in prices(settings).items()
     ]
+    counts = tab_counts(overrides)
+    sizes = default_counts()
+    on = set(languages_for(settings))
     return {
         "tiers": tiers,
-        "removed": removed_words(overrides),
-        "total": sum(len(words) for words in listed.values()),
+        "removed": removed_words(overrides, tab),
+        "total": sum(counts[code] for code in on) + counts[YOURS],
         "added": sum(not gone and key not in DEFAULT_KEYS for key, _, gone in overrides),
         "moved": len(moved_words(overrides)),
+        "tab": tab,
+        "tab_name": tab_name(tab),
+        "tab_off": tab in LANGUAGES and tab not in on,
+        "tabs": [{"key": key, "name": tab_name(key), "count": counts[key], "off": key in LANGUAGES and key not in on} for key in WORD_TABS],
+        "languages": [{"code": code, "name": name, "on": code in on, "size": sizes[code]} for code, (name, _) in LANGUAGES.items()],
     }
 
 
@@ -93,7 +107,7 @@ async def swearjar(request: web.Request) -> web.Response:
     settings = await db.jar_settings(guild.id)
     overrides = await db.jar_word_overrides(guild.id)
     rules = await db.jar_channel_rules(guild.id)
-    words = word_lists(settings, overrides)
+    words = word_lists(settings, overrides, word_tab(request.query.get("lang")))
     me = guild.me
     return render(
         request,
@@ -103,7 +117,6 @@ async def swearjar(request: web.Request) -> web.Response:
         tiers=words["tiers"],
         words=words,
         unit=money(settings, 1),
-        word_count=len(DEFAULT_ENTRIES),
         has_overrides=bool(overrides),
         rules=[{"id": cid, "label": channel_label(guild, cid), "rule": rule} for cid, rule in sorted(rules.items())],
         add_groups=channel_groups(guild, include_categories=True, exclude=tuple(rules)),
@@ -211,6 +224,15 @@ async def swearjar_action(request: web.Request) -> web.Response:
                 result = "jar_mode_saved"
         elif action == "fines":
             result = await _fines(db, guild, settings, form)
+        elif action == "language" and form.get("lang") in LANGUAGE_COLUMNS:
+            column = LANGUAGE_COLUMNS[form.get("lang")]
+            turning_on = form.get("state") == "on"
+            others = [name for name in LANGUAGE_COLUMNS.values() if name != column and settings.get(name)]
+            if not turning_on and not others:
+                result = "need_language"
+            else:
+                await db.jar_update(guild.id, **{column: int(turning_on)})
+                result = "language_on" if turning_on else "language_off"
         elif action in WORD_ACTIONS:
             result = await _words(db, guild, WORD_ACTIONS[action], form)
         elif action == "words_restore":
@@ -241,4 +263,4 @@ async def swearjar_action(request: web.Request) -> web.Response:
             if result == "jar_reset":
                 await db.jar_reset_members(guild.id)
         refresh_jar(request, guild.id)
-    return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}")
+    return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}&lang={word_tab(form.get('tab') if csrf_ok else None)}")

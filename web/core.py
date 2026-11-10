@@ -53,6 +53,9 @@ MESSAGES = {
     "jar_mode_saved": ("success", "Saved what happens when someone swears."),
     "need_manage_messages": ("error", "WordCounter needs the Manage Messages permission to delete messages."),
     "fines_saved": ("success", "Fines saved."),
+    "language_on": ("success", "That language's swears are fined now."),
+    "language_off": ("success", "That language's swears aren't fined any more."),
+    "need_language": ("error", "Keep at least one language on. Turn the other one on first."),
     "bad_fines": ("error", "Check the fines: prices are whole units from 1 to 1000, a unit is worth 0.01 to 1000, and tokens need both names."),
     "words_saved": ("success", "Words added."),
     "words_skipped": ("error", "Some words were skipped. A word has to start with a letter and be 40 characters or less."),
@@ -75,6 +78,28 @@ MESSAGES = {
 
 def _asset_version() -> str:
     return hashlib.sha1((ROOT / "static" / "css" / "style.css").read_bytes()).hexdigest()[:10]
+
+
+ICON_FILES = (
+    "wordcounter-96.webp", "wordcounter-256.png", "wordcounter-256.webp", "wordcounter-512.png",
+    "wordcounter-512.webp", "favicon-32.png", "apple-touch-icon.png",
+)
+
+
+IMG = ROOT / "static" / "img"
+
+
+def _files_version(paths) -> str:
+    digest = hashlib.sha1()
+    for path in sorted(paths):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+def _icon_version() -> str:
+    return _files_version(IMG / name for name in ICON_FILES)
 
 
 def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
@@ -130,6 +155,9 @@ ENV.globals.update(
     source_url=SOURCE_URL,
     botzilla_url=BOTZILLA_URL,
     asset_version=_asset_version(),
+    icon_version=_icon_version(),
+    pixel_version=_files_version([*(IMG / "pixel").glob("*.png"), IMG / "game-title.png"]),
+    social_version=_files_version((IMG / "social").glob("*.png")),
     showcase=_showcase(),
     month_name=lambda month: calendar.month_name[month],
 )

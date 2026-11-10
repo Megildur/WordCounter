@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import calendar
 from typing import Any, Dict, List, Optional, Tuple
 import discord
@@ -8,12 +9,14 @@ from cogs.utils.components import (
     BRAND_COLOR,
     TRACKING_OFF_MESSAGE,
     activity_line,
+    can_attach,
     check_channel_with_config,
     create_v2_container,
     create_v2_view,
     error_view,
     keyword_summary,
 )
+from cogs.utils import cards
 from cogs.utils.counting import MessageStats
 from paginator import ButtonPaginator
 
@@ -68,14 +71,15 @@ class UserStatsPaginator(ButtonPaginator):
                 fields.append((f"Channels in {label}", "\n".join(channel_lines)))
             footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {self.guild.name}"
 
-        return create_v2_container(
+        container = create_v2_container(
             title="User stats",
             description=f"{self.member.mention} has written **{words:,}** words in this server.",
             fields=fields,
             footer=footer,
-            thumbnail_url=self.member.display_avatar.url,
             color=BRAND_COLOR,
         )
+        picture = cards.gallery(cards.STATS_FILE, f"{self.member.display_name}'s stats card: {words:,} words on WordCounter's flip counter")
+        return discord.ui.Container(picture, *container.children, accent_colour=container.accent_colour)
 
     def extra_rows(self) -> List[discord.ui.ActionRow]:
         if len(self.months) < 2:
@@ -104,8 +108,29 @@ class Counter(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.word_count_menu = app_commands.ContextMenu(name="Message Word Count", callback=self.message_word_count)
-        self.user_stats_menu = app_commands.ContextMenu(name="User Stats", callback=self.user_stats)
+        self.word_count_menu = app_commands.ContextMenu(
+            name="Message Word Count",
+            callback=self.message_word_count,
+            extras={
+                "details": (
+                    "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot "
+                    "messages aren't counted."
+                ),
+            },
+        )
+        self.user_stats_menu = app_commands.ContextMenu(
+            name="User Stats",
+            callback=self.user_stats,
+            extras={
+                "details": (
+                    "Right-click a member, then Apps > User Stats, for the same stats card, totals and monthly "
+                    "pages as /stats user."
+                ),
+                "bot_perms": (
+                    "Attach Files, for the stats card"
+                ),
+            },
+        )
         self.bot.tree.add_command(self.word_count_menu)
         self.bot.tree.add_command(self.user_stats_menu)
 
@@ -145,13 +170,38 @@ class Counter(commands.Cog):
             )
             return
 
+        if not await can_attach(interaction, "Can't show the stats card here"):
+            return
+        await interaction.response.defer()
         months = await self.bot.db.get_user_monthly_breakdown(interaction.guild_id, user.id)
-        await UserStatsPaginator(interaction.guild, user, interaction.user.id, overall, months).start(interaction)
+        words, messages, attachments, emojis, _ = overall
+        picture = await asyncio.to_thread(
+            cards.stats_card, user.display_name, interaction.guild.name, await cards.avatar(user, 256),
+            words, messages, attachments, emojis,
+        )
+        await UserStatsPaginator(interaction.guild, user, interaction.user.id, overall, months).start(
+            interaction, file=cards.picture_file(picture, cards.STATS_FILE),
+        )
 
     async def user_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
         await self._send_user_stats(interaction, user)
 
-    @stats.command(name="user", description="Show detailed statistics for a user")
+    @stats.command(
+        name="user",
+        description="Show detailed statistics for a user",
+        extras={
+            "details": (
+                "A member's stats card: their picture and name, their words on WordCounter's flip counter, and "
+                "their messages, attachments and emojis. Under it come their totals (keywords too), then a page "
+                "for each month with a channel-by-channel breakdown. Pick a month from the menu or page through "
+                "with Previous and Next. Only you can use the controls. It works once tracking is on in "
+                "/settings."
+            ),
+            "bot_perms": (
+                "Attach Files, for the stats card"
+            ),
+        },
+    )
     @app_commands.describe(user="The user to show statistics for")
     async def user_stats_slash(self, interaction: discord.Interaction, user: discord.Member) -> None:
         await self._send_user_stats(interaction, user)

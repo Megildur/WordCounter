@@ -5,9 +5,9 @@ import sys
 from typing import Any, Set
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist
+from cogs.utils import blacklist, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
-from cogs.utils.database import WordCounterDatabase
+from cogs.utils.database import NotMigrated, WordCounterDatabase
 from cogs.utils.http import close_session
 
 for stream in (sys.stdout, sys.stderr):
@@ -32,7 +32,7 @@ CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands
 
 class MyBot(commands.Bot):
     def __init__(self) -> None:
-        super().__init__(command_prefix="!wc", intents=discord.Intents.all())
+        super().__init__(command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none())
         self.db = WordCounterDatabase(self)
         self.blacklisted: Set[int] = set()
 
@@ -44,6 +44,7 @@ class MyBot(commands.Bot):
         await self.db.connect()
         self.blacklisted.update(await self.db.blacklisted_ids())
         blacklist.install(self)
+        startup.install(self)
 
         def handle_async_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
             error = context.get("exception")
@@ -70,4 +71,7 @@ bot = MyBot()
 if __name__ == "__main__":
     if not API_TOKEN:
         sys.exit("API_TOKEN is missing. Add it to your .env file.")
-    bot.run(API_TOKEN, log_handler=None)
+    try:
+        bot.run(API_TOKEN, log_handler=None)
+    except NotMigrated as error:
+        sys.exit(str(error))

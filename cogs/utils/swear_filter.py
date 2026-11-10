@@ -4,8 +4,8 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import lru_cache
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from cogs.utils.swear_words import DEFAULT_WORDS, SAFE_WORDS
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, SAFE_WORDS
 
 MAX_FINED_PER_MESSAGE = 3
 WORD_LIMIT = 40
@@ -31,6 +31,7 @@ class Entry:
     kind: str
     letters: str
     tier: int
+    language: str = ""
 
 
 def fold(text: str) -> str:
@@ -156,22 +157,36 @@ def fine_for(tiers: Iterable[int], prices: Mapping[int, int]) -> Tuple[int, int]
 
 
 DEFAULT_ENTRIES: Tuple[Entry, ...] = tuple(
-    parse_entry(raw, tier) for tier, words in DEFAULT_WORDS.items() for raw in words
+    replace(parse_entry(raw, tier), language=code)
+    for code, (_, words) in LANGUAGES.items()
+    for tier, raws in words.items()
+    for raw in raws
 )
 DEFAULT_KEYS = {entry.key for entry in DEFAULT_ENTRIES}
+DEFAULT_LANGUAGE = {entry.key: entry.language for entry in DEFAULT_ENTRIES}
+ALL_LANGUAGES: Tuple[str, ...] = tuple(LANGUAGES)
 
 
-def build_entries(overrides: Iterable[Override]) -> List[Entry]:
+def languages_for(settings: Mapping[str, Any]) -> Tuple[str, ...]:
+    return tuple(code for code, column in LANGUAGE_COLUMNS.items() if settings.get(column))
+
+
+def build_entries(overrides: Iterable[Override], languages: Iterable[str] = ALL_LANGUAGES) -> List[Entry]:
+    allowed = set(languages)
     removed = {key for key, _, gone in overrides if gone}
     tiers = {key: tier for key, tier, gone in overrides if not gone}
-    entries = [replace(entry, tier=tiers.pop(entry.key, entry.tier)) for entry in DEFAULT_ENTRIES if entry.key not in removed]
-    entries.extend(parse_entry(key, tier) for key, tier in tiers.items())
+    entries = [
+        replace(entry, tier=tiers.pop(entry.key, entry.tier))
+        for entry in DEFAULT_ENTRIES
+        if entry.key not in removed and entry.language in allowed
+    ]
+    entries.extend(parse_entry(key, tier) for key, tier in tiers.items() if key not in DEFAULT_LANGUAGE)
     return entries
 
 
 @lru_cache(maxsize=64)
-def matcher_for(overrides: Tuple[Override, ...]) -> SwearMatcher:
-    return SwearMatcher(build_entries(overrides))
+def matcher_for(overrides: Tuple[Override, ...], languages: Tuple[str, ...] = ALL_LANGUAGES) -> SwearMatcher:
+    return SwearMatcher(build_entries(overrides, languages))
 
 
 def default_keys_for(word: str) -> List[str]:

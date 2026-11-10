@@ -31,7 +31,7 @@ from cogs.utils.components import (
 )
 from cogs.utils.counting import MessageStats
 from cogs.utils.jar import JAR_OFF_MESSAGE, jar_checks
-from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, matcher_for
+from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, languages_for, matcher_for
 
 log = logging.getLogger(__name__)
 
@@ -965,7 +965,9 @@ class AnalyzeChat(commands.Cog):
                 coverage = await self._coverage(guild.id, record["cutoff"])
             run = CrawlRun(guild.id, record, coverage)
             if run.counts_swears:
-                run.matcher = await asyncio.to_thread(matcher_for, tuple(await self.bot.db.jar_word_overrides(guild.id)))
+                overrides = tuple(await self.bot.db.jar_word_overrides(guild.id))
+                languages = languages_for(await self.bot.db.jar_settings(guild.id))
+                run.matcher = await asyncio.to_thread(matcher_for, overrides, languages)
             progress = Progress(
                 started=time.monotonic() - max(0.0, time.time() - record["started_at"]),
                 read=record["messages_read"],
@@ -1098,7 +1100,22 @@ class AnalyzeChat(commands.Cog):
         finally:
             self.running_guilds.discard(guild.id)
 
-    @analyze_chat.command(name="swears", description="Add past swears to the Swears leaderboard (nobody is fined)")
+    @analyze_chat.command(
+        name="swears",
+        description="Add past swears to the Swears leaderboard (nobody is fined)",
+        extras={
+            "details": (
+                "Reads past messages for swears and adds them to the Swears leaderboard. Nobody is fined, and "
+                "wallets, debts and streaks don't change."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+            "bot_perms": (
+                "Read Message History in the channels it counts"
+            ),
+        },
+    )
     async def swears(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)
         if reason is None and not (await self.bot.db.jar_settings(interaction.guild.id))["enabled"]:
@@ -1116,7 +1133,26 @@ class AnalyzeChat(commands.Cog):
         view = AnalyzeConfirmView(self, interaction.user.id, [], coverage, swears=True)
         view.message = await self._send(interaction, view)
 
-    @analyze_chat.command(name="single_user", description="Count one member's past messages")
+    @analyze_chat.command(
+        name="single_user",
+        description="Count one member's past messages",
+        extras={
+            "details": (
+                "Counts one member's past messages using Discord's message search, usually in a few minutes. If "
+                "search isn't available for the server, it reads channel history instead. Messages already "
+                "counted live are skipped and gaps when tracking was off are filled in, so nothing is counted "
+                "twice, and each member is analyzed once (Allow re-analysis in /settings clears them first to "
+                "redo it). Set keywords in /settings first if they should count in old messages. A progress card "
+                "shows how far it's got."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+            "bot_perms": (
+                "Read Message History in the channels it counts"
+            ),
+        },
+    )
     @app_commands.describe(target="The member whose past messages to count")
     async def single_user(self, interaction: discord.Interaction, target: discord.Member) -> None:
         reason = await self._blocked_reason(interaction)
@@ -1140,7 +1176,25 @@ class AnalyzeChat(commands.Cog):
         view = AnalyzeConfirmView(self, interaction.user.id, keywords, coverage, target=target)
         view.message = await self._send(interaction, view)
 
-    @analyze_chat.command(name="whole_server", description="Count every member's past messages")
+    @analyze_chat.command(
+        name="whole_server",
+        description="Count every member's past messages",
+        extras={
+            "details": (
+                "Reads every tracked channel, voice chat and thread, active and archived, once, and credits each "
+                "past message to its author, for every member who hasn't been analyzed yet. Messages already "
+                "counted live are skipped, so nothing is counted twice. Progress is saved every minute, so if "
+                "WordCounter restarts mid-run it picks up where it stopped on its own. Channels it can't read "
+                "are listed at the end so you know what was left out. One analysis runs in a server at a time."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+            "bot_perms": (
+                "Read Message History in the channels it counts"
+            ),
+        },
+    )
     async def whole_server(self, interaction: discord.Interaction) -> None:
         reason = await self._blocked_reason(interaction)
         if reason:

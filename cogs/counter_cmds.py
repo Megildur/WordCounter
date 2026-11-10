@@ -1,6 +1,7 @@
 from __future__ import annotations
+import asyncio
 import calendar
-from typing import List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -17,10 +18,13 @@ from cogs.utils.components import (
     format_channel_or_category,
     make_button,
     manager_check_error,
-    member_name,
+    can_attach,
+    display_names,
+    member_names,
     rank_prefix,
     tab_rows,
 )
+from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
@@ -504,6 +508,7 @@ class LeaderboardPaginator(ButtonPaginator):
         self.channel = channel
         self.category = "words"
         self.entry_count = 0
+        self.podium: Optional[bytes] = None
         self.history: List[Tuple[str, str]] = []
 
     async def load(self, category: str) -> None:
@@ -529,43 +534,74 @@ class LeaderboardPaginator(ButtonPaginator):
             size = 10
         self.entry_count = len(entries)
         self.set_pages([entries[i:i + size] for i in range(0, len(entries), size)] or [[]])
+        self.podium = await self._draw_podium(entries[:3]) if category != "keywords" and entries else None
 
-    def format_page(self, chunk: List) -> discord.ui.Container:
+    async def _draw_podium(self, top: List[Tuple[int, int]]) -> bytes:
+        names = await display_names(self.bot, self.guild, [uid for uid, _ in top])
+        people = [self.guild.get_member(uid) or self.bot.get_user(uid) for uid, _ in top]
+        faces = await asyncio.gather(*(cards.avatar(person) for person in people))
+        entries = [(names[uid], face, f"{count:,} {self.category}") for (uid, count), face in zip(top, faces)]
+        return await asyncio.to_thread(cards.podium, entries)
+
+    async def get_page_kwargs(self, page: Any, skip_formatting: bool = False) -> Dict[str, Any]:
+        kwargs = await super().get_page_kwargs(page, skip_formatting)
+        if self.podium and self.current_page == 0:
+            kwargs["files"] = [cards.picture_file(self.podium, cards.PODIUM_FILE)]
+        return kwargs
+
+    async def update_page(self, interaction: discord.Interaction) -> None:
+        if self.message is None:
+            self.message = interaction.message
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
+        if "files" in kwargs:
+            kwargs["attachments"] = kwargs.pop("files")
+        await interaction.edit_original_response(**kwargs)
+
+    async def format_page(self, chunk: List) -> discord.ui.Container:
         where = self.channel.mention if self.channel else "this server"
         fields: List[Tuple[str, str]] = []
         if self.category == "keywords":
             description = f"Who says each keyword most in {where}"
             if not chunk:
                 description += "\n\nNo keyword use recorded yet."
+            names = await member_names(self.bot, self.guild, [uid for _, users in chunk for uid, _ in users[:10]])
             for keyword, users in chunk:
                 top = users[:10]
                 fields.append((
                     f'"{keyword}"',
-                    "\n".join(f"{rank_prefix(rank)} **{member_name(self.guild, uid)}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
+                    "\n".join(f"{rank_prefix(rank)} **{names[uid]}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"
         else:
             start = self.current_page * 10 + 1
+            names = await member_names(self.bot, self.guild, [uid for uid, _ in chunk])
             lines = [
-                f"{rank_prefix(rank)} **{member_name(self.guild, uid)}** · {count:,} {self.category}"
+                f"{rank_prefix(rank)} **{names[uid]}** · {count:,} {self.category}"
                 for rank, (uid, count) in enumerate(chunk, start=start)
             ]
             description = f"Top members in {where}\n\n" + ("\n".join(lines) or "Nothing recorded yet.")
             footer = f"{self.entry_count} member(s)"
 
-        return create_v2_container(
+        container = create_v2_container(
             title=f"{LEADERBOARDS[self.category]} leaderboard",
             description=description,
             fields=(fields + self.history) or None,
             footer=footer,
             color=BRAND_COLOR,
         )
+        if not (self.podium and self.current_page == 0):
+            return container
+        picture = cards.gallery(cards.PODIUM_FILE, f"The top three for {self.category} on podium blocks on Cradle Station's observation deck")
+        return discord.ui.Container(picture, *container.children, accent_colour=container.accent_colour)
 
     def extra_rows(self) -> List[discord.ui.ActionRow]:
         return tab_rows(LEADERBOARDS, self.category, self._switch_to)
 
     def _switch_to(self, category: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
             await self.load(category)
             await self.update_page(interaction)
 
@@ -576,7 +612,23 @@ class Counter_Cmds(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="settings", description="Choose what gets tracked, manage keywords and reset data")
+    @app_commands.command(
+        name="settings",
+        description="Choose what gets tracked, manage keywords and reset data",
+        extras={
+            "details": (
+                "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an "
+                "ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category "
+                "covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset "
+                "counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the "
+                "whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the "
+                "person who opened it can press its buttons."
+            ),
+            "user_perms": (
+                "Manage Server"
+            ),
+        },
+    )
     @app_commands.default_permissions(manage_guild=True)
     async def settings_command(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)
@@ -589,7 +641,24 @@ class Counter_Cmds(commands.Cog):
         menu.build_ui()
         await interaction.response.send_message(view=menu, ephemeral=True)
 
-    @app_commands.command(name="leaderboard", description="Leaderboards for words, messages, attachments, emojis and keywords")
+    @app_commands.command(
+        name="leaderboard",
+        description="Leaderboards for words, messages, attachments, emojis and keywords",
+        extras={
+            "details": (
+                "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's "
+                "observation deck, with their pictures, then ten members a page. Buttons switch "
+                "between words, messages, attachments (files, stickers and links), emojis, keywords and swears, "
+                "and Previous and Next page through. The keywords tab shows who says each tracked keyword most. "
+                "Pick a channel to rank only what was said there, with that channel's month-by-month history "
+                "under the list. Members who left show by name. Only the person who ran it can press its "
+                "buttons, and nobody is pinged. It works once tracking is on in /settings."
+            ),
+            "bot_perms": (
+                "Attach Files, for the podium"
+            ),
+        },
+    )
     @app_commands.describe(channel="Only count activity in this channel")
     async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
         if interaction.guild is None:
@@ -599,6 +668,9 @@ class Counter_Cmds(commands.Cog):
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE), ephemeral=True)
             return
 
+        if not await can_attach(interaction, "Can't show the leaderboard here"):
+            return
+        await interaction.response.defer()
         paginator = LeaderboardPaginator(self.bot, interaction.guild, interaction.user.id, channel)
         await paginator.load("words")
         await paginator.start(interaction)
