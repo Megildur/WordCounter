@@ -74,7 +74,10 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
                 "Rankings for words, messages, attachments, emojis, keywords and swears. "
                 "Pick a channel to see its top members and a month-by-month history.",
             ),
-            ("/stats user <member>", "A member's totals, with a month-by-month and channel-by-channel breakdown."),
+            (
+                "/stats user [member]",
+                "Your totals, or a member's, with a month-by-month and channel-by-channel breakdown.",
+            ),
             ("/keyword list", "The keywords this server tracks."),
             (
                 "Right-click menus",
