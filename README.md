@@ -62,7 +62,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | `/help [ephemeral]` | Everyone | A guide to every command, opening on a pixel-art banner, with invite links. Needs Attach Files where it's used. |
 | `/advertisement` | Everyone | Posts a card about WordCounter with its pixel-art poster and invite links. Needs Attach Files where it's used. |
 | `/leaderboard [channel]` | Everyone | Leaderboards for words, messages, attachments, emojis, keywords and swears, with the top three on a pixel-art podium. Needs Attach Files. |
-| `/stats user <member>` | Everyone | A member's stats card (their words on WordCounter's flip counter), totals and monthly and per-channel history. Needs Attach Files. |
+| `/stats user [member]` | Everyone | Your stats card, or a member's (their words on WordCounter's flip counter), totals and monthly and per-channel history. Needs Attach Files. |
 | `/keyword list` | Everyone | The keywords this server tracks. |
 | `/settings` | Manage Server | Tracking mode, channels, keywords and data resets. |
 | `/analyze_chat single_user <member>` | Manage Server | Counts one member's past messages. |

@@ -165,7 +165,7 @@ class Counter(commands.Cog):
         overall = await self.bot.db.get_user_full_stats(interaction.guild_id, user.id)
         if not any(overall):
             await interaction.response.send_message(
-                view=error_view(f"{user.mention} has no recorded activity in this server yet."),
+                view=error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
                 ephemeral=True,
             )
             return
@@ -191,8 +191,9 @@ class Counter(commands.Cog):
         description="Show detailed statistics for a user",
         extras={
             "details": (
-                "A member's stats card: their picture and name, their words on WordCounter's flip counter, and "
-                "their messages, attachments and emojis. Under it come their totals (keywords too), then a page "
+                "Your stats card, or another member's when you pick one: their picture and name, their words on "
+                "WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to "
+                "see your own. Under it come their totals (keywords too), then a page "
                 "for each month with a channel-by-channel breakdown. Pick a month from the menu or page through "
                 "with Previous and Next. Only you can use the controls. It works once tracking is on in "
                 "/settings."
@@ -202,9 +203,9 @@ class Counter(commands.Cog):
             ),
         },
     )
-    @app_commands.describe(user="The user to show statistics for")
-    async def user_stats_slash(self, interaction: discord.Interaction, user: discord.Member) -> None:
-        await self._send_user_stats(interaction, user)
+    @app_commands.describe(user="The member to show statistics for (you, if left out)")
+    async def user_stats_slash(self, interaction: discord.Interaction, user: Optional[discord.Member] = None) -> None:
+        await self._send_user_stats(interaction, user or interaction.user)
 
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
         if message.author.bot or message.guild is None:
