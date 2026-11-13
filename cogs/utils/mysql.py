@@ -119,11 +119,11 @@ class SessionLock:
     async def __aenter__(self) -> Session:
         asked = time.monotonic()
         await self.lock.acquire()
-        waited = time.monotonic() - asked
-        if waited > LOCK_SLOW_SECONDS:
-            log.warning("Waited %.1f s for the database lock", waited)
         self._held_since = time.monotonic()
         try:
+            # Inside the try, so a failing log call gives the lock back like any other failure here.
+            if self._held_since - asked > LOCK_SLOW_SECONDS:
+                log.warning("Waited %.1f s for the database lock", self._held_since - asked)
             if self.owner.pool is None:
                 await self.owner.connect_pool()
             self.connection = await self.owner.pool.acquire()
@@ -139,22 +139,24 @@ class SessionLock:
 
     async def __aexit__(self, kind, error, trace) -> None:
         held = time.monotonic() - self._held_since
-        if held > LOCK_SLOW_SECONDS:
-            began = getattr(self.owner.db, "first_sql", None)
-            log.warning("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
         try:
+            if held > LOCK_SLOW_SECONDS:
+                began = getattr(self.owner.db, "first_sql", None)
+                log.warning("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
             if self.connection is not None and not self.connection.closed:
                 if kind is None:
                     await self.connection.commit()
-                    if getattr(self.owner.db, "touches_kept", False):
-                        # Straight after the commit, before anything else can run, so nobody reads the old rows from memory any longer than the commit itself took.
-                        forget = getattr(self.owner, "forget_kept", None)
-                        if forget is not None:
-                            forget()
                 else:
                     await self.connection.rollback()
         finally:
-            await self._release()
+            try:
+                # Right after the commit or rollback and before the lock is given back, so nobody reads the old rows from memory any longer than that took. A block that wrote to a kept table makes the layer forget however it ended, because a commit inside the block may already have saved part of it.
+                if getattr(self.owner.db, "touches_kept", False):
+                    forget = getattr(self.owner, "forget_kept", None)
+                    if forget is not None:
+                        forget()
+            finally:
+                await self._release()
 
     async def _release(self) -> None:
         connection, self.connection = self.connection, None
