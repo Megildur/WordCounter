@@ -10,7 +10,7 @@ import sys
 from typing import Any, Set
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist, startup
+from cogs.utils import blacklist, expired, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import NotMigrated, WordCounterDatabase
 from cogs.utils.http import close_session
@@ -55,7 +55,8 @@ class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.db.connect()
         self.blacklisted.update(await self.db.blacklisted_ids())
-        # Each install wraps the interaction parser, so startup, installed last, runs first: nobody gets through before the bot is ready, then banned users are turned away.
+        # Each install wraps the interaction parser, so startup, installed last, runs first: nobody gets through before the bot is ready, then banned users are turned away, then a press on a menu nobody listens for any more is answered as expired.
+        expired.install(self)
         blacklist.install(self)
         startup.install(self)
 
