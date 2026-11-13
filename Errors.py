@@ -1,6 +1,6 @@
 """Error handling for slash commands, context menus, buttons, selects and modals.
 
-`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, under a short reference, and the person gets an `ErrorDisplayView` (not for an expired interaction). It is private, also after a public defer, where the "thinking" message is removed first. Only an administrator of one of the owner's servers sees the exception text and a button for the full traceback, because those can name file paths, the database host and library versions. Everyone else gets a plain message and the reference.
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, under a short reference, and the person gets an `ErrorDisplayView` (not for an expired interaction). It is private, also after a public defer, where the "thinking" message is removed first, as long as Discord and the network allow checking it. Only an administrator of one of the owner's servers sees the exception text and a button for the full traceback, because those can name file paths, the database host and library versions. Everyone else gets a plain message and the reference.
 """
 
 from __future__ import annotations
@@ -111,13 +111,13 @@ def format_error_details(error: BaseException, detailed: bool = False) -> Tuple[
 
 
 async def drop_thinking_message(interaction: discord.Interaction) -> None:
-    """After a public defer the first follow-up replaces Discord's "thinking" message and can't be private, so an error that arrives while that message is still there removes it first, and its follow-up can be private. A reply that already holds real content is left alone, and so is anything that can't be checked."""
+    """After a public defer the first follow-up replaces Discord's "thinking" message and can't be private, so an error that arrives while that message is still there removes it first, and its follow-up can be private. A reply that already holds real content is left alone, a message that is private already has nothing to hide, and so is anything that can't be checked. This runs while an error is being reported, so whatever it hits is swallowed."""
     try:
         original = await interaction.original_response()
-        if original.flags.loading:
+        if original.flags.loading and not original.flags.ephemeral:
             await interaction.delete_original_response()
-    except discord.HTTPException:
-        pass
+    except Exception:
+        log.debug("Could not check whether the answer was still the thinking message", exc_info=True)
 
 
 async def handle_interaction_error(interaction: discord.Interaction, error: BaseException, context_name: str = "Command") -> None:
