@@ -58,6 +58,16 @@ MONTHLY_UPSERT = """
         emojis = GREATEST(0, emojis + ?)
 """
 
+MONTHLY_BULK_UPSERT = """
+    INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+        words = words + VALUES(words),
+        messages = messages + VALUES(messages),
+        attachments = attachments + VALUES(attachments),
+        emojis = emojis + VALUES(emojis)
+"""
+
 MONTHLY_DECREMENT = f"""
     UPDATE monthly_user_stats SET
         words = GREATEST(0, words + ?),
@@ -433,7 +443,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         for user_id, (monthly, monthly_keywords) in results.items():
             channel_totals: Dict[int, List[int]] = defaultdict(lambda: [0, 0, 0, 0])
             for (channel_id, year, month), counts in monthly.items():
-                monthly_rows.append((guild_id, user_id, channel_id, year, month, *counts, *counts))
+                monthly_rows.append((guild_id, user_id, channel_id, year, month, *counts))
                 totals = channel_totals[channel_id]
                 for index, value in enumerate(counts):
                     totals[index] += value
@@ -464,7 +474,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
 
         for table, table_rows in rows.items():
             await self.db.executemany(_increment_sql(table), table_rows)
-        await self.db.executemany(MONTHLY_UPSERT, monthly_rows)
+        await self.db.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
         await self.db.executemany(
