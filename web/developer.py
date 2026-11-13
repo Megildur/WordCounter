@@ -1,3 +1,8 @@
+"""The developer's profile card on the home page.
+
+Fetches the developer's Discord user, cached for an hour, and reads their status and activity from a server the bot shares with them. It falls back to fixed text and a local avatar when Discord has nothing.
+"""
+
 from __future__ import annotations
 import asyncio
 import time
@@ -11,10 +16,15 @@ STATUS_LABELS = {"online": "Online", "idle": "Idle", "dnd": "Do not disturb", "o
 PROFILE_TTL = 60 * 60
 FETCH_TIMEOUT = 3
 
+# The last fetched user and the monotonic time of the last attempt. -inf means never, so the first page view fetches.
 _cache: Dict[str, Any] = {"user": None, "at": float("-inf")}
 
 
 async def _profile_user(bot) -> Optional[discord.User]:
+    """Returns the developer's Discord user, fetched at most once per PROFILE_TTL, or None until a fetch has worked.
+
+    The time is stamped before the fetch, so a slow or failing Discord isn't tried again on every page view. The fetch gets FETCH_TIMEOUT seconds, so the home page never waits long.
+    """
     fetch_user = getattr(bot, "fetch_user", None)
     if fetch_user is None or time.monotonic() - _cache["at"] < PROFILE_TTL:
         return _cache["user"]
@@ -27,6 +37,7 @@ async def _profile_user(bot) -> Optional[discord.User]:
 
 
 def _member(bot) -> Optional[discord.Member]:
+    """Finds the developer as a member of any server the bot is in. Status and activities come from a member, not from a fetched user."""
     return next((member for guild in bot.guilds if (member := guild.get_member(DEVELOPER_ID)) is not None), None)
 
 
@@ -40,12 +51,14 @@ def _activities(member: Optional[discord.Member]) -> Tuple[Optional[str], Option
 
 
 async def developer_profile(bot) -> Dict[str, Any]:
+    """Returns the fields the home page shows for the developer, using fixed defaults for the name, status text and avatar when Discord data isn't available."""
     member = _member(bot)
     user = await _profile_user(bot)
     person = user or member
     status = str(member.status) if member is not None else None
     custom_status, listening = _activities(member)
     decoration = getattr(person, "avatar_decoration", None)
+    # The banner is only on a user fetched from Discord, not on a cached member.
     banner = getattr(user, "banner", None)
     return {
         "name": getattr(person, "global_name", None) or "Brandon",

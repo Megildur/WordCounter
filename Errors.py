@@ -1,3 +1,8 @@
+"""Error handling for slash commands, context menus, buttons, selects and modals.
+
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets a private `ErrorDisplayView` with a button for the full traceback.
+"""
+
 from __future__ import annotations
 import io
 import logging
@@ -13,6 +18,7 @@ from cogs.utils.config import SUPPORT_URL
 
 log = logging.getLogger("Errors")
 
+# Past this many characters the traceback is sent as a file, with only its end shown in the message, since a message holds 4000 characters of text.
 INLINE_TRACEBACK_LIMIT = 3500
 
 
@@ -30,6 +36,7 @@ class TracebackView(LayoutView):
 
 
 class ErrorDisplayView(AuthorOnlyView):
+    """The error message shown to the user, with a link to the support server and, when there is a traceback, a button that sends it privately. Only the person who hit the error can press it."""
     def __init__(self, title: str, description: str, traceback_str: str = "", author_id: Optional[int] = None) -> None:
         super().__init__(
             author_id=author_id,
@@ -59,6 +66,10 @@ class ErrorDisplayView(AuthorOnlyView):
 
 
 def format_error_details(error: BaseException) -> Tuple[str, str, str]:
+    """Returns (title, description, full traceback) for an error.
+
+    discord.py wraps an exception raised in a command in a CommandInvokeError, so the traceback and the Discord API checks use `.original`. Missing permissions, cooldowns and Discord API errors get plain explanations, and anything else shows its type and message.
+    """
     original = getattr(error, "original", error)
     full_traceback = "".join(traceback.format_exception(type(original), original, original.__traceback__)).strip()
     if not full_traceback:
@@ -91,6 +102,7 @@ def format_error_details(error: BaseException) -> Tuple[str, str, str]:
 
 
 async def handle_interaction_error(interaction: discord.Interaction, error: BaseException, context_name: str = "Command") -> None:
+    """Logs an interaction error with the command, user, server and channel, then shows the user an `ErrorDisplayView`. Slash commands, context menus, components and modals all end up here."""
     title, description, full_traceback = format_error_details(error)
 
     if interaction.command:
@@ -108,11 +120,13 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
     )
 
     original = getattr(error, "original", error)
+    # Error 10062 is "Unknown interaction", usually because the 3 second window to answer had passed, so there is nothing to reply to. It is logged above and skipped.
     if isinstance(original, discord.NotFound) and original.code == 10062:
         return
 
     view = ErrorDisplayView(title, description, full_traceback, interaction.user.id)
     try:
+        # If the command already answered or deferred, the error goes out as a follow-up. After a public defer that first follow-up can't be private.
         if interaction.response.is_done():
             await interaction.followup.send(view=view, ephemeral=True)
         else:
@@ -132,6 +146,7 @@ class ErrorHandler(commands.Cog):
         self._old_tree_error = self.bot.tree.on_error
         self.bot.tree.on_error = self.tree_on_error
 
+        # These hooks replace `on_error` on the BaseView and Modal classes themselves, so every view and modal reports through here unless it defines its own `on_error`. `cog_unload` puts the originals back.
         self._old_view_error = BaseView.on_error
 
         async def view_on_error(view: BaseView, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:

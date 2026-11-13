@@ -1,3 +1,8 @@
+"""Discord login and sessions for the dashboard.
+
+There is no session table: the session is a signed cookie holding the Discord user's id, name and avatar, checked with an HMAC keyed by SESSION_SECRET. The login is Discord OAuth with the `identify` scope only, so the site learns who someone is and nothing else.
+"""
+
 from __future__ import annotations
 import asyncio
 import base64
@@ -31,14 +36,17 @@ def _sign(value: str) -> str:
 
 
 def sign_session(user: User) -> str:
+    """Returns the cookie value "payload.signature": the user plus a timestamp as base64 JSON, signed with HMAC-SHA256. It is signed, not encrypted, so the browser can read the contents but can't change them."""
     payload = base64.urlsafe_b64encode(json.dumps({**user, "ts": int(time.time())}).encode()).decode()
     return f"{payload}.{_sign(payload)}"
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
+    """Returns the user from a session cookie, or None when it is missing, forged, malformed or older than SESSION_MAX_AGE (30 days)."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
+    # compare_digest takes the same time wherever the strings differ, so the signature can't be found out a piece at a time.
     if not hmac.compare_digest(signature, _sign(payload)):
         return None
     try:
@@ -53,6 +61,7 @@ def read_session(token: Optional[str]) -> Optional[User]:
 
 
 def csrf_token(user: User) -> str:
+    """The form token for a signed-in user: an HMAC of their id and their session's timestamp, so each login has its own and nothing is stored. Forms send it as `csrf` and `check_csrf` compares it."""
     return _sign(f"csrf:{user['id']}:{user['ts']}")
 
 
@@ -61,17 +70,20 @@ def check_csrf(user: User, token: Optional[str]) -> bool:
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
+    """Returns `path` when it is a local path to send the person to after login, otherwise `default`. A leading `//` or a backslash is refused, because browsers read those as another site."""
     if not path or not path.startswith("/") or path.startswith("//") or "\\" in path:
         return default
     return path
 
 
 def new_state(next_url: str) -> Tuple[str, str]:
+    """Returns (nonce, state). The nonce goes in a cookie and `state` goes to Discord with the next page inside it, so `check_state` can prove the callback belongs to the browser that started the login."""
     nonce = secrets.token_urlsafe(16)
     return nonce, f"{nonce}:{next_url}"
 
 
 def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
+    """Returns the safe next page when the state's nonce matches the cookie's, otherwise None."""
     if not state or not nonce or ":" not in state:
         return None
     sent_nonce, next_url = state.split(":", 1)
@@ -81,6 +93,7 @@ def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
 
 
 def login_url(client_id: int, state: str, prompt: str = "none") -> str:
+    # The default asks Discord to skip its consent screen for someone who already authorised WordCounter. If they haven't, Discord answers with one of CONSENT_ERRORS and the callback asks again with "consent".
     query = {
         "client_id": client_id,
         "response_type": "code",
@@ -96,10 +109,15 @@ def avatar_url(raw: Dict[str, Any]) -> str:
     user_id, avatar = raw.get("id"), raw.get("avatar")
     if avatar:
         return f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.{'gif' if avatar.startswith('a_') else 'png'}?size=128"
+    # No custom avatar: Discord's default pictures are numbered 0 to 5, picked from the id.
     return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 
 
 async def fetch_user(code: str, client_id: int) -> Optional[User]:
+    """Trades the OAuth `code` for a token, reads the Discord user and returns {id, username, name, avatar_url}, or None when anything fails.
+
+    The token is used once for /users/@me and then dropped, never stored. The id is kept as a string.
+    """
     if not DISCORD_CLIENT_SECRET:
         return None
     form = {

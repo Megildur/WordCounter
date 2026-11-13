@@ -1,3 +1,8 @@
+"""The /help guide, the /advertisement poster and the welcome message sent when the bot joins a server.
+
+All three are Components v2 with a pixel-art banner from `assets/` attached as a file. The guide's text lives in `HELP_PAGES` and is shown with the shared paginator, with the link buttons on every page. Nothing here touches the database.
+"""
+
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -18,6 +23,7 @@ GAME_URL = f"{BOTZILLA_URL}/game"
 NO_PINGS = discord.AllowedMentions.none()
 WELCOME_NEEDS = ("view_channel", "send_messages", "embed_links", "attach_files")
 
+# (file in assets/, filename it is attached under, alt text).
 Picture = Tuple[str, str, str]
 HELP_BANNER: Picture = (
     "help.png",
@@ -52,6 +58,7 @@ AD_FEATURES = (
     "- **Website:** see your stats in every server you share with WordCounter, and manage the servers you run."
 )
 
+# (page title, description, [(field name, field text)]). Each page becomes one container after the welcome page.
 HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
     (
         "Stats and leaderboards",
@@ -153,11 +160,13 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
 
 
 def picture_file(picture: Picture) -> discord.File:
+    """Opens the banner as a new discord.File. Make one for each message, because a File is used up once it has been sent."""
     name, filename, _ = picture
     return discord.File(ASSETS / name, filename=filename)
 
 
 def gallery(picture: Picture) -> discord.ui.MediaGallery:
+    """A media gallery showing the banner attached to the same message, found by its filename."""
     _, filename, description = picture
     return discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{filename}", description=description))
 
@@ -202,6 +211,7 @@ def help_paginator(bot: commands.Bot, author_id: int) -> ButtonPaginator:
         create_v2_container(title=title, description=description, fields=fields, color=BRAND_COLOR)
         for title, description, fields in HELP_PAGES
     ]
+    # The paginator draws these link buttons as a row under the page buttons, on every page.
     paginator = ButtonPaginator(pages, author_id=author_id, custom_buttons=link_buttons(bot))
     paginator.denied_message = "Only the person who opened this help menu can change pages."
     return paginator
@@ -231,6 +241,7 @@ def welcome_view(bot: commands.Bot) -> discord.ui.LayoutView:
 
 
 def welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Returns where to post the welcome: the system channel if the bot can post there, otherwise the first text channel by position where it has every permission in WELCOME_NEEDS, otherwise None."""
     me = guild.me
     if me is None:
         return None
@@ -274,6 +285,7 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(ephemeral="Only show the help menu to you (default: no)")
     async def help_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
+        # can_attach answers the interaction itself when it fails, so it runs before the first reply is sent. Nothing is deferred, so the reply can be private.
         if not await can_attach(interaction, "Can't show the help here"):
             return
         await help_paginator(self.bot, interaction.user.id).start(
@@ -307,6 +319,7 @@ class HelpCog(commands.Cog, name="Help"):
         try:
             await channel.send(view=welcome_view(self.bot), file=picture_file(WELCOME_BANNER), allowed_mentions=NO_PINGS)
         except discord.HTTPException:
+            # A failed post is only logged: the welcome is optional, and the permission check above can already be out of date.
             log.info("Could not post the welcome in %s", guild.id, exc_info=True)
 
 

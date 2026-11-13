@@ -1,3 +1,8 @@
+"""The shared paged-menu helper, `ButtonPaginator`.
+
+Shows pages as Components v2 containers under a Previous, page counter and Next row, and only lets the person who opened it press the buttons. Cogs subclass it and override `format_page`, `extra_rows` or `get_page_kwargs`; /help, /stats user, /leaderboard, /keyword list and the owner blacklist list all use it.
+"""
+
 from __future__ import annotations
 from typing import (
     Any,
@@ -36,6 +41,10 @@ PageT_co = TypeVar("PageT_co", bound=Page, covariant=True)
 
 
 class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
+    """A message that pages through `pages`, with `per_page` of them shown at a time.
+
+    A page can be a container, a string, a file or attachment, or a list of those. `format_page` turns a page into what is shown, and `extra_rows` adds rows such as a select or link buttons under the navigation row. Build it, then call `start` with the interaction or channel to send to.
+    """
     message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
     previous_label = "Previous"
     next_label = "Next"
@@ -64,6 +73,7 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
     def set_pages(self, pages: Sequence[PageT_co]) -> None:
         self.pages: Any = pages
         total_pages, left_over = divmod(len(pages), self.per_page)
+        # There is always at least one page, so an empty list still shows a "Nothing to show" message.
         self.max_pages: int = max(1, total_pages + bool(left_over))
         self.current_page = min(self.current_page, self.max_pages - 1)
 
@@ -117,6 +127,7 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
         return page
 
     def _clone_container(self, container: discord.ui.Container) -> discord.ui.Container:
+        """Copies a page, because the navigation row is added to the copy and the stored page must stay clean to be shown again."""
         cloned = discord.ui.Container(accent_colour=container.accent_colour, spoiler=container.spoiler)
         for child in container.children:
             cloned.add_item(child.copy())
@@ -144,6 +155,10 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
     async def get_page_kwargs(
         self, page: Union[PageT_co, Sequence[PageT_co]], skip_formatting: bool = False
     ) -> Dict[str, Any]:
+        """Builds the keyword arguments to send or edit with: this view, rebuilt around the page, plus any files.
+
+        The navigation row and `extra_rows` go at the bottom of the last container. A page that formats to a dict is used as the arguments as they are.
+        """
         formatted_page = page if skip_formatting else await discord.utils.maybe_coroutine(self.format_page, page)
         if isinstance(formatted_page, dict):
             return formatted_page
@@ -179,11 +194,13 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
 
         kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
         self.reset_files(kwargs)
+        # An edit takes new files as `attachments`, where a send takes `files`.
         if "files" in kwargs:
             kwargs["attachments"] = kwargs.pop("files")
         await interaction.response.edit_message(**kwargs)
 
     def reset_files(self, page_kwargs: dict[str, Any]) -> None:
+        """Rewinds the files in the arguments, because a discord.File is used up once it has been sent."""
         for file in page_kwargs.get("files", []):
             file.reset()
 
@@ -191,11 +208,13 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
         self, obj: Union[Interaction, Messageable], **send_kwargs: Any
     ) -> Optional[Union[discord.Message, discord.WebhookMessage]]:
         kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
+        # One page and no extra rows leaves nothing to press, so stop listening now instead of waiting for the timeout.
         if self.max_pages < 2 and not self.extra_rows():
             self.stop()
 
         self.reset_files(kwargs)
         if isinstance(obj, discord.Interaction):
+            # A deferred or already answered interaction can only be followed up, and wait=True returns the message.
             if obj.response.is_done():
                 self.message = await obj.followup.send(**kwargs, **send_kwargs, wait=True)
             else:

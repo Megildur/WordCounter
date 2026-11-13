@@ -1,3 +1,8 @@
+"""The /keyword list command.
+
+Reads a server's tracked keywords from the `keyword` table through `bot.db.get_keywords` and shows them 30 to a page with the shared paginator. Staff change the list in /settings (`cogs/counter_cmds.py`).
+"""
+
 from __future__ import annotations
 import discord
 from discord import app_commands

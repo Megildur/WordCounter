@@ -1,3 +1,8 @@
+"""Owner-only commands under /owner, registered only in the servers listed in `ALLOWED_GUILD_IDS`.
+
+Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, ban through `cogs/utils/blacklist.py`, and check `bot.is_owner` themselves.
+"""
+
 from __future__ import annotations
 import asyncio
 import io
@@ -27,6 +32,7 @@ BAD_ID = "That isn't a Discord ID. Turn on Developer Mode in Discord's settings,
 
 
 def snowflake(raw: str) -> Optional[int]:
+    """Returns the Discord ID in `raw` as an int, or None if it isn't one. A pasted mention such as <@123> is accepted, and the ID must be 15 to 20 digits that fit in 64 bits."""
     digits = raw.strip().strip("<@!#&>")
     if not digits.isdigit() or not 15 <= len(digits) <= 20:
         return None
@@ -40,6 +46,7 @@ def plural(count: int, word: str) -> str:
 
 @dataclass(frozen=True)
 class Target:
+    """The user or server a data command is about: its ID, its kind (`blacklist.USER` or `blacklist.SERVER`) and a name when one could be found. `label` and `plain` write it out for messages and the log."""
     id: int
     kind: str
     name: Optional[str]
@@ -74,6 +81,7 @@ def deleted_text(removed: Dict[str, int]) -> str:
 
 
 def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> discord.ui.LayoutView:
+    """Builds the notice about what remains after a deletion: nothing, or the ban record together with the Privacy Policy's text (`stored_data.KEPT_POLICY`)."""
     view = discord.ui.LayoutView()
     if banned is None:
         view.add_item(discord.ui.Container(
@@ -96,12 +104,14 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
 
 
 class DataConfirmView(AuthorOnlyView):
+    """The confirm panel for /owner delete_data and, with `ban=True`, /owner blacklist. It lists what was found and what the button will do, and only the owner who ran the command can press it."""
     def __init__(
         self, bot: commands.Bot, author_id: int, target: Target, found: stored_data.Found,
         *, ban: bool = False, reason: Optional[str] = None,
     ) -> None:
         super().__init__(author_id=author_id, timeout=600)
         self.bot, self.target, self.found, self.ban, self.reason = bot, target, found, ban, reason
+        # The command sets this after sending the panel, so on_timeout can edit that response.
         self.interaction: Optional[discord.Interaction] = None
         who = f"{target.label[0].upper()}{target.label[1:]}"
         if ban:
@@ -134,12 +144,15 @@ class DataConfirmView(AuthorOnlyView):
         ))
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
+        # Defer first: the delete searches every table, which can take longer than the 3 seconds Discord gives for a reply.
         await interaction.response.defer()
         self.stop()
         if self.ban:
+            # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so nothing new is saved while the delete runs. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
             self.bot.blacklisted.add(self.target.id)
         removed = await self.bot.db.delete_by_id(self.target.id)
+        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID.
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
@@ -166,10 +179,12 @@ class DataConfirmView(AuthorOnlyView):
 
 
 def code_list(names: List[str], limit: int = 1500) -> str:
+    """Joins names as inline code, cut at `limit` characters on a comma and ended with an ellipsis, so a long list still fits in a message."""
     text = ", ".join(f"`{name}`" for name in names)
     return text if len(text) <= limit else text[:limit].rsplit(",", 1)[0] + ", …"
 
 
+# The group only exists in ALLOWED_GUILDS and defaults to Administrators. Only the data commands also check `bot.is_owner`.
 @app_commands.guilds(*ALLOWED_GUILDS)
 @app_commands.default_permissions(administrator=True)
 class OwnerCog(commands.GroupCog, group_name="owner"):
@@ -177,12 +192,14 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         self.bot = bot
 
     def all_extensions(self) -> List[str]:
+        # "cogs" is relative to the working directory, so the bot has to be started from the repository root.
         found = {f"cogs.{name[:-3]}" for name in os.listdir("cogs") if name.endswith(".py")}
         return sorted(found | set(self.bot.extensions))
 
     @app_commands.command(name="sync", description="Sync slash commands")
     async def sync(self, interaction: discord.Interaction, sync_type: Literal["Global", "Guild"]) -> None:
         await interaction.response.defer()
+        # After the defer this first follow-up becomes the original response, which is what edit_original_response changes below.
         await interaction.followup.send(
             view=create_v2_view(f"Syncing commands ({sync_type})", "This can take a few seconds.", color=WARNING_COLOR)
         )
@@ -214,6 +231,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     @app_commands.command(name="sync_clear", description="Remove every command from the tree")
     async def sync_clear(self, interaction: discord.Interaction, clear_type: Literal["Global", "Guild"]) -> None:
         await interaction.response.defer()
+        # clear_commands only empties the bot's local command tree. Discord keeps its copy until a sync is run.
         if clear_type == "Global":
             removed = len(self.bot.tree.get_commands())
             self.bot.tree.clear_commands(guild=None)
@@ -261,6 +279,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @ext.autocomplete("extension")
     async def ext_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        # Discord shows at most 25 autocomplete choices.
         return [
             app_commands.Choice(name=name, value=name)
             for name in self.all_extensions()
@@ -296,12 +315,14 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
 
     async def _owner_only(self, interaction: discord.Interaction) -> bool:
+        """Returns True for the bot's owner. Otherwise it answers with an "Owner only" notice and returns False, so call it before anything else replies."""
         if await self.bot.is_owner(interaction.user):
             return True
         await interaction.response.send_message(view=error_view("Only the bot owner can use this.", title="Owner only"), ephemeral=True)
         return False
 
     async def _user_name(self, user_id: int) -> Optional[str]:
+        """Returns the user's name, None when no such user exists, or "" when Discord couldn't be asked, so None and "" mean different things."""
         user = self.bot.get_user(user_id)
         if user is not None:
             return user.name
@@ -313,6 +334,10 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             return ""
 
     async def _target(self, kind: str, raw: str) -> Tuple[Optional[Target], str]:
+        """Checks an ID and returns (Target, "") or (None, the reason it was refused).
+
+        WordCounter's own ID is refused. An ID of the wrong kind is refused when it can be told apart: a Server ID that is really a user's, or a User ID that no user has. A server the bot isn't in is accepted without a name.
+        """
         target_id = snowflake(raw)
         if target_id is None:
             return None, BAD_ID
@@ -334,6 +359,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     async def delete_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
         if not await self._owner_only(interaction):
             return
+        # The lookups below ask Discord for the user and read every table, so defer first.
         await interaction.response.defer(ephemeral=True)
         target, problem = await self._target(kind, target_id)
         if target is None:
@@ -372,6 +398,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             return
         heading = f"Everything WordCounter stores about {target.plain}"
         stem = f"wordcounter-{target.what}-{target.id}"
+        # Writing and zipping a large report is CPU work, so it runs in a thread. `pack` returns None when even the zip is over Discord's upload limit.
         packed = await asyncio.to_thread(lambda: stored_data.pack(stored_data.report(found, heading), stem))
         if packed is None:
             view = create_v2_view("Too big to upload", "Even zipped, the export is larger than Discord lets WordCounter upload.", color=ERROR_COLOR)
@@ -462,6 +489,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         view.interaction = interaction
 
     async def _protected(self, target: Target) -> str:
+        """Returns why this target can't be banned (an owner, or a server where the owner commands live), or an empty string when it can."""
         if target.kind == blacklist.USER and await self.bot.is_owner(discord.Object(id=target.id)):
             return "That's an owner of WordCounter."
         if target.kind == blacklist.SERVER and target.id in ALLOWED_GUILD_IDS:
@@ -480,6 +508,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             )
             return
         await self.bot.db.remove_from_blacklist(target_id)
+        # `bot.blacklisted` is what screens events while the bot runs, so it changes together with the table.
         self.bot.blacklisted.discard(target_id)
         log.info("Lifted the blacklist on %s %s", entry.kind, target_id)
         view = create_v2_view(
@@ -498,6 +527,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             return
         lines = []
         for entry in entries:
+            # get_guild and get_user only read the cache, so someone the bot can't see is listed by ID alone.
             found = self.bot.get_guild(entry.target_id) if entry.kind == blacklist.SERVER else self.bot.get_user(entry.target_id)
             line = f"**{entry.kind.capitalize()}** `{entry.target_id}`"
             if getattr(found, "name", None):

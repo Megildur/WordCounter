@@ -1,3 +1,8 @@
+"""Shared website plumbing.
+
+The Jinja environment and its globals, `render` and `error_page`, the signed-in user lookup, the flash messages shown from a `?msg=` code, the security headers, and `site_middleware`, which every request passes through. Pages in `web/pages.py`, `web/dashboard.py` and `web/swearjar.py` build on it.
+"""
+
 from __future__ import annotations
 import calendar
 import hashlib
@@ -13,6 +18,7 @@ from web import auth
 
 ROOT = Path(__file__).parent
 STATIC_MAX_AGE = 60 * 60 * 24 * 7
+# Cookies get the Secure flag only when the site runs on https, so a local http copy still works.
 SECURE_COOKIES = SITE_URL.startswith("https://")
 SITE_HOST = (urlsplit(SITE_URL).hostname or "").lower()
 SHOWCASE_DIR = ROOT / "static" / "img" / "showcase"
@@ -20,6 +26,7 @@ SHOWCASE_TYPES = (".webp", ".png")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 WEBP_SIZE_MASK = 0x3FFF
 
+# script-src 'none' makes the browser refuse any JavaScript, form-action 'self' keeps forms posting to this site, and frame-ancestors 'none' stops other sites framing it. Avatars come from Discord's CDN.
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self'; script-src 'none'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
     "X-Content-Type-Options": "nosniff",
@@ -28,6 +35,7 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
 
+# Flash messages. After a form POST the site redirects to a page with `?msg=<code>`, and `render` shows the matching (kind, text). An unknown code shows nothing.
 MESSAGES = {
     "logged_out": ("success", "You're signed out."),
     "oauth_missing_secret": ("error", "Discord login isn't set up on this server yet (missing DISCORD_CLIENT_SECRET)."),
@@ -74,6 +82,7 @@ MESSAGES = {
 
 
 def _asset_version() -> str:
+    """Hash of the stylesheet for the `?v=` in its URL, so browsers fetch it again when it changes and otherwise keep it for STATIC_MAX_AGE."""
     return hashlib.sha1((ROOT / "static" / "css" / "style.css").read_bytes()).hexdigest()[:10]
 
 
@@ -100,6 +109,7 @@ def _icon_version() -> str:
 
 
 def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
+    """Returns (width, height) read from a PNG or WebP header, or None for any other data."""
     if data.startswith(PNG_SIGNATURE) and len(data) >= 24:
         return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
     if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
@@ -116,6 +126,7 @@ def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
 
 
 def _showcase() -> Dict[str, Dict[str, Any]]:
+    """Returns {name: {src, width, height}} for the PNG and WebP screenshots in static/img/showcase, with a content hash on each URL. The folder can be empty, and the templates then show text only for a name with no file."""
     found: Dict[str, Dict[str, Any]] = {}
     if not SHOWCASE_DIR.is_dir():
         return found
@@ -138,6 +149,7 @@ def _number(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) and not isinstance(value, bool) else "–"
 
 
+# Autoescape is on, so a value is HTML-escaped unless a template marks it safe. auto_reload is off, so templates are read once at startup and an edit needs a restart.
 ENV = jinja2.Environment(
     loader=jinja2.FileSystemLoader(str(ROOT / "templates")),
     autoescape=True,
@@ -146,6 +158,7 @@ ENV = jinja2.Environment(
     auto_reload=False,
 )
 ENV.filters["num"] = _number
+# These globals are worked out once when the module loads, so changed static files and new showcase images appear after a restart.
 ENV.globals.update(
     site_url=SITE_URL,
     support_url=SUPPORT_URL,
@@ -166,6 +179,7 @@ def load_templates() -> None:
 
 
 def client_id(bot) -> int:
+    """The bot's application id, for the OAuth login and invite links. Falls back to the bot user's id, then to DEFAULT_CLIENT_ID when the bot isn't ready yet."""
     return getattr(bot, "application_id", None) or (bot.user.id if getattr(bot, "user", None) else DEFAULT_CLIENT_ID)
 
 
@@ -188,6 +202,7 @@ def _alert(code: Optional[str], user: Optional[auth.User]) -> Optional[Dict[str,
 
 
 def render(request: web.Request, template: str, active_page: str = "", status: int = 200, **context: Any) -> web.Response:
+    """Renders a template into an HTML response. Every template also gets the signed-in user (or None), their CSRF token, the `?msg=` flash message, the invite link and the page's URL."""
     user = current_user(request)
     page = ENV.get_template(template).render(
         user=user,
@@ -206,6 +221,7 @@ def error_page(request: web.Request, status: int, title: str, message: str) -> w
 
 
 def _old_address(request: web.Request) -> bool:
+    """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL. localhost and raw IP addresses are left alone so the site can still be reached directly."""
     host = (request.url.host or "").lower().rstrip(".")
     if not host or host in (SITE_HOST, "localhost"):
         return False
@@ -220,12 +236,14 @@ def _old_address(request: web.Request) -> bool:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
+    # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here.
     try:
         response = await handler(request)
     except web.HTTPNotFound:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
     except web.HTTPForbidden as forbidden:
         response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
+    # Static files are cached for a week, as their URLs carry a `?v=` hash. Pages are "private, no-cache", so a signed-in page is never kept by a shared cache and is checked again each time.
     if request.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
         if request.path.endswith(".css"):

@@ -1,13 +1,23 @@
+"""`SectionMenu`, the base of the /settings menu.
+
+One message with a select to switch between sections, a body that changes with the section, confirmation steps and a Close button. A subclass lists its `sections` and writes a `_populate_<key>_tab` method for each key (see `SettingsMenuView` in `cogs/counter_cmds.py`).
+"""
+
 from __future__ import annotations
 from typing import List, Optional, Sequence, Tuple
 import discord
 from discord.ext import commands
 from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, AuthorOnlyView, Callback, create_v2_view, make_button
 
+# (key, label, description) of one section, as shown in the section select.
 Section = Tuple[str, str, str]
 
 
 class SectionMenu(AuthorOnlyView):
+    """A menu in one message that is rebuilt from scratch on every change.
+
+    `build_ui` clears the view and draws the header, an optional status banner, the section select, the active section and the bottom buttons. Handlers change `active_tab`, `pending_confirmation` or `status_banner`, then call `refresh_and_edit`. Only `author_id` can use it.
+    """
     sections: Sequence[Section] = ()
     title = ""
     closed_hint = ""
@@ -52,6 +62,7 @@ class SectionMenu(AuthorOnlyView):
         container.add_item(discord.ui.ActionRow(navigation))
         container.add_item(discord.ui.Separator())
 
+        # Each section key needs a matching _populate_<key>_tab method on the subclass.
         getattr(self, f"_populate_{self.active_tab}_tab")(container)
 
         bottom = []
@@ -65,6 +76,7 @@ class SectionMenu(AuthorOnlyView):
     def _confirmation(
         self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback
     ) -> None:
+        """Adds a question with a confirm button and a Cancel button. Callers return straight after it, so the section's normal buttons stay hidden while the question is open."""
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(text))
         container.add_item(
@@ -84,6 +96,7 @@ class SectionMenu(AuthorOnlyView):
         return callback
 
     def _prompt(self, confirmation: str) -> Callback:
+        """Returns a button callback that sets the pending confirmation and redraws, so the section shows that question."""
         async def callback(interaction: discord.Interaction) -> None:
             self.pending_confirmation = confirmation
             self.status_banner = None
@@ -101,9 +114,14 @@ class SectionMenu(AuthorOnlyView):
         await self.refresh_and_edit(interaction)
 
     def _selected_ids(self, interaction: discord.Interaction) -> List[int]:
+        """Returns the ids picked in a channel, user or role select, taken from the raw interaction data because the select itself is out of reach of the view's callbacks."""
         return [int(value) for value in interaction.data.get("values", [])]
 
     async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
+        """Redraws the menu in place: defers if the handler hasn't answered yet, reloads the state from the database, rebuilds the items and edits the original response.
+
+        Handlers that write to the database defer first themselves, because the write can take longer than the 3 seconds Discord gives for a reply.
+        """
         if not interaction.response.is_done():
             await interaction.response.defer()
         await self.load_state()
@@ -116,4 +134,5 @@ class SectionMenu(AuthorOnlyView):
         try:
             await interaction.delete_original_response()
         except discord.HTTPException:
+            # If the delete is refused, replace the menu with a short closed notice so it doesn't stay on screen as a dead menu.
             await interaction.edit_original_response(view=create_v2_view(f"{self.title} closed", self.closed_hint, color=NEUTRAL_COLOR))
