@@ -10,7 +10,7 @@ from discord import AppCommandOptionType, AppCommandType, app_commands
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
 from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
-from web.core import SECURE_COOKIES, client_id, current_user, redirect, render
+from web.core import SECURE_COOKIES, client_id, current_user, post_form, redirect, render
 from web.developer import developer_profile
 
 routes = web.RouteTableDef()
@@ -276,7 +276,7 @@ async def callback(request: web.Request) -> web.Response:
 async def logout(request: web.Request) -> web.Response:
     # A POST with the CSRF token, so another site can't sign someone out with a link or an image.
     user = current_user(request)
-    form = await request.post()
+    form = await post_form(request)
     if user is None or not auth.check_csrf(user, form.get("csrf")):
         return redirect("/")
     response = redirect("/?msg=logged_out")

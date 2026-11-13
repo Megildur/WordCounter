@@ -14,7 +14,7 @@ from aiohttp import web
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, current_user, error_page, redirect, render
+from web.core import ENV, current_user, error_page, post_form, redirect, render
 
 routes = web.RouteTableDef()
 
@@ -229,7 +229,7 @@ async def confirmed_and_free(request: web.Request, form, guild: discord.Guild, r
 async def read_form(request: web.Request) -> Tuple[Any, bool]:
     """Returns the POSTed form and whether its CSRF token is valid for the signed-in user. Handlers must check the flag before changing anything."""
     user = require_user(request)
-    form = await request.post()
+    form = await post_form(request)
     return form, auth.check_csrf(user, form.get("csrf"))
 
 
