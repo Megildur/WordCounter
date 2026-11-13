@@ -1,6 +1,6 @@
 """The /owner commands, registered only in the servers listed in `ALLOWED_GUILD_IDS`.
 
-Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, ban through `cogs/utils/blacklist.py`, and check `bot.is_owner` themselves. The other commands rely on the group's Administrator default.
+Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, and ban through `cogs/utils/blacklist.py`. Every command checks for the Administrator permission itself, on top of the group's Administrator default, because only members of the servers in `ALLOWED_GUILDS` can see the group at all.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
 
 
 class DataConfirmView(AuthorOnlyView):
-    """The confirm panel for /owner delete_data and, with `ban=True`, /owner blacklist. It lists what was found and what the button will do, and only the owner who ran the command can press it."""
+    """The confirm panel for /owner delete_data and, with `ban=True`, /owner blacklist. It lists what was found and what the button will do, and only the administrator who ran the command can press it."""
     def __init__(
         self, bot: commands.Bot, author_id: int, target: Target, found: stored_data.Found,
         *, ban: bool = False, reason: Optional[str] = None,
@@ -184,7 +184,7 @@ def code_list(names: List[str], limit: int = 1500) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(",", 1)[0] + ", …"
 
 
-# The group only exists in ALLOWED_GUILDS and defaults to Administrators. Only the data commands also check `bot.is_owner`.
+# The group only exists in ALLOWED_GUILDS and defaults to Administrators. Every command also checks for the Administrator permission when it runs, because a server can change who sees a command in its Integrations settings.
 @app_commands.guilds(*ALLOWED_GUILDS)
 @app_commands.default_permissions(administrator=True)
 class OwnerCog(commands.GroupCog, group_name="owner"):
@@ -198,6 +198,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @app_commands.command(name="sync", description="Sync slash commands")
     async def sync(self, interaction: discord.Interaction, sync_type: Literal["Global", "Guild"]) -> None:
+        if not await self._admin_only(interaction):
+            return
         await interaction.response.defer()
         # After the defer this first follow-up becomes the original response, which is what edit_original_response changes below.
         await interaction.followup.send(
@@ -230,6 +232,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @app_commands.command(name="sync_clear", description="Remove every command from the tree")
     async def sync_clear(self, interaction: discord.Interaction, clear_type: Literal["Global", "Guild"]) -> None:
+        if not await self._admin_only(interaction):
+            return
         await interaction.response.defer()
         # clear_commands only empties the bot's local command tree. Discord keeps its copy until a sync is run.
         if clear_type == "Global":
@@ -252,6 +256,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @app_commands.command(name="ext", description="Load, unload or reload an extension")
     async def ext(self, interaction: discord.Interaction, action: Literal["load", "unload", "reload"], extension: str) -> None:
+        if not await self._admin_only(interaction):
+            return
         await interaction.response.defer()
         handlers = {
             "load": self.bot.load_extension,
@@ -279,6 +285,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @ext.autocomplete("extension")
     async def ext_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        if not interaction.permissions.administrator:
+            return []
         # Discord shows at most 25 autocomplete choices.
         return [
             app_commands.Choice(name=name, value=name)
@@ -288,6 +296,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @app_commands.command(name="cogs", description="Reload every loaded extension and load any new cogs")
     async def cogs(self, interaction: discord.Interaction) -> None:
+        if not await self._admin_only(interaction):
+            return
         await interaction.response.defer()
         results = {"Reloaded": [], "Loaded": [], "Failed": []}
         extensions = self.all_extensions()
@@ -314,11 +324,11 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         )
 
 
-    async def _owner_only(self, interaction: discord.Interaction) -> bool:
-        """Returns True for the bot's owner. Otherwise it answers with an "Owner only" notice and returns False, so call it before anything else replies."""
-        if await self.bot.is_owner(interaction.user):
+    async def _admin_only(self, interaction: discord.Interaction) -> bool:
+        """Returns True for a member with the Administrator permission. Otherwise it answers with an "Administrators only" notice and returns False, so call it before anything else replies."""
+        if interaction.permissions.administrator:
             return True
-        await interaction.response.send_message(view=error_view("Only the bot owner can use this.", title="Owner only"), ephemeral=True)
+        await interaction.response.send_message(view=error_view("Only server administrators can use this.", title="Administrators only"), ephemeral=True)
         return False
 
     async def _user_name(self, user_id: int) -> Optional[str]:
@@ -357,7 +367,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
     @app_commands.rename(target_id="id")
     async def delete_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
-        if not await self._owner_only(interaction):
+        if not await self._admin_only(interaction):
             return
         # The lookups below ask Discord for the user and read every table, so defer first.
         await interaction.response.defer(ephemeral=True)
@@ -378,7 +388,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
     @app_commands.rename(target_id="id")
     async def export_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
-        if not await self._owner_only(interaction):
+        if not await self._admin_only(interaction):
             return
         if not interaction.app_permissions.attach_files:
             await interaction.response.send_message(
@@ -421,7 +431,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
     @app_commands.rename(target_id="id")
     async def kept_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
-        if not await self._owner_only(interaction):
+        if not await self._admin_only(interaction):
             return
         target, problem = await self._target(kind, target_id)
         if target is None:
@@ -452,7 +462,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         target_id: Optional[str] = None,
         reason: Optional[app_commands.Range[str, 1, 500]] = None,
     ) -> None:
-        if not await self._owner_only(interaction):
+        if not await self._admin_only(interaction):
             return
         if action == "List":
             await self._blacklist_list(interaction)

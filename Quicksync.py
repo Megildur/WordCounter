@@ -1,4 +1,4 @@
-"""Owner-only !wcquicksync text command that pushes the /owner commands to every server in ALLOWED_GUILDS, since /owner sync can't be used before they are there."""
+"""!wcquicksync, a text command for administrators that pushes the /owner commands to every server in ALLOWED_GUILDS, since /owner sync can't be used before they are there."""
 
 from __future__ import annotations
 import discord
@@ -12,8 +12,10 @@ class QuickSync(commands.Cog):
         self.bot = bot
 
     @commands.command(name="quicksync", hidden=True)
-    @commands.is_owner()
     async def quicksync(self, ctx: commands.Context) -> None:
+        # A hidden command stays quiet for everyone who may not use it, so it answers only members with the Administrator permission.
+        if not (isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator):
+            return
         if not ALLOWED_GUILD_IDS:
             await ctx.send(view=error_view("`ALLOWED_GUILDS` isn't set in the .env file."))
             return
