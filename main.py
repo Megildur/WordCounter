@@ -41,7 +41,7 @@ CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands
 class MyBot(commands.Bot):
     """The bot. Nobody is pinged by default, so a message that must ping passes its own `allowed_mentions`."""
     def __init__(self) -> None:
-        # The only text command WordCounter adds is the owner's !wcquicksync, and Intents.all() includes the privileged message content and members intents the counting needs.
+        # The only text command WordCounter adds is !wcquicksync, and Intents.all() includes the privileged message content and members intents the counting needs.
         super().__init__(command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none())
         self.db = WordCounterDatabase(self)
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
