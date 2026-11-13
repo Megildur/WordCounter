@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from typing import Any, Set
+import aiohttp
 import discord
 from discord.ext import commands
 from cogs.utils import blacklist, expired, startup
@@ -34,6 +35,9 @@ for handler in (file_handler, console_handler):
 
 log = logging.getLogger("main")
 
+# How long discord.py's HTTP session remembers the address it looked up for discord.com. Its default is 10 seconds, so a press after a quiet minute waited for a new lookup before its first answer could leave, and lookups on this host fail or take seconds now and then.
+DNS_CACHE_SECONDS = 300.0
+
 # The extensions loaded before the cogs: the ones at the repo root, `web` (the website) and the timing log lines in cogs/utils.
 CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web", "cogs.utils.timing")
 
@@ -51,6 +55,11 @@ class MyBot(commands.Bot):
         """Drops an event that involves a banned user or server before any cog sees it. Cogs with `acts_on_blacklisted` still get a banned user's events, see `blacklist.screen`."""
         if not blacklist.screen(self, event_name, args, kwargs):
             super().dispatch(event_name, *args, **kwargs)
+
+    async def login(self, token: str) -> None:
+        # discord.py makes its HTTP session when it logs in, from this connector, so it is set here, where an event loop is running.
+        self.http.connector = aiohttp.TCPConnector(ttl_dns_cache=DNS_CACHE_SECONDS)
+        await super().login(token)
 
     async def setup_hook(self) -> None:
         await self.db.connect()
