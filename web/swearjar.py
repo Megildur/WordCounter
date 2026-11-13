@@ -45,6 +45,7 @@ from web.dashboard import (
     read_form,
     refresh_jar,
     valid_channel,
+    whole_number,
 )
 
 routes = web.RouteTableDef()
@@ -182,8 +183,7 @@ async def _words(db, guild: discord.Guild, action: str, form) -> str:
 async def _roles(db, guild: discord.Guild, form) -> str:
     updates: Dict[str, Optional[int]] = {}
     for column in ROLE_COLUMNS:
-        value = str(form.get(column, ""))
-        role_id = int(value) if value.isdigit() else 0
+        role_id = whole_number(form.get(column))
         if role_id:
             if role_problem(guild, guild.get_role(role_id)):
                 return "role_problem"
@@ -203,7 +203,7 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
     if ping and not (guild.me and guild.me.guild_permissions.mention_everyone):
         return "need_mention_everyone"
     # A channel that is missing, or that the bot can't send in, is dropped and the goal is saved without one.
-    channel = guild.get_channel(int(form.get("channel")) if str(form.get("channel", "")).isdigit() else 0)
+    channel = guild.get_channel(whole_number(form.get("channel")) or 0)
     if channel is not None and not channel.permissions_for(guild.me).send_messages:
         channel = None
     # Saving starts the goal again from zero progress, even when one is already running.
@@ -260,8 +260,8 @@ async def swearjar_action(request: web.Request) -> web.Response:
             if ids:
                 await db.jar_set_channel_rule(guild.id, ids, RULE_ACTIONS[action])
             result = "rules_saved" if ids else "nothing_selected"
-        elif action == "rule_remove" and str(form.get("channel", "")).isdigit():
-            await db.jar_set_channel_rule(guild.id, [int(form.get("channel"))], None)
+        elif action == "rule_remove" and whole_number(form.get("channel")):
+            await db.jar_set_channel_rule(guild.id, [whole_number(form.get("channel"))], None)
             result = "rules_saved"
         elif action == "age_toggle":
             await db.jar_update(guild.id, skip_age_restricted=int(not settings["skip_age_restricted"]))

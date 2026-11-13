@@ -23,9 +23,13 @@ KEYWORD_TOP = 10
 LISTABLE_TYPES = (*TRACKABLE_CHANNEL_TYPES, discord.ChannelType.category)
 
 
-def _int(value: Any) -> Optional[int]:
+def whole_number(value: Any) -> Optional[int]:
+    """Returns the ID or page number in a query or form value as an int, or None when it isn't one. str.isdigit() also accepts characters like a superscript two, which int() refuses, and int() refuses a very long run of digits, so either would have been a server error. IDs fit in 63 bits, the size of the database's BIGINT."""
     text = str(value or "")
-    return int(text) if text.isdigit() else None
+    if not (text.isascii() and text.isdigit()) or len(text) > 19:
+        return None
+    number = int(text)
+    return number if number < 2 ** 63 else None
 
 
 def page_url(path: str, anchor: str = "", **query: Any) -> str:
@@ -45,7 +49,7 @@ ENV.globals["leaderboard_url"] = leaderboard_url
 def paginate(items: List[Any], requested: Any) -> Tuple[List[Any], int, int]:
     """Returns (the items on the requested page, the page number, the page count). A page number outside the range is clamped to it. Pages hold PAGE_SIZE items."""
     pages = max(1, math.ceil(len(items) / PAGE_SIZE))
-    page = min(max(1, _int(requested) or 1), pages)
+    page = min(max(1, whole_number(requested) or 1), pages)
     start = (page - 1) * PAGE_SIZE
     return items[start:start + PAGE_SIZE], page, pages
 
@@ -154,7 +158,7 @@ def channel_menu(groups: List[Dict[str, Any]], selected: Optional[int], link: Ca
 
 def valid_channel(guild: discord.Guild, value: Any, include_categories: bool) -> Optional[int]:
     """Returns the channel id when it exists in this server and is a type the dashboard allows, otherwise None. Query and form values come from the browser, so they are checked before use."""
-    channel = guild.get_channel(_int(value) or 0)
+    channel = guild.get_channel(whole_number(value) or 0)
     allowed = LISTABLE_TYPES if include_categories else TRACKABLE_CHANNEL_TYPES
     return channel.id if channel is not None and channel.type in allowed else None
 
@@ -449,8 +453,8 @@ async def settings_action(request: web.Request) -> web.Response:
             if ids:
                 await (db.add_ignored_channels(guild.id, ids) if whole else db.add_watched_channels(guild.id, ids))
             result = "channels_saved" if ids else "nothing_selected"
-        elif action == "remove_channel" and _int(form.get("channel")):
-            ids = [_int(form.get("channel"))]
+        elif action == "remove_channel" and whole_number(form.get("channel")):
+            ids = [whole_number(form.get("channel"))]
             await (db.remove_ignored_channels(guild.id, ids) if whole else db.remove_watched_channels(guild.id, ids))
             result = "channels_saved"
         elif action == "keywords":
