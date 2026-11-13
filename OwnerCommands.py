@@ -34,7 +34,7 @@ BAD_ID = "That isn't a Discord ID. Turn on Developer Mode in Discord's settings,
 def snowflake(raw: str) -> Optional[int]:
     """Returns the Discord ID in `raw` as an int, or None if it isn't one. A pasted mention such as <@123> is accepted, and the ID must be 15 to 20 digits that fit in 64 bits."""
     digits = raw.strip().strip("<@!#&>")
-    if not digits.isdigit() or not 15 <= len(digits) <= 20:
+    if not (digits.isascii() and digits.isdigit()) or not 15 <= len(digits) <= 20:
         return None
     value = int(digits)
     return value if value < 2 ** 64 else None
