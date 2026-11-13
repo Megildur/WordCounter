@@ -24,6 +24,7 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     can_attach,
+    private_followup,
     display_names,
     member_names,
     rank_prefix,
@@ -650,10 +651,12 @@ class Counter_Cmds(commands.Cog):
             await interaction.response.send_message(view=error_view(reason), ephemeral=True)
             return
 
+        # Reading the settings can take longer than the 3 seconds Discord gives a first reply, so defer first. The menu is private either way.
+        await interaction.response.defer(ephemeral=True)
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.response.send_message(view=menu, ephemeral=True)
+        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     @app_commands.command(
         name="leaderboard",
@@ -670,15 +673,14 @@ class Counter_Cmds(commands.Cog):
         if interaction.guild is None:
             await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
-        if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
-            await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE), ephemeral=True)
-            return
-
         # can_attach answers the interaction itself when it fails, so it comes before the defer.
         if not await can_attach(interaction, "Can't show the leaderboard here"):
             return
-        # Loading the rankings and drawing the podium can take longer than the 3 seconds a slash command gets, so defer first.
+        # The tracking check, loading the rankings and drawing the podium can take longer than the 3 seconds a slash command gets, so defer before any of them.
         await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
+            await private_followup(interaction, error_view(TRACKING_OFF_MESSAGE))
+            return
         paginator = LeaderboardPaginator(self.bot, interaction.guild, interaction.user.id, channel)
         await paginator.load("words")
         await paginator.start(interaction)
