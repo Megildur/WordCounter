@@ -76,8 +76,8 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
     return guild.icon.with_size(128).url if guild.icon else None
 
 
-# (server id, user id) to (time asked, the member or None), for people Discord was asked about because the server's member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time.
-_asked: Dict[Tuple[int, int], Tuple[float, Optional[discord.Member]]] = {}
+# (server id, user id) to when Discord answered that they aren't in the server, asked because its member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time. Only that answer is kept: a found member could have lost a permission, and an error could be passing.
+_asked: Dict[Tuple[int, int], float] = {}
 ASKED_SECONDS = 20.0
 ASKED_LIMIT = 2000
 
@@ -87,16 +87,17 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
     # Only ask Discord when the member list isn't fully cached. A fully cached list already shows the person isn't in the server.
     if member is None and not guild.chunked:
         key = (guild.id, user_id)
-        known = _asked.get(key)
-        if known is not None and time.monotonic() - known[0] < ASKED_SECONDS:
-            return known[1]
+        asked = _asked.get(key)
+        if asked is not None and time.monotonic() - asked < ASKED_SECONDS:
+            return None
         try:
             member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            if len(_asked) >= ASKED_LIMIT:
+                _asked.clear()
+            _asked[key] = time.monotonic()
         except discord.HTTPException:
-            member = None
-        if len(_asked) >= ASKED_LIMIT:
-            _asked.clear()
-        _asked[key] = (time.monotonic(), member)
+            return None
     return member
 
 

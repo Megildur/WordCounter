@@ -278,7 +278,7 @@ async def post_form(request: web.Request) -> MultiDictProxy:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
-    # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect is a response too, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, with the headers it carries (Allow on a 405).
+    # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect becomes a plain redirect response, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, and a 405 keeps its Allow header.
     try:
         response = await handler(request)
     except web.HTTPNotFound:
@@ -289,12 +289,13 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
         response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
     except web.HTTPRedirection as moved:
-        response = moved
+        # Built again instead of returning the exception, which aiohttp has deprecated.
+        response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() == "location"})
     except web.HTTPException as problem:
         response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
         if "Allow" in problem.headers:
             response.headers["Allow"] = problem.headers["Allow"]
-    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a signed-in page is never kept by a shared cache and is checked again each time.
+    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
     if request.path.startswith(PRIVATE_PATHS):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
