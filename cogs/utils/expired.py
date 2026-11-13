@@ -19,7 +19,8 @@ _TASKS: Set[asyncio.Task] = set()
 
 
 def expired_view() -> discord.ui.LayoutView:
-    return create_v2_view("This menu has expired", "Run the command again to get a fresh one.", color=NEUTRAL_COLOR)
+    # A menu that was redrawn gives its controls new IDs, so a press that was already on its way lands here too, which is why the text doesn't only say it timed out.
+    return create_v2_view("This menu has expired", "It timed out, or a newer version of it replaced it. Use the newest one, or run the command again to get a fresh one.", color=NEUTRAL_COLOR)
 
 
 def listening(state: Any, data: dict) -> Optional[bool]:
@@ -32,7 +33,7 @@ def listening(state: Any, data: dict) -> Optional[bool]:
             return custom_id in store._modals
         key = (int(payload.get("component_type", 0)), custom_id)
         message_id = int(data["message"]["id"]) if data.get("message") else None
-        # Views sent with an interaction response are registered under no message until the library learns its id, so None is checked too.
+        # A view sent without waiting for its message, such as followup.send without wait=True, is registered under no message, so the None bucket is checked too.
         if key in store._views.get(message_id, {}) or key in store._views.get(None, {}):
             return True
         return any(pattern.fullmatch(custom_id) for pattern in store._dynamic_items)
@@ -65,11 +66,12 @@ async def _answer(interaction: discord.Interaction) -> None:
 
 
 def install(bot: discord.Client) -> None:
-    """Wraps the gateway's INTERACTION_CREATE parser, which is private discord.py state. Safe to call more than once, and does nothing when the check in `_check_works` fails."""
+    """Wraps the gateway's INTERACTION_CREATE parser, which is private discord.py state. Safe to call more than once, even after the start-up and blacklist gates have wrapped it, and does nothing when the check in `_check_works` fails."""
     state = bot._connection
-    original = state.parsers["INTERACTION_CREATE"]
-    if getattr(original, "expired_gate", False):
+    # Kept on the state, not found on the parser, because the wrappers installed afterwards hide this one's marker.
+    if getattr(state, "expired_installed", False):
         return
+    original = state.parsers["INTERACTION_CREATE"]
     if not _check_works(state):
         log.warning("This discord.py keeps its views differently than expected, so presses on expired menus are left to Discord")
         return
@@ -87,8 +89,8 @@ def install(bot: discord.Client) -> None:
                 task.add_done_callback(_TASKS.discard)
         original(data)
 
-    parse.expired_gate = True
     # Carries the markers of the wrappers underneath, so the ones that check for their own marker still find it.
     parse.blacklist_gate = getattr(original, "blacklist_gate", False)
     parse.startup_gate = getattr(original, "startup_gate", False)
     state.parsers["INTERACTION_CREATE"] = parse
+    state.expired_installed = True
