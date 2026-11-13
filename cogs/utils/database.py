@@ -287,7 +287,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await pool.wait_closed()
 
     def forget_kept(self) -> None:
-        """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it after any committed change to those tables, whichever method made it. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
+        """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
         self._kept_epoch += 1
         self._config_kept.clear()
         self._keywords_kept.clear()

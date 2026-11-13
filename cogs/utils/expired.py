@@ -1,6 +1,6 @@
 """Answers a press on a menu that nobody is listening for, instead of leaving Discord's "This interaction failed" on screen.
 
-A menu stops listening when its view times out or the bot restarts, but its message keeps its buttons. discord.py drops a press on such a button without answering. `install` wraps its INTERACTION_CREATE parser, like `startup.py` and `blacklist.py`, to check before the press is handed on whether a view or a form is registered for it, and when none is, to answer privately that the menu has expired.
+A menu stops listening when its view times out, when the bot restarts, or when it is redrawn with new controls, but its message keeps its old buttons. discord.py drops a press on such a button without answering. `install` wraps its INTERACTION_CREATE parser, like `startup.py` and `blacklist.py`, to check before the press is handed on whether a view or a form is registered for it, and when none is, to answer privately that the menu has expired.
 """
 
 from __future__ import annotations
