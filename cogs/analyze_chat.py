@@ -8,6 +8,7 @@ Messages the live counters already counted are skipped through `LiveCoverage`, s
 from __future__ import annotations
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -508,6 +509,24 @@ class AnalyzeConfirmView(AuthorOnlyView):
             )
 
 
+def tracked(method):
+    """Registers the task that runs an analysis in `self._tasks` for the whole call, so `cog_unload` can cancel it even while it is still loading members or saving the run. A call made after the cog was unloaded is refused by cancelling it."""
+    @functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        if self._closed:
+            raise asyncio.CancelledError
+        task = asyncio.current_task()
+        added = task is not None and task not in self._tasks
+        if added:
+            self._tasks.add(task)
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            if added:
+                self._tasks.discard(task)
+    return wrapper
+
+
 class AnalyzeChat(commands.Cog):
     # Discord's default permission only, which server admins can change, so every command also checks Manage Server itself.
     analyze_chat = app_commands.Group(
@@ -528,6 +547,7 @@ class AnalyzeChat(commands.Cog):
         self._started_up = False
         # References to background tasks, because asyncio only keeps weak ones and could drop a task mid-run.
         self._tasks: Set[asyncio.Task] = set()
+        self._closed = False
 
     async def cog_load(self) -> None:
         # When the cog is loaded after the bot is already ready, on_ready won't fire for it, so start up now.
@@ -535,7 +555,8 @@ class AnalyzeChat(commands.Cog):
             self._spawn(self._startup())
 
     async def cog_unload(self) -> None:
-        # Cancels every crawl, whether this cog spawned it or a button press is running it, and waits for them to stop. What a crawl counted since its last checkpoint is read again when the run resumes. Without the wait, a reloaded cog could resume the run while the old crawl is still saving, and count a message twice.
+        # Cancels every analysis, whether this cog spawned it or a button press is running it, even one still loading members, and refuses new ones. Then it waits for them to stop. What a crawl counted since its last checkpoint is read again when the run resumes. Without the wait, a reloaded cog could resume the run while the old crawl is still saving, and count a message twice.
+        self._closed = True
         pending = [task for task in self._tasks if task is not asyncio.current_task()]
         for task in pending:
             task.cancel()
@@ -598,6 +619,7 @@ class AnalyzeChat(commands.Cog):
         await interaction.response.send_message(view=view)
         return await interaction.original_response()
 
+    @tracked
     async def _resume_interrupted(self, interaction: discord.Interaction) -> bool:
         """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
         if not await self.bot.db.has_analysis_run(interaction.guild.id):
@@ -1047,13 +1069,10 @@ class AnalyzeChat(commands.Cog):
             color=SUCCESS_COLOR,
         )
 
+    @tracked
     async def _run_crawl(self, guild: discord.Guild, status: StatusMessage) -> None:
         """Runs the saved analysis for a server to the end and shows the result. Everything is read from the saved run record, so a new run and a resume after a restart take the same path."""
         self.running_guilds.add(guild.id)
-        # Registered so cog_unload can cancel a crawl that a button press is running, not only the ones this cog spawned.
-        task = asyncio.current_task()
-        if task is not None:
-            self._tasks.add(task)
         try:
             record = await self.bot.db.get_analysis_run(guild.id)
             if record is None:
@@ -1127,8 +1146,8 @@ class AnalyzeChat(commands.Cog):
             )
         finally:
             self.running_guilds.discard(guild.id)
-            self._tasks.discard(task)
 
+    @tracked
     async def run_member(self, interaction: discord.Interaction, target: discord.Member) -> None:
         """Counts one member, trying message search first. When search isn't available it saves a run and hands over to the history crawl. With search nothing is written until it finishes."""
         guild = interaction.guild
@@ -1175,6 +1194,7 @@ class AnalyzeChat(commands.Cog):
         finally:
             self.running_guilds.discard(guild.id)
 
+    @tracked
     async def run_server(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
@@ -1195,6 +1215,7 @@ class AnalyzeChat(commands.Cog):
         finally:
             self.running_guilds.discard(guild.id)
 
+    @tracked
     async def run_swears(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
