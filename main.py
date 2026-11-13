@@ -34,8 +34,8 @@ for handler in (file_handler, console_handler):
 
 log = logging.getLogger("main")
 
-# The extensions at the repo root, loaded before the cogs. `web` is the website.
-CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web")
+# The extensions loaded before the cogs: the ones at the repo root, `web` (the website) and the timing log lines in cogs/utils.
+CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web", "cogs.utils.timing")
 
 
 class MyBot(commands.Bot):

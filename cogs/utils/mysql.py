@@ -8,6 +8,8 @@
 from __future__ import annotations
 import asyncio
 import decimal
+import logging
+import time
 import warnings
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import aiomysql
@@ -20,6 +22,10 @@ DatabaseError = pymysql.err.MySQLError
 # Added to every CREATE TABLE. utf8mb4_bin makes text comparisons case-sensitive.
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 RECYCLE_SECONDS = 120
+# A database block that waited for the lock, or held it, longer than this is logged, because every other answer that needs the database waits behind it.
+LOCK_SLOW_SECONDS = 1.0
+
+log = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", module="aiomysql")
 
@@ -63,8 +69,15 @@ class Cursor:
 class Session:
     def __init__(self, connection: aiomysql.Connection) -> None:
         self.connection = connection
+        # The start of the first statement of the block, so a lock held for too long can say what held it. Never the values.
+        self.first_sql: Optional[str] = None
+
+    def _note(self, sql: str) -> None:
+        if self.first_sql is None:
+            self.first_sql = " ".join(sql.split())[:80]
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
+        self._note(sql)
         cursor = await self.connection.cursor()
         await cursor.execute(mysql_sql(sql), tuple(params))
         return Cursor(cursor)
@@ -77,6 +90,7 @@ class Session:
         rows = [tuple(row) for row in rows]
         if not rows:
             return None
+        self._note(sql)
         cursor = await self.connection.cursor()
         await cursor.executemany(mysql_sql(sql), rows)
         return Cursor(cursor)
@@ -91,9 +105,15 @@ class SessionLock:
         self.owner = owner
         self.lock = asyncio.Lock()
         self.connection: Optional[aiomysql.Connection] = None
+        self._held_since = 0.0
 
     async def __aenter__(self) -> Session:
+        asked = time.monotonic()
         await self.lock.acquire()
+        waited = time.monotonic() - asked
+        if waited > LOCK_SLOW_SECONDS:
+            log.warning("Waited %.1f s for the database lock", waited)
+        self._held_since = time.monotonic()
         try:
             if self.owner.pool is None:
                 await self.owner.connect_pool()
@@ -109,6 +129,10 @@ class SessionLock:
         return self.owner.db
 
     async def __aexit__(self, kind, error, trace) -> None:
+        held = time.monotonic() - self._held_since
+        if held > LOCK_SLOW_SECONDS:
+            began = getattr(self.owner.db, "first_sql", None)
+            log.warning("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
         try:
             if self.connection is not None and not self.connection.closed:
                 if kind is None:
