@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable, List, Optional, Set, Tuple, Union
 import aiohttp
 import discord
 from discord import app_commands
@@ -482,10 +482,20 @@ class AnalyzeChat(commands.Cog):
         self.last_search = 0.0
         self.crawl_slots = asyncio.Semaphore(CRAWL_CONCURRENCY)
         self._started_up = False
+        self._tasks: Set[asyncio.Task] = set()
 
     async def cog_load(self) -> None:
         if self.bot.is_ready():
-            asyncio.create_task(self._startup())
+            self._spawn(self._startup())
+
+    async def cog_unload(self) -> None:
+        for task in tuple(self._tasks):
+            task.cancel()
+
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -502,7 +512,7 @@ class AnalyzeChat(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if guild is not None and guild_id not in self.running_guilds:
                 log.info("Resuming interrupted analysis in guild %s", guild_id)
-                asyncio.create_task(self._resume(guild))
+                self._spawn(self._resume(guild))
 
     async def is_busy(self, guild_id: int) -> bool:
         return guild_id in self.running_guilds or await self.bot.db.has_analysis_run(guild_id)

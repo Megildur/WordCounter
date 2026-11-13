@@ -16,6 +16,12 @@ class ErrorAccessLogger(AbstractAccessLogger):
             self.logger.warning("%s %s returned %s in %.0f ms", request.method, request.path, response.status, time * 1000)
 
 
+class ProbeFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        error = record.exc_info[1] if record.exc_info else None
+        return "Pause on PRI/Upgrade" not in str(error)
+
+
 def create_app(bot) -> web.Application:
     app = web.Application(middlewares=[site_middleware])
     app["bot"] = bot
@@ -28,6 +34,9 @@ def create_app(bot) -> web.Application:
 
 async def setup(bot) -> None:
     await asyncio.to_thread(load_templates)
+    server_log = logging.getLogger("aiohttp.server")
+    if not any(isinstance(existing, ProbeFilter) for existing in server_log.filters):
+        server_log.addFilter(ProbeFilter())
     runner = web.AppRunner(create_app(bot), access_log_class=ErrorAccessLogger)
     await runner.setup()
     try:

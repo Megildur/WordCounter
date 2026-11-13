@@ -48,7 +48,9 @@ class MyBot(commands.Bot):
 
         def handle_async_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
             error = context.get("exception")
-            log.error("Unhandled background error: %s", context.get("message") or error, exc_info=error)
+            task = context.get("task") or context.get("future")
+            detail = f" ({task!r})" if task is not None else ""
+            log.error("Unhandled background error: %s%s", context.get("message") or error, detail, exc_info=error)
 
         asyncio.get_running_loop().set_exception_handler(handle_async_exception)
 
