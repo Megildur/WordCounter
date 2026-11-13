@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import decimal
 import logging
+import re
 import time
 import warnings
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
@@ -26,6 +27,10 @@ RECYCLE_SECONDS = 120
 LOCK_SLOW_SECONDS = 1.0
 
 log = logging.getLogger(__name__)
+
+# The database layer keeps the rows of channels, ignore and keyword in memory, because every message reads them. A statement that changes one of those tables is spotted here, whoever wrote it, and the layer is told to forget what it kept once the change is committed. The table's name has to follow INTO, UPDATE, FROM, JOIN or TABLE, so keyword_channel, a column called keyword and INSERT IGNORE don't count.
+_WRITES = re.compile(r"^\s*(?:INSERT|REPLACE|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b", re.IGNORECASE)
+_KEPT_TABLE = re.compile(r"\b(?:INTO|UPDATE|FROM|JOIN|TABLE)\s+`?(?:channels|ignore|keyword)`?(?!\w)", re.IGNORECASE)
 
 warnings.filterwarnings("ignore", module="aiomysql")
 
@@ -71,10 +76,14 @@ class Session:
         self.connection = connection
         # The start of the first statement of the block, so a lock held for too long can say what held it. Never the values.
         self.first_sql: Optional[str] = None
+        # True once the block has written to a table whose rows the database layer keeps in memory.
+        self.touches_kept = False
 
     def _note(self, sql: str) -> None:
         if self.first_sql is None:
             self.first_sql = " ".join(sql.split())[:80]
+        if not self.touches_kept and _WRITES.match(sql) and _KEPT_TABLE.search(sql):
+            self.touches_kept = True
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
         self._note(sql)
@@ -137,6 +146,11 @@ class SessionLock:
             if self.connection is not None and not self.connection.closed:
                 if kind is None:
                     await self.connection.commit()
+                    if getattr(self.owner.db, "touches_kept", False):
+                        # Straight after the commit, before anything else can run, so nobody reads the old rows from memory any longer than the commit itself took.
+                        forget = getattr(self.owner, "forget_kept", None)
+                        if forget is not None:
+                            forget()
                 else:
                     await self.connection.rollback()
         finally:
