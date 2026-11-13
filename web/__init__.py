@@ -43,8 +43,8 @@ async def setup(bot) -> None:
     # Templates are compiled up front, in a thread, so the first page isn't slow and a broken template fails at startup.
     await asyncio.to_thread(load_templates)
     server_log = logging.getLogger("aiohttp.server")
-    # Checked first, because reloading this extension would otherwise add a second filter.
-    if not any(isinstance(existing, ProbeFilter) for existing in server_log.filters):
+    # Matched by class name, because reloading this extension makes a new ProbeFilter class and isinstance would no longer see the filter the first load added.
+    if not any(type(existing).__name__ == "ProbeFilter" for existing in server_log.filters):
         server_log.addFilter(ProbeFilter())
     runner = web.AppRunner(create_app(bot), access_log_class=ErrorAccessLogger)
     await runner.setup()
