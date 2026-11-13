@@ -31,6 +31,11 @@ CONSENT_ERRORS = ("consent_required", "interaction_required", "login_required")
 User = Dict[str, Any]
 
 
+def _same(first: str, second: str) -> bool:
+    """Compares two strings in constant time. They are compared as bytes, because compare_digest raises TypeError for a str with non-ASCII characters, and a cookie or form field can hold any text."""
+    return hmac.compare_digest(first.encode("utf-8", "replace"), second.encode("utf-8", "replace"))
+
+
 def _sign(value: str) -> str:
     return hmac.new(SESSION_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
 
@@ -42,12 +47,12 @@ def sign_session(user: User) -> str:
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, an old one, bad contents or a wrong ASCII signature gives None. A signature with non-ASCII characters raises TypeError."""
+    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, a wrong signature, bad contents or an old one gives None."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
     # compare_digest takes the same time wherever the strings differ, so the signature can't be found out a piece at a time.
-    if not hmac.compare_digest(signature, _sign(payload)):
+    if not _same(signature, _sign(payload)):
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(payload.encode()))
@@ -66,7 +71,7 @@ def csrf_token(user: User) -> str:
 
 
 def check_csrf(user: User, token: Optional[str]) -> bool:
-    return bool(token) and hmac.compare_digest(token, csrf_token(user))
+    return bool(token) and _same(token, csrf_token(user))
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
@@ -89,7 +94,7 @@ def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
     if not state or not nonce or ":" not in state:
         return None
     sent_nonce, next_url = state.split(":", 1)
-    if not hmac.compare_digest(sent_nonce, nonce):
+    if not _same(sent_nonce, nonce):
         return None
     return safe_next(next_url)
 
