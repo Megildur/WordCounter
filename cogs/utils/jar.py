@@ -108,10 +108,13 @@ def parse_amount(settings: Mapping[str, Any], text: str) -> Optional[int]:
         return None
     if not math.isfinite(value) or value <= 0:
         return None
-    if settings["currency"] == "money":
-        units = math.ceil(round(value * 100) / settings["unit_cents"])
-    else:
-        units = math.ceil(value / settings["tokens_per_unit"])
+    try:
+        if settings["currency"] == "money":
+            units = math.ceil(round(value * 100) / settings["unit_cents"])
+        else:
+            units = math.ceil(value / settings["tokens_per_unit"])
+    except OverflowError:
+        return None
     return units if 0 < units <= AMOUNT_LIMIT else None
 
 
@@ -151,25 +154,35 @@ def parse_unit_cents(text: str) -> Optional[int]:
     """Reads what one unit is worth in dollars and returns it in cents, or None if it isn't a number or is outside 1 to CENTS_LIMIT cents."""
     try:
         cents = round(float(text.strip().lstrip("$")) * 100)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return cents if 1 <= cents <= CENTS_LIMIT else None
+
+
+def _whole_number(text: str) -> Optional[int]:
+    """Returns text as an int when it is only decimal digits, otherwise None. isdigit() would let through characters like a superscript two, which int() rejects."""
+    try:
+        return int(text) if text.isdecimal() else None
+    except ValueError:
+        return None
 
 
 def parse_tokens(name: str, plural: str, per_unit: str) -> Optional[Dict[str, Any]]:
     """Returns the token settings as jar_settings columns, or None unless both names are filled in and tokens per unit is a whole number from 1 to TOKENS_LIMIT. Names are cut to NAME_LIMIT characters."""
     name, plural, per_unit = name.strip()[:NAME_LIMIT], plural.strip()[:NAME_LIMIT], per_unit.strip()
-    if not (name and plural and per_unit.isdigit() and 1 <= int(per_unit) <= TOKENS_LIMIT):
+    count = _whole_number(per_unit)
+    if not (name and plural and count is not None and 1 <= count <= TOKENS_LIMIT):
         return None
-    return {"token_name": name, "token_plural": plural, "tokens_per_unit": int(per_unit)}
+    return {"token_name": name, "token_plural": plural, "tokens_per_unit": count}
 
 
 def parse_prices(values: Iterable[str]) -> Optional[Dict[str, int]]:
     """Returns the three tier prices as jar_settings columns, or None unless there are three whole numbers of units from 1 to PRICE_LIMIT."""
     values = [value.strip() for value in values]
-    if len(values) != 3 or not all(value.isdigit() and 1 <= int(value) <= PRICE_LIMIT for value in values):
+    prices = [_whole_number(value) for value in values]
+    if len(values) != 3 or not all(price is not None and 1 <= price <= PRICE_LIMIT for price in prices):
         return None
-    return {"tier1": int(values[0]), "tier2": int(values[1]), "tier3": int(values[2])}
+    return {"tier1": prices[0], "tier2": prices[1], "tier3": prices[2]}
 
 
 def shown_word(key: str) -> str:
