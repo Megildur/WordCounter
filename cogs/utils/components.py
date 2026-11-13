@@ -131,6 +131,16 @@ async def can_attach(interaction: discord.Interaction, title: str) -> bool:
     return False
 
 
+async def private_followup(interaction: discord.Interaction, view: discord.ui.LayoutView, *, public_defer: bool = True) -> None:
+    """Answers privately once the interaction has been deferred. After a public `defer()` the first follow-up replaces the "thinking" message and can't be private, so with `public_defer` that message is deleted first (a failed delete is ignored). Pass False after `defer(ephemeral=True)`."""
+    if public_defer:
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+    await interaction.followup.send(view=view, ephemeral=True)
+
+
 def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:
     mark = "**" if bold else ""
     parts = ((words, "words"), (messages, "messages"), (attachments, "attachments"), (emojis, "emojis"))

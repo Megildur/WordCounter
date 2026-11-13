@@ -20,6 +20,7 @@ from cogs.utils.components import (
     create_v2_view,
     error_view,
     keyword_summary,
+    private_followup,
 )
 from cogs.utils import cards
 from cogs.utils.counting import MessageStats
@@ -143,14 +144,19 @@ class Counter(commands.Cog):
         self.bot.tree.remove_command(self.user_stats_menu.name, type=self.user_stats_menu.type)
 
     async def message_word_count(self, interaction: discord.Interaction, message: discord.Message) -> None:
-        if interaction.guild_id is None or not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+        if interaction.guild_id is None:
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
             return
         if message.author.bot:
             await interaction.response.send_message(view=error_view("Bot messages aren't counted."))
             return
+        # Every reply here is public, so deferring before the database check costs nothing and keeps the check inside Discord's 3 second window.
+        await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            return
         words = len(message.content.split())
-        await interaction.response.send_message(
+        await interaction.followup.send(
             view=create_v2_view(
                 "Message word count",
                 f"This message from {message.author.mention} has **{words:,}** words.",
@@ -176,11 +182,9 @@ class Counter(commands.Cog):
             return
         overall = await self.bot.db.get_user_full_stats(interaction.guild_id, user.id)
         if not any(overall):
-            # After a public defer the first follow-up can't be private, so the deferred reply is deleted and the notice goes out privately.
-            await interaction.delete_original_response()
-            await interaction.followup.send(
-                view=error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
-                ephemeral=True,
+            await private_followup(
+                interaction,
+                error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
             )
             return
 
