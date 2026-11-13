@@ -1,6 +1,6 @@
 """Error handling for slash commands, context menus, buttons, selects and modals.
 
-`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, under a short reference, and the person gets an `ErrorDisplayView` (not for an expired interaction). It is private, except as the first follow-up after a public defer. Only an administrator of one of the owner's servers sees the exception text and a button for the full traceback, because those can name file paths, the database host and library versions. Everyone else gets a plain message and the reference.
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, under a short reference, and the person gets an `ErrorDisplayView` (not for an expired interaction). It is private, also after a public defer, where the "thinking" message is removed first. Only an administrator of one of the owner's servers sees the exception text and a button for the full traceback, because those can name file paths, the database host and library versions. Everyone else gets a plain message and the reference.
 """
 
 from __future__ import annotations
@@ -110,6 +110,16 @@ def format_error_details(error: BaseException, detailed: bool = False) -> Tuple[
     return "Something went wrong", f"`{type(original).__name__}`: {details}", full_traceback
 
 
+async def drop_thinking_message(interaction: discord.Interaction) -> None:
+    """After a public defer the first follow-up replaces Discord's "thinking" message and can't be private, so an error that arrives while that message is still there removes it first, and its follow-up can be private. A reply that already holds real content is left alone, and so is anything that can't be checked."""
+    try:
+        original = await interaction.original_response()
+        if original.flags.loading:
+            await interaction.delete_original_response()
+    except discord.HTTPException:
+        pass
+
+
 async def handle_interaction_error(interaction: discord.Interaction, error: BaseException, context_name: str = "Command") -> None:
     """Logs an interaction error with the command, user, server and channel, then shows the user an `ErrorDisplayView`. Slash commands, context menus, components and modals all end up here."""
     detailed = can_see_details(interaction)
@@ -138,8 +148,9 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
 
     view = ErrorDisplayView(title, description, full_traceback if detailed else "", interaction.user.id, reference)
     try:
-        # If the command already answered or deferred, the error goes out as a follow-up. After a public defer that first follow-up can't be private.
+        # If the command already answered or deferred, the error goes out as a follow-up, privately even after a public defer.
         if interaction.response.is_done():
+            await drop_thinking_message(interaction)
             await interaction.followup.send(view=view, ephemeral=True)
         else:
             await interaction.response.send_message(view=view, ephemeral=True)
