@@ -7,8 +7,10 @@ from __future__ import annotations
 import calendar
 import hashlib
 import ipaddress
+import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 import jinja2
 from aiohttp import web
@@ -89,6 +91,27 @@ MESSAGES = {
     "goal_ended": ("success", "Goal ended."),
     "jar_reset": ("success", "Swear jar reset."),
 }
+
+
+class RateLimit:
+    """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
+    def __init__(self, limit: int, window: float) -> None:
+        self.limit, self.window = limit, window
+        self.hits: Dict[Any, Deque[float]] = {}
+
+    def wait(self, key: Any, now: Optional[float] = None) -> float:
+        now = time.monotonic() if now is None else now
+        recent = self.hits.setdefault(key, deque())
+        while recent and now - recent[0] >= self.window:
+            recent.popleft()
+        if len(recent) >= self.limit:
+            return self.window - (now - recent[0])
+        recent.append(now)
+        if len(self.hits) > 5000:
+            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end.
+            for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
+                del self.hits[stale]
+        return 0.0
 
 
 def _asset_version() -> str:
@@ -262,6 +285,9 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
     except web.HTTPForbidden as forbidden:
         response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
+    except web.HTTPTooManyRequests as slow:
+        response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
+        response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
     except web.HTTPRedirection as moved:
         response = moved
     except web.HTTPException as problem:

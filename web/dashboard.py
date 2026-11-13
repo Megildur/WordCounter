@@ -14,12 +14,14 @@ from aiohttp import web
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, current_user, error_page, post_form, redirect, render
+from web.core import ENV, RateLimit, current_user, error_page, post_form, redirect, render
 
 routes = web.RouteTableDef()
 
 PAGE_SIZE = 25
 KEYWORD_TOP = 10
+# Every dashboard page reads the database, whose one connection everything shares, so a signed-in person gets 90 requests per 30 seconds, much more than clicking around needs.
+REQUESTS = RateLimit(90, 30.0)
 LISTABLE_TYPES = (*TRACKABLE_CHANNEL_TYPES, discord.ChannelType.category)
 
 
@@ -61,6 +63,12 @@ def require_user(request: web.Request) -> auth.User:
         raise web.HTTPFound(f"/login?next={quote(request.path_qs, safe='/?=&')}")
     if int(user["id"]) in request.app["bot"].blacklisted:
         raise web.HTTPForbidden(text="You've been banned from using WordCounter, so its dashboard is closed to you.")
+    # A handler that checks again, such as read_form after member_access, doesn't count the request twice.
+    if not request.get("rate_checked"):
+        request["rate_checked"] = True
+        wait = REQUESTS.wait(int(user["id"]))
+        if wait:
+            raise web.HTTPTooManyRequests(headers={"Retry-After": str(math.ceil(wait))})
     return user
 
 
@@ -68,14 +76,27 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
     return guild.icon.with_size(128).url if guild.icon else None
 
 
+# (server id, user id) to (time asked, the member or None), for people Discord was asked about because the server's member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time.
+_asked: Dict[Tuple[int, int], Tuple[float, Optional[discord.Member]]] = {}
+ASKED_SECONDS = 20.0
+ASKED_LIMIT = 2000
+
+
 async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
     member = guild.get_member(user_id)
     # Only ask Discord when the member list isn't fully cached. A fully cached list already shows the person isn't in the server.
     if member is None and not guild.chunked:
+        key = (guild.id, user_id)
+        known = _asked.get(key)
+        if known is not None and time.monotonic() - known[0] < ASKED_SECONDS:
+            return known[1]
         try:
             member = await guild.fetch_member(user_id)
         except discord.HTTPException:
-            return None
+            member = None
+        if len(_asked) >= ASKED_LIMIT:
+            _asked.clear()
+        _asked[key] = (time.monotonic(), member)
     return member
 
 
