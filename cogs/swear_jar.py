@@ -31,6 +31,7 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     member_names,
+    private_followup,
     rank_prefix,
     tab_rows,
 )
@@ -1118,16 +1119,23 @@ class SwearJar(commands.Cog):
             remove=[member for member in role.members if winner is None or member.id != winner.id],
         )
 
-    async def _enabled_settings(self, interaction: discord.Interaction) -> Optional[Dict[str, Any]]:
-        """Returns the server's jar settings, or None after answering privately that the command can't run here (not in a server, or the jar is off)."""
+    async def _enabled_settings(self, interaction: discord.Interaction, deferred: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+        """Returns the server's jar settings, or None after answering privately that the command can't run here (not in a server, or the jar is off).
+
+        `deferred` is None before the interaction is answered, True after a public defer and False after `defer(ephemeral=True)`. Reading the settings can be slow, so a command defers first and passes it.
+        """
         if interaction.guild is None:
-            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
-            return None
-        settings = await self.bot.db.jar_settings(interaction.guild.id)
-        if not settings["enabled"]:
-            await interaction.response.send_message(view=error_view(JAR_OFF_MESSAGE), ephemeral=True)
-            return None
-        return settings
+            problem = error_view(SERVER_ONLY_MESSAGE)
+        else:
+            settings = await self.bot.db.jar_settings(interaction.guild.id)
+            if settings["enabled"]:
+                return settings
+            problem = error_view(JAR_OFF_MESSAGE)
+        if deferred is None:
+            await interaction.response.send_message(view=problem, ephemeral=True)
+        else:
+            await private_followup(interaction, problem, public_defer=deferred)
+        return None
 
     async def _member_data(self, guild_id: int, user_id: int) -> Dict[str, Any]:
         return await self.bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
@@ -1144,9 +1152,9 @@ class SwearJar(commands.Cog):
     )
     @app_commands.describe(member="Whose wallet to show (yours if you leave it empty)")
     async def wallet(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
-        # The checks that can fail run before the defer, so their errors can be private: a public defer's first follow-up can't be.
-        settings = await self._enabled_settings(interaction)
-        if settings is None:
+        # The checks that need no database run before the defer, so their errors can be private without extra steps.
+        if interaction.guild is None:
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
         member = member or interaction.user
         if member.bot:
@@ -1154,8 +1162,11 @@ class SwearJar(commands.Cog):
             return
         if not await can_attach(interaction, "Can't show the wallet here"):
             return
-        # Reading the database and drawing the card can take longer than the 3 seconds Discord allows for a first reply.
+        # Reading the settings and the wallet and drawing the card can take longer than the 3 seconds Discord allows for a first reply.
         await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
+        if settings is None:
+            return
         data = await self._member_data(interaction.guild.id, member.id)
         balance = data["balance"]
         if balance < 0:
@@ -1197,7 +1208,8 @@ class SwearJar(commands.Cog):
         },
     )
     async def top(self, interaction: discord.Interaction) -> None:
-        settings = await self._enabled_settings(interaction)
+        await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
         if settings is None:
             return
         paginator = JarTopPaginator(self.bot, interaction.guild, interaction.user.id, settings)
@@ -1212,7 +1224,8 @@ class SwearJar(commands.Cog):
         },
     )
     async def goal(self, interaction: discord.Interaction) -> None:
-        settings = await self._enabled_settings(interaction)
+        await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
         if settings is None:
             return
         goal = await self.bot.db.jar_goal(interaction.guild.id)
@@ -1234,7 +1247,7 @@ class SwearJar(commands.Cog):
                 footer="Every fine goes into the jar.",
                 color=BRAND_COLOR,
             )
-        await interaction.response.send_message(view=view)
+        await interaction.followup.send(view=view)
 
     @jar.command(
         name="settings",
@@ -1253,18 +1266,21 @@ class SwearJar(commands.Cog):
         if reason:
             await interaction.response.send_message(view=error_view(reason), ephemeral=True)
             return
+        # Reading the settings can take longer than the 3 seconds Discord gives a first reply, so defer first. The menu is private either way.
+        await interaction.response.defer(ephemeral=True)
         menu = JarSettingsView(self, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.response.send_message(view=menu, ephemeral=True)
+        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     async def message_fine(self, interaction: discord.Interaction, message: discord.Message) -> None:
         """The Swear Jar message menu: shows what the message was fined, then its author's wallet. The reply is private."""
-        settings = await self._enabled_settings(interaction)
+        await interaction.response.defer(ephemeral=True)
+        settings = await self._enabled_settings(interaction, deferred=False)
         if settings is None:
             return
         if message.author.bot:
-            await interaction.response.send_message(view=error_view("Bot messages aren't fined."), ephemeral=True)
+            await interaction.followup.send(view=error_view("Bot messages aren't fined."), ephemeral=True)
             return
         record = await self.bot.db.jar_message_fine(message.id)
         if record:
@@ -1272,7 +1288,7 @@ class SwearJar(commands.Cog):
         else:
             description = f"This message from {message.author.mention} wasn't fined."
         data = await self._member_data(interaction.guild.id, message.author.id)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             view=create_v2_view(
                 "Swear jar",
                 description,
