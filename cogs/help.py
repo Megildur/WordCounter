@@ -241,7 +241,7 @@ def welcome_view(bot: commands.Bot) -> discord.ui.LayoutView:
 
 
 def welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
-    """Returns where to post the welcome: the system channel if the bot can post there, otherwise the first text channel by position where it has every permission in WELCOME_NEEDS, otherwise None."""
+    """Returns where to post the welcome: the system channel, otherwise the first text channel by position, whichever first gives the bot every permission in WELCOME_NEEDS, otherwise None."""
     me = guild.me
     if me is None:
         return None

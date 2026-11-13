@@ -534,7 +534,7 @@ class AnalyzeChat(commands.Cog):
             self._spawn(self._startup())
 
     async def cog_unload(self) -> None:
-        # Whatever a crawl counted since its last checkpoint is lost when it is cancelled, and is read again when the run resumes.
+        # Cancels the start-up and resume tasks this cog spawned, and what such a crawl counted since its last checkpoint is read again when the run resumes. A crawl started from the Start button runs in that interaction's own task and isn't cancelled here.
         for task in tuple(self._tasks):
             task.cancel()
 

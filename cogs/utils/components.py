@@ -151,7 +151,7 @@ def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
 
 
 def clip_text(text: str, limit: int) -> str:
-    """Shortens text to `limit` characters or fewer (for a `limit` of 2 or more), cutting at the last line break that fits and ending with an ellipsis line."""
+    """Shortens text to `limit` characters or fewer (for a `limit` of 2 or more), cutting at the last line break that fits, or mid-line when there is none, and ending with an ellipsis line."""
     if len(text) <= limit:
         return text
     cut = text.rfind("\n", 0, limit - 2)

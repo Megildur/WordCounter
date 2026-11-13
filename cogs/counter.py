@@ -31,7 +31,7 @@ OverallStats = Tuple[int, int, int, int, List[Tuple[str, int]]]
 
 
 class UserStatsPaginator(ButtonPaginator):
-    """One page per month, newest first, each under the member's all-time totals, with a select to jump to a month."""
+    """One page per month, newest first, each under the member's all-time totals, and with two or more months a select to jump to one."""
     previous_label = "Newer"
     next_label = "Older"
 
@@ -215,7 +215,7 @@ class Counter(commands.Cog):
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
         """Returns the channel id the message counts under, or None when it must not be counted.
 
-        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before any cog sees them.
+        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
         """
         if message.author.bot or message.guild is None:
             return None

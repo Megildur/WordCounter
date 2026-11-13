@@ -49,7 +49,7 @@ def count_links(text: str) -> int:
 
 @lru_cache(maxsize=4096)
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
-    # Every message is checked against every keyword, so each pattern is compiled once and cached. Matching is by whole word, so `gg` skips `eggs`, and a keyword that starts or ends with a symbol only matches next to a letter, digit or underscore.
+    # Every message is checked against every keyword, so each pattern is compiled once and kept in a cache of 4096 patterns. Matching is by whole word, so `gg` skips `eggs`, and a keyword that starts or ends with a symbol only matches next to a letter, digit or underscore.
     return re.compile(r"\b" + re.escape(keyword.lower()) + r"\b")
 
 

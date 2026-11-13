@@ -1,6 +1,6 @@
 """The shared paged-menu helper, `ButtonPaginator`.
 
-Shows pages as Components v2 containers with a Previous, page counter and Next row at the bottom, and only lets the person who opened it press the buttons. Cogs subclass it and override `format_page`, `extra_rows` or `get_page_kwargs`; /help, /stats user, /leaderboard, /keyword list and the owner blacklist list all use it.
+Shows pages as Components v2 containers with a Previous, page counter and Next row at the bottom when there is more than one page, and only `author_id` can press the buttons. Cogs subclass it and override `format_page`, `extra_rows` or `get_page_kwargs`; /help, /stats user, /leaderboard, /keyword list and the owner blacklist list all use it.
 """
 
 from __future__ import annotations

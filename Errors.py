@@ -1,6 +1,6 @@
 """Error handling for slash commands, context menus, buttons, selects and modals.
 
-`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets an `ErrorDisplayView` with a button for the full traceback. It is private unless the command already deferred publicly.
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets an `ErrorDisplayView` with a button for the full traceback (not for an expired interaction). It is private, except as the first follow-up after a public defer.
 """
 
 from __future__ import annotations

@@ -325,7 +325,6 @@ class SwearJarQueries:
 
     async def jar_add_day_messages(self, rows: Iterable[Tuple[int, int, int, int]]) -> None:
         """Adds message counts to jar_days. `rows` are (guild_id, user_id, day, messages). A new row starts unfined, and an existing row keeps its fined flag."""
-        # executemany only fills the VALUES list, so the update part adds the new count with VALUES(messages).
         await self._write([(
             """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, 0)
             ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages)""",

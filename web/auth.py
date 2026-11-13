@@ -42,7 +42,7 @@ def sign_session(user: User) -> str:
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, a wrong signature or an old one gives None."""
+    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, an old one, bad contents or a wrong ASCII signature gives None. A signature with non-ASCII characters raises TypeError."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)

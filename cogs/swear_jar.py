@@ -851,7 +851,7 @@ class SwearJar(commands.Cog):
         self.states.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
-        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts aren't saved afterwards."""
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts are dropped instead of saved later. A flush that has already taken its counts and is waiting for the database lock can still write them after the delete."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:

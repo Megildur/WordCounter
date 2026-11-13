@@ -145,7 +145,7 @@ def gallery(filename: str, description: str) -> discord.ui.MediaGallery:
 
 
 async def avatar(user: Optional[discord.abc.User], size: int = 128) -> Optional[bytes]:
-    """Returns the bytes of a user's avatar image (a GIF for an animated one, otherwise PNG), or None when there is no user or it can't be downloaded within AVATAR_WAIT seconds. The card then draws a plain tile instead."""
+    """Returns the bytes of a user's avatar image (a GIF for an animated one, otherwise PNG), or None when there is no user, Discord answers with an HTTP error, or the download takes longer than AVATAR_WAIT seconds. A connection error is raised. The card draws a plain tile when it gets None."""
     if user is None:
         return None
     try:
