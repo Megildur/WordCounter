@@ -11,7 +11,7 @@ from typing import Any, Set
 import aiohttp
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist, expired, startup
+from cogs.utils import blacklist, expired, nettrace, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import NotMigrated, WordCounterDatabase
 from cogs.utils.http import close_session
@@ -46,7 +46,9 @@ class MyBot(commands.Bot):
     """The bot. Nobody is pinged by default, so a message that must ping passes its own `allowed_mentions`."""
     def __init__(self) -> None:
         # The only text command WordCounter adds is !wcquicksync, and Intents.all() includes the privileged message content and members intents the counting needs.
-        super().__init__(command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none())
+        super().__init__(
+            command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none(), http_trace=nettrace.trace_config(),
+        )
         self.db = WordCounterDatabase(self)
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
@@ -58,7 +60,8 @@ class MyBot(commands.Bot):
 
     async def login(self, token: str) -> None:
         # discord.py makes its HTTP session when it logs in, from this connector, so it is set here, where an event loop is running.
-        self.http.connector = aiohttp.TCPConnector(ttl_dns_cache=DNS_CACHE_SECONDS)
+        # limit=0 is what discord.py uses when it makes the connector itself: no cap on open connections.
+        self.http.connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=DNS_CACHE_SECONDS)
         await super().login(token)
 
     async def setup_hook(self) -> None:
