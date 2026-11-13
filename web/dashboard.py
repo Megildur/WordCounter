@@ -85,7 +85,9 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     The bot not being in the server, or the person not being in it, gives the same 404 as any missing page. A banned server gives a 403. Every `/dashboard/{guild_id}` handler calls this, and the manager-only pages then check the flag.
     """
     user = require_user(request)
-    guild = request.app["bot"].get_guild(int(request.match_info["guild_id"]))
+    # The route only matches 1 to 19 ASCII digits, and this keeps a number that big from being turned into an ID that doesn't exist.
+    guild_id = whole_number(request.match_info["guild_id"])
+    guild = request.app["bot"].get_guild(guild_id) if guild_id else None
     if guild is None:
         raise web.HTTPNotFound()
     if guild.id in request.app["bot"].blacklisted:
@@ -254,7 +256,7 @@ async def dashboard(request: web.Request) -> web.Response:
     return render(request, "dashboard.html", "dashboard", servers=servers)
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}")
 async def own_stats(request: web.Request) -> web.Response:
     guild, member, can_manage = await member_access(request)
     bot = request.app["bot"]
@@ -269,7 +271,7 @@ async def own_stats(request: web.Request) -> web.Response:
     )
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/leaderboard")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/leaderboard")
 async def leaderboard(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -311,7 +313,7 @@ async def leaderboard(request: web.Request) -> web.Response:
     return render(request, "server_leaderboard.html", "dashboard", **context, **guild_context(guild, can_manage, "leaderboard"))
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/members")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/members")
 async def members(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -345,13 +347,15 @@ async def members(request: web.Request) -> web.Response:
     )
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/members/{member_id:\d+}")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/members/{member_id:[0-9]{1,19}}")
 async def member_page(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     bot = request.app["bot"]
-    member_id = int(request.match_info["member_id"])
+    member_id = whole_number(request.match_info["member_id"])
+    if member_id is None:
+        raise web.HTTPNotFound()
     running, busy = await analysis_state(bot, guild.id)
     return render(
         request,
@@ -372,12 +376,14 @@ async def member_page(request: web.Request) -> web.Response:
     )
 
 
-@routes.post(r"/dashboard/{guild_id:\d+}/members/{member_id:\d+}")
+@routes.post(r"/dashboard/{guild_id:[0-9]{1,19}}/members/{member_id:[0-9]{1,19}}")
 async def member_action(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
-    member_id = int(request.match_info["member_id"])
+    member_id = whole_number(request.match_info["member_id"])
+    if member_id is None:
+        raise web.HTTPNotFound()
     db = request.app["bot"].db
     form, csrf_ok = await read_form(request)
     action = form.get("action")
@@ -399,7 +405,7 @@ async def member_action(request: web.Request) -> web.Response:
     return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/settings")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
 async def settings(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -431,7 +437,7 @@ async def settings(request: web.Request) -> web.Response:
     )
 
 
-@routes.post(r"/dashboard/{guild_id:\d+}/settings")
+@routes.post(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
 async def settings_action(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
