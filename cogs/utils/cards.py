@@ -89,7 +89,7 @@ def _has_glyph(bold: bool, char: str) -> bool:
 
 
 def drawable(text: str, bold: bool = True) -> str:
-    """Returns the text without characters the card font can't draw, such as emoji, with runs of spaces collapsed. The result can be empty, so callers fall back to a default."""
+    """Returns the text without characters the card font can't draw, such as emoji, with runs of spaces collapsed. The result can be empty, and the callers that draw a name then use a default."""
     kept = "".join(char for char in text if _has_glyph(bold, char))
     return re.sub(r"\s+", " ", kept).strip()
 
@@ -145,7 +145,7 @@ def gallery(filename: str, description: str) -> discord.ui.MediaGallery:
 
 
 async def avatar(user: Optional[discord.abc.User], size: int = 128) -> Optional[bytes]:
-    """Returns the PNG bytes of a user's avatar, or None when there is no user or it can't be downloaded within AVATAR_WAIT seconds. The card then draws a plain tile instead."""
+    """Returns the bytes of a user's avatar image (a GIF for an animated one, otherwise PNG), or None when there is no user or it can't be downloaded within AVATAR_WAIT seconds. The card then draws a plain tile instead."""
     if user is None:
         return None
     try:

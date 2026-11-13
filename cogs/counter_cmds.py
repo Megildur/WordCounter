@@ -86,7 +86,7 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
     def __init__(self, menu_view: SettingsMenuView, current_keywords: List[str]) -> None:
         super().__init__()
         self.menu_view = menu_view
-        # Cut to the input's 2000 character limit. Saving a list longer than that drops the keywords that were cut off.
+        # Cut to the input's 2000 character limit. Saving a list longer than that loses the keywords that were cut off, and a keyword cut in half is saved as a new one.
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -461,7 +461,7 @@ class SettingsMenuView(SectionMenu):
     async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.pending_confirmation = None
-        # Busy means an analysis is running or an interrupted one is saved. Either is still writing counts for this server, so a reset waits.
+        # Busy means an analysis is running or a saved run exists, and the reset is refused while either holds.
         _, busy = await analysis_state(self.bot, self.guild.id)
         if busy:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)

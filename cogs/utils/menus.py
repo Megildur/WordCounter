@@ -1,6 +1,6 @@
-"""`SectionMenu`, the base of the /settings menu.
+"""`SectionMenu`, the base of the settings menus.
 
-One message with a select to switch between sections, a body that changes with the section, confirmation steps and a Close button. A subclass lists its `sections` and writes a `_populate_<key>_tab` method for each key (see `SettingsMenuView` in `cogs/counter_cmds.py`).
+One message with a select to switch between sections, a body that changes with the section, confirmation steps and a Close button. A subclass lists its `sections` and writes a `_populate_<key>_tab` method for each key (see `SettingsMenuView` in `cogs/counter_cmds.py` and `JarSettingsView` in `cogs/swear_jar.py`).
 """
 
 from __future__ import annotations

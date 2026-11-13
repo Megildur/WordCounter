@@ -151,7 +151,7 @@ def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
 
 
 def clip_text(text: str, limit: int) -> str:
-    """Shortens text to at most `limit` characters, cutting at the last line break that fits and ending with an ellipsis line."""
+    """Shortens text to `limit` characters or fewer (for a `limit` of 2 or more), cutting at the last line break that fits and ending with an ellipsis line."""
     if len(text) <= limit:
         return text
     cut = text.rfind("\n", 0, limit - 2)
@@ -172,7 +172,7 @@ def create_v2_container(
 ) -> discord.ui.Container:
     """Builds the standard reply container: a header with a title and description (and an optional thumbnail), then the fields, a footer line and any action rows, each part under a separator.
 
-    The text is clipped to TEXT_BUDGET in total, header first, so long field text is cut instead of the message failing. Fields are left out when fewer than 50 characters of budget remain.
+    The text is clipped to TEXT_BUDGET in total, header first, so long field text is cut instead of the message failing. Fields are left out when 50 or fewer characters of budget remain.
     """
     container = discord.ui.Container(accent_colour=color)
     footer_text = f"-# {footer}" if footer else ""

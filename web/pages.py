@@ -245,7 +245,7 @@ async def callback(request: web.Request) -> web.Response:
     next_url = auth.check_state(state, request.cookies.get(auth.STATE_COOKIE))
     if next_url is None:
         return redirect("/?msg=oauth_expired")
-    # The first attempt skips Discord's consent screen. This error means the person hasn't approved WordCounter yet, so send them back with the screen shown.
+    # The first attempt asks Discord to skip its consent screen. If Discord answers with one of these errors, send them back with the screen shown.
     if error in auth.CONSENT_ERRORS:
         return redirect(auth.login_url(client_id(request.app["bot"]), state, prompt="consent"))
     if error == "access_denied":

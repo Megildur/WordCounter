@@ -1,6 +1,6 @@
-"""Owner-only commands under /owner, registered only in the servers listed in `ALLOWED_GUILD_IDS`.
+"""The /owner commands, registered only in the servers listed in `ALLOWED_GUILD_IDS`.
 
-Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, ban through `cogs/utils/blacklist.py`, and check `bot.is_owner` themselves.
+Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, ban through `cogs/utils/blacklist.py`, and check `bot.is_owner` themselves. The other commands rely on the group's Administrator default.
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ class DataConfirmView(AuthorOnlyView):
         await interaction.response.defer()
         self.stop()
         if self.ban:
-            # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so nothing new is saved while the delete runs. The delete never touches the blacklist table.
+            # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so the live counter stops saving anything new for it. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
             self.bot.blacklisted.add(self.target.id)
         removed = await self.bot.db.delete_by_id(self.target.id)

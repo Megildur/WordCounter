@@ -1,6 +1,6 @@
 """The live counter and /stats.
 
-Counts each message's words, attachments, emojis and keywords as it is sent, edited or deleted, and writes the change straight to MySQL through `bot.db.apply_activity` (the all-time count tables and `monthly_user_stats`). Also holds /stats user, its User Stats menu and the Message Word Count menu, which read the same tables back.
+Counts each message's words, attachments, emojis and keywords as it is sent, edited or deleted, and writes the change straight to MySQL through `bot.db.apply_activity` (the all-time count tables and `monthly_user_stats`). Also holds /stats user and its User Stats menu, which read the same tables back, and the Message Word Count menu, which counts the words of one message directly.
 """
 
 from __future__ import annotations
@@ -215,7 +215,7 @@ class Counter(commands.Cog):
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
         """Returns the channel id the message counts under, or None when it must not be counted.
 
-        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen` in main.py drops their events before any cog sees them.
+        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before any cog sees them.
         """
         if message.author.bot or message.guild is None:
             return None

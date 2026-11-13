@@ -1,6 +1,6 @@
 """Error handling for slash commands, context menus, buttons, selects and modals.
 
-`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets a private `ErrorDisplayView` with a button for the full traceback.
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets an `ErrorDisplayView` with a button for the full traceback. It is private unless the command already deferred publicly.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ class ErrorDisplayView(AuthorOnlyView):
 def format_error_details(error: BaseException) -> Tuple[str, str, str]:
     """Returns (title, description, full traceback) for an error.
 
-    discord.py wraps an exception raised in a command in a CommandInvokeError, so the traceback and the Discord API checks use `.original`. Missing permissions, cooldowns and Discord API errors get plain explanations, and anything else shows its type and message.
+    discord.py wraps an exception raised in a command in a CommandInvokeError, so the traceback and the Discord API checks use `.original`. Missing permissions, cooldowns, failed checks and Discord API errors get plain explanations, and anything else shows its type and message.
     """
     original = getattr(error, "original", error)
     full_traceback = "".join(traceback.format_exception(type(original), original, original.__traceback__)).strip()

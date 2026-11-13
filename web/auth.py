@@ -42,7 +42,7 @@ def sign_session(user: User) -> str:
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie, or None when it is missing, forged, malformed or older than SESSION_MAX_AGE (30 days)."""
+    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, a wrong signature or an old one gives None."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
@@ -70,7 +70,7 @@ def check_csrf(user: User, token: Optional[str]) -> bool:
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
-    """Returns `path` when it is a local path to send the person to after login, otherwise `default`. A leading `//` or a backslash is refused, because browsers read those as another site."""
+    """Returns `path` when it starts with a single `/` and has no backslash, otherwise `default`. `//` and a backslash are refused because browsers read them as another site."""
     if not path or not path.startswith("/") or path.startswith("//") or "\\" in path:
         return default
     return path
@@ -93,7 +93,7 @@ def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
 
 
 def login_url(client_id: int, state: str, prompt: str = "none") -> str:
-    # The default asks Discord to skip its consent screen for someone who already authorised WordCounter. If they haven't, Discord answers with one of CONSENT_ERRORS and the callback asks again with "consent".
+    # The default value asks Discord to skip its consent screen when it can. If Discord answers with one of CONSENT_ERRORS, the callback builds this URL again with "consent".
     query = {
         "client_id": client_id,
         "response_type": "code",

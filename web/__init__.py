@@ -23,7 +23,7 @@ class ErrorAccessLogger(AbstractAccessLogger):
 
 
 class ProbeFilter(logging.Filter):
-    """Drops the "Pause on PRI/Upgrade" error aiohttp logs when a client opens an HTTP/2 connection to this HTTP/1 server, as internet scanners do."""
+    """Drops the "Pause on PRI/Upgrade" error from the server log, so scanner requests that trigger it aren't logged as errors."""
     def filter(self, record: logging.LogRecord) -> bool:
         error = record.exc_info[1] if record.exc_info else None
         return "Pause on PRI/Upgrade" not in str(error)

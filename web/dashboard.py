@@ -218,7 +218,7 @@ def guild_context(guild: discord.Guild, can_manage: bool, tab: str) -> Dict[str,
 async def confirmed_and_free(request: web.Request, form, guild: discord.Guild, running_only: bool = False) -> Optional[str]:
     """Returns the `?msg=` code for why a destructive action must not run, or None when it may.
 
-    "confirm_needed" means the confirmation box wasn't ticked. "busy" means an analysis is running or, unless `running_only` is set, an interrupted one is saved, since an analysis is still writing counts for the server.
+    "confirm_needed" means the confirmation box wasn't ticked. "busy" means an analysis is running or, unless `running_only` is set, a saved run exists.
     """
     if form.get("confirm") != "yes":
         return "confirm_needed"
