@@ -35,7 +35,7 @@ async def analysis_state(bot, guild_id: int) -> Tuple[bool, bool]:
 
     `running` is true while an analysis is going in this process. `busy` is also true when an interrupted run is saved and waits to resume.
 
-    Changes to counts are refused while busy. Wiping the whole server only waits for `running` to be false, because it also deletes the saved run.
+    Count resets in /settings are refused while busy. The swear jar reset and the whole-server wipe are refused only while running, and the wipe also deletes the saved run.
     """
     cog = bot.get_cog("AnalyzeChat")
     running = cog is not None and guild_id in cog.running_guilds

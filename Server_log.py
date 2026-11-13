@@ -1,4 +1,4 @@
-"""Records every server the bot joins or leaves, in bot_server_joins.log and, when BOT_WEBHOOK_URL is set, as a card posted to that Discord webhook."""
+"""Records the servers the bot joins or leaves (a banned server's events never reach it), in bot_server_joins.log and, when BOT_WEBHOOK_URL is set, as a card posted to that Discord webhook."""
 
 from __future__ import annotations
 import logging
@@ -48,7 +48,7 @@ class ServerJoinLogger(commands.Cog):
     async def send_webhook_message(self, view: discord.ui.LayoutView) -> None:
         if not WEBHOOK_URL:
             return
-        # A bad URL or a failed post is logged and swallowed so it can never break the join and leave handlers.
+        # A bad URL or an HTTP error from the post is logged and swallowed, so it doesn't break the join and leave handlers.
         try:
             await discord.Webhook.from_url(WEBHOOK_URL, session=get_session()).send(view=view)
         except (discord.HTTPException, ValueError) as error:

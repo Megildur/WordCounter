@@ -2,7 +2,7 @@
 
 `SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection, sets `owner.db` to a `Session` for the block, commits when the block ends and rolls back if it raised.
 
-Because the pool has one connection, database blocks run one at a time. The lock is not re-entrant, so a block must never open another one.
+`SessionLock` is an asyncio.Lock, so database blocks run one at a time and the pool needs only one connection. The lock is not re-entrant, so a block must never open another one.
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ async def create_pool() -> aiomysql.Pool:
         db=config.MYSQL_DB,
         charset="utf8mb4",
         autocommit=False,
-        # Makes rowcount mean rows matched, so `rowcount == 0` after an UPDATE or DELETE reliably means the row isn't there.
+        # Makes an UPDATE's rowcount count matched rows, so 0 means the row isn't there even when no value changed.
         client_flag=CLIENT.FOUND_ROWS,
         # A single connection: the session lock already runs database blocks one at a time.
         minsize=1,

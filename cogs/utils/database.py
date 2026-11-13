@@ -32,7 +32,7 @@ Statements = Sequence[Tuple[str, Sequence[Sequence[Any]]]]
 # A Discord snowflake ID holds its creation time as milliseconds since this moment, 2015-01-01 UTC.
 DISCORD_EPOCH_MS = 1420070400000
 
-# Every counter table: its key columns in the order the INSERT and `_key_values` use, and the column that holds the count. The statements for these tables are built from this, so a new counter table starts here.
+# Every counter table with a single count column (monthly_user_stats has four and uses the MONTHLY_* statements): its key columns in the order the INSERT and `_key_values` use, and the column that holds the count. The statements for these tables are built from this, so a new counter table starts here.
 COUNT_TABLES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "counters": (("guild_id", "user_id", "channel_id"), "count"),
     "server": (("guild_id", "user_id"), "count"),
@@ -355,7 +355,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
                 await self.db.commit()
 
     async def get_count_history(self, guild_id: int) -> Tuple[List[Tuple[int, Optional[int]]], Dict[Tuple[int, int], int]]:
-        """Returns the server's tracking periods as (started, ended) and its reset markers as {(user_id, channel_id): reset_at}, with 0 meaning all users or all channels. The analysis uses both to skip messages that were already counted live."""
+        """Returns the server's tracking periods as (started, ended) and its reset markers as {(user_id, channel_id): reset_at}, with 0 meaning all users or all channels. The analysis skips messages inside a period unless a reset marker says their counts were wiped."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
@@ -812,7 +812,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         else:
             scope = "guild_id = ? AND channel_id = ?" + (" AND user_id = ?" if user_id is not None else "")
             params = (guild_id, channel_id) + ((user_id,) if user_id is not None else ())
-            # The per-user tables have no channel column, so take what the channel held off each member's total before deleting the channel rows.
+            # The per-user tables have no channel column, so read what the channel held, delete its rows, then take that off each member's total.
             for channel_table, user_table in METRIC_TABLES.values():
                 column = COUNT_TABLES[channel_table][1]
                 cursor = await self.db.execute(f"SELECT user_id, {column} FROM {channel_table} WHERE {scope}", params)

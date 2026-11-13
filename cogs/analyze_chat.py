@@ -49,13 +49,13 @@ SEARCH_INTERVAL = 6.0
 SEARCH_MAX_FAILURES = 5
 # Extra passes over the windows that came back short while the search's own total says more messages exist.
 SEARCH_RECHECKS = 2
-# The longest total wait, in seconds, for Discord to finish indexing a server before search is given up.
+# The longest wait, in seconds and per search request, for Discord to finish indexing a server before search is given up.
 INDEX_WAIT_LIMIT = 120.0
 # Channels read at the same time, across all servers.
 CRAWL_CONCURRENCY = 4
 CRAWL_ATTEMPTS = 3
-# Seconds between checkpoints, and between edits of the progress message.
 CHECKPOINT_INTERVAL = 60.0
+# Seconds between edits of the progress message.
 PROGRESS_INTERVAL = 8.0
 LIST_LIMIT = 15
 
@@ -182,7 +182,7 @@ def combine(tallies: Iterable[Tally]) -> Tally:
 class LiveCoverage:
     """Decides which old messages still need counting, so nothing the live counters already counted is counted again.
 
-    `periods` are the (start, end) snowflake spans in which messages were counted live, with end None while one is still open. `resets` maps (user_id, channel_id) to the snowflake of a reset, with 0 meaning all users or all channels. `command_cutoff` is the snowflake of the moment the command ran.
+    `periods` are the (start, end) snowflake spans in which messages were counted live, with end None while one is still open. `resets` maps (user_id, channel_id) to the snowflake of a reset, with 0 meaning all users or all channels. `command_cutoff` is the snowflake of the moment the command ran, or the run's saved cutoff when a saved run is rebuilt.
 
     `scan_before` is where a crawl starts reading, working back in time. It is the command's moment, or an earlier one when live counting has been on since then, because newer messages were counted live.
     """
@@ -243,7 +243,7 @@ class Progress:
 
 
 class ChannelScope:
-    """Decides which channels count and which channel a message is credited to, where a thread counts toward its parent. With `jar_rules` it applies the swear jar's channel rules instead of the tracking settings."""
+    """Decides which channels count and which channel a message is credited to, where a thread counts toward its parent. With `jar_rules` it adds the swear jar's channel rules on top of the tracking settings."""
     def __init__(
         self,
         guild: discord.Guild,
@@ -309,7 +309,7 @@ class StatusMessage:
         return self.message.channel.id, self.message.id
 
     async def show(self, view: discord.ui.LayoutView) -> None:
-        """Edits the status message. A failed edit is logged and never raised, so a deleted message can't stop an analysis."""
+        """Edits the status message. An HTTP error from the edit is logged, not raised, so a deleted message can't stop an analysis."""
         error: Optional[Exception] = None
         if self.message is not None:
             try:
@@ -595,7 +595,7 @@ class AnalyzeChat(commands.Cog):
         return await interaction.original_response()
 
     async def _resume_interrupted(self, interaction: discord.Interaction) -> bool:
-        """Every command calls this first. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
+        """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
         if not await self.bot.db.has_analysis_run(interaction.guild.id):
             return False
         sent = await self._send(
@@ -699,7 +699,7 @@ class AnalyzeChat(commands.Cog):
                 await asyncio.sleep(min(60.0, 5.0 * 2**failures))
                 continue
 
-            # A response with no messages, or with doing_deep_historical_index set, means Discord is still building the index. Wait and ask again.
+            # A response without a `messages` field, or with doing_deep_historical_index set, means Discord is still building the index. Wait and ask again.
             if isinstance(data, dict) and "messages" in data and not data.get("doing_deep_historical_index"):
                 progress.note = ""
                 return data
@@ -785,7 +785,7 @@ class AnalyzeChat(commands.Cog):
                     # Remember where this window started, so a later pass can search it again.
                     if len(hits) < SEARCH_PAGE_SIZE and len(seen) < progress.total:
                         short_windows.append(cursor)
-                    # A recheck pass stops as soon as a page brings nothing new.
+                    # In a recheck pass a window stops as soon as a page brings nothing new.
                     if not hits or (sweep and not new):
                         break
                     cursor = min(hits)
@@ -839,7 +839,7 @@ class AnalyzeChat(commands.Cog):
         scope: ChannelScope,
         progress: Progress,
     ) -> None:
-        """Reads one channel's history from its saved cursor, or from `run.scan_before` when it has none, back to its first message, and tallies into `run`. The outcome is done, unreadable or failed. A cancel leaves it unset, so the channel keeps its cursor and carries on from it after a restart."""
+        """Reads one channel's history from its saved cursor, or from `run.scan_before` when it has none, back to its first message, and tallies into `run`. The outcome is done, unreadable or failed. A cancel leaves it unset, so the channel isn't marked finished and resumes from its last checkpointed cursor."""
         # Threads are credited to their parent channel.
         effective_id = scope.check(channel)[1]
         before: discord.abc.Snowflake = discord.Object(id=run.cursors.get(channel.id, run.scan_before))
@@ -855,7 +855,6 @@ class AnalyzeChat(commands.Cog):
                             run.cursors[channel.id] = message.id
                             progress.read += 1
                             author_id = message.author.id
-                            # Banned users are never counted.
                             if author_id in self.bot.blacklisted:
                                 continue
                             if run.counts_swears:
@@ -886,7 +885,7 @@ class AnalyzeChat(commands.Cog):
                         await asyncio.sleep(5.0 * attempt)
             finally:
                 progress.active.discard(channel.id)
-                # A cancelled task leaves outcome as None, so its cursor stays in `run.cursors` and the channel resumes from there.
+                # A cancelled task leaves outcome as None, so the channel isn't marked finished and resumes from its last checkpointed cursor.
                 if outcome is not None:
                     run.cursors.pop(channel.id, None)
                     run.finished[channel.id] = outcome
@@ -1052,7 +1051,7 @@ class AnalyzeChat(commands.Cog):
             if record is None:
                 return
             if record["kind"] == "swears":
-                # A swear run skips the spans the swear jar already counted live (jar_coverage) and has no reset markers.
+                # A swear run skips spans whose swears are already counted, live or by an earlier run (jar_coverage), and has no reset markers.
                 scope, keywords = await self._load_jar_scope(guild), []
                 coverage = LiveCoverage(await self.bot.db.jar_coverage(guild.id), {}, record["cutoff"])
             else:
