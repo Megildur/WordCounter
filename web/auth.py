@@ -72,7 +72,7 @@ def csrf_token(user: User) -> str:
 
 
 def check_csrf(user: User, token: Optional[str]) -> bool:
-    return bool(token) and _same(token, csrf_token(user))
+    return isinstance(token, str) and bool(token) and _same(token, csrf_token(user))
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:

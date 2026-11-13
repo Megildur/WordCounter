@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 import jinja2
 from aiohttp import web
+from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
 from cogs.utils.config import BOTZILLA_URL, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
@@ -234,11 +235,12 @@ def _old_address(request: web.Request) -> bool:
 
 
 async def post_form(request: web.Request) -> MultiDictProxy:
-    """Returns the POSTed form. A body that can't be read as text, such as a raw byte that isn't UTF-8, an unknown charset or a broken multipart upload, gives an empty form, so the CSRF check fails and the request is refused like a forged one instead of ending in a server error."""
+    """Returns the POSTed form, keeping only its text fields, so a handler never meets an uploaded file or raw bytes where it expects a string. A body that can't be read, such as a raw byte that isn't UTF-8, an unknown charset or a broken multipart upload, gives an empty form, so the CSRF check fails and the request is refused like a forged one instead of ending in a server error."""
     try:
-        return await request.post()
-    except (ValueError, LookupError):
+        form = await request.post()
+    except (ValueError, LookupError, RuntimeError, HttpProcessingError):
         return MultiDictProxy(MultiDict())
+    return MultiDictProxy(MultiDict((key, value) for key, value in form.items() if isinstance(value, str)))
 
 
 @web.middleware
