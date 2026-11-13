@@ -70,8 +70,10 @@ def check_csrf(user: User, token: Optional[str]) -> bool:
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
-    """Returns `path` when it starts with a single `/` and has no backslash, otherwise `default`. `//` and a backslash are refused because browsers read them as another site."""
+    """Returns `path` when it starts with a single `/` and has no backslash, space or control character, otherwise `default`. `//` and a backslash are refused because browsers read them as another site, and so is a tab or line break, because browsers drop those from a URL, which turns `/<tab>/host` into `//host`."""
     if not path or not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return default
+    if any(char.isspace() or not char.isprintable() for char in path):
         return default
     return path
 
