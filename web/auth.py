@@ -32,12 +32,13 @@ User = Dict[str, Any]
 
 
 def _same(first: str, second: str) -> bool:
-    """Compares two strings in constant time. They are compared as bytes, because compare_digest raises TypeError for a str with non-ASCII characters, and a cookie or form field can hold any text."""
-    return hmac.compare_digest(first.encode("utf-8", "replace"), second.encode("utf-8", "replace"))
+    """Compares two strings in constant time. They are compared as bytes, because compare_digest raises TypeError for a str with non-ASCII characters, and a cookie or form field can hold any text, even a lone surrogate."""
+    return hmac.compare_digest(first.encode("utf-8", "surrogatepass"), second.encode("utf-8", "surrogatepass"))
 
 
 def _sign(value: str) -> str:
-    return hmac.new(SESSION_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+    # surrogatepass, because aiohttp turns a byte that isn't valid UTF-8 into a lone surrogate, which a strict encode refuses.
+    return hmac.new(SESSION_SECRET.encode(), value.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()
 
 
 def sign_session(user: User) -> str:
