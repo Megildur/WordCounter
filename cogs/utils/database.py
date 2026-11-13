@@ -740,12 +740,26 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         ]
 
     async def get_global_totals(self) -> Tuple[int, int]:
-        """Returns (messages, words) counted across every server, in that order. The status line uses it."""
-        await self.ensure_connected()
-        async with self.db_lock:
-            messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
-            words = await self._fetch_value("SELECT SUM(count) FROM server", ())
-        return messages, words
+        """Returns (messages, words) counted across every server, in that order. The status line and the home page use it. Both sums read a whole table while the lock is held, so the answer is kept for TOTALS_SECONDS and callers that arrive during a read share it. When the database fails, the last answer is returned if there is one."""
+        kept = self._totals_kept
+        if kept is not None and time.monotonic() - kept[0] < TOTALS_SECONDS:
+            return kept[1]
+        async with self._totals_lock:
+            kept = self._totals_kept
+            if kept is not None and time.monotonic() - kept[0] < TOTALS_SECONDS:
+                return kept[1]
+            try:
+                await self.ensure_connected()
+                async with self.db_lock:
+                    messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
+                    words = await self._fetch_value("SELECT SUM(count) FROM server", ())
+            except (DatabaseError, OSError):
+                if kept is None:
+                    raise
+                log.warning("Could not read the totals, so the last ones are shown", exc_info=True)
+                return kept[1]
+            self._totals_kept = (time.monotonic(), (messages, words))
+            return messages, words
 
     async def get_keywords(self, guild_id: int) -> List[str]:
         """Returns the server's keywords, sorted, as a copy. Every message asks, so they are kept like the tracking settings are."""
