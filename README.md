@@ -13,8 +13,8 @@
     <img src="https://img.shields.io/badge/Website-wordcounter.dev-1D335B?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v3.0.0">
-    <img src="https://img.shields.io/badge/Release-v3.0.0-8C96AC?style=for-the-badge" alt="Release v3.0.0" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v3.1.0">
+    <img src="https://img.shields.io/badge/Release-v3.1.0-8C96AC?style=for-the-badge" alt="Release v3.1.0" />
   </a>
 </p>
 
@@ -72,10 +72,10 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | `/swearjar top` | Everyone | Who swears most, owes most, saved most and has the longest clean streak. |
 | `/swearjar goal` | Everyone | What the swear jar is saving up for. |
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
-| `/owner delete_data <User/Server> <id>` | Bot owner | Find everything stored under a user's or server's ID in every table, and delete it once you confirm. |
-| `/owner export_data <User/Server> <id>` | Bot owner | Post a text file in the channel with every row stored under the ID, table by table. |
-| `/owner kept_data <User/Server> <id>` | Bot owner | After a deletion, post in the channel what WordCounter still keeps under the ID (a ban from WordCounter) and why, quoting the Privacy Policy's "What we keep after a deletion request" and the GDPR articles it relies on. Refuses until everything a deletion removes is gone. |
-| `/owner blacklist <Add/Remove/List> [kind] [id] [reason]` | Bot owner | Ban a user or server from WordCounter, lift a ban, or list them. A banned user's messages aren't counted, and their commands, buttons and dashboard answer that they're banned. In servers where the swear jar removes swearing, it still removes theirs, without a fine. Adding a ban deletes their data once you confirm. |
+| `/owner delete_data <User/Server> <id>` | Administrator | Find everything stored under a user's or server's ID in every table, and delete it once you confirm. |
+| `/owner export_data <User/Server> <id>` | Administrator | Post a text file in the channel with every row stored under the ID, table by table. |
+| `/owner kept_data <User/Server> <id>` | Administrator | After a deletion, post in the channel what WordCounter still keeps under the ID (a ban from WordCounter) and why, quoting the Privacy Policy's "What we keep after a deletion request" and the GDPR articles it relies on. Refuses until everything a deletion removes is gone. |
+| `/owner blacklist <Add/Remove/List> [kind] [id] [reason]` | Administrator | Ban a user or server from WordCounter, lift a ban, or list them. A banned user's messages aren't counted, and their commands, buttons and dashboard answer that they're banned. In servers where the swear jar removes swearing, it still removes theirs, without a fine. Adding a ban deletes their data once you confirm. |
 
 Right-click menus:
 - **User Stats**: right-click a member, then Apps > User Stats.
@@ -130,7 +130,7 @@ Right-click menus:
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
    - `BOT_WEBHOOK_URL`: optional webhook that gets a message when the bot joins or leaves a server.
-   - `ALLOWED_GUILDS`: servers where the owner-only `/owner` commands are available.
+   - `ALLOWED_GUILDS`: servers where the `/owner` commands (administrators only) are available.
    - `BASE_URL`: the public address of the website, without a trailing slash.
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.

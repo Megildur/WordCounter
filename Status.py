@@ -1,3 +1,5 @@
+"""Rotates the bot's custom Discord status every ROTATE_MINUTES minutes through a list of lines, with live message and word totals from the database added to the list."""
+
 from __future__ import annotations
 import logging
 import random
@@ -22,6 +24,7 @@ class Status(commands.Cog):
 
     def statuses(self, messages: int, words: int) -> List[str]:
         servers = len(self.bot.guilds)
+        # Many lines name real slash commands, so update them when a command is renamed or removed.
         lines = [
             f"📊 Counting words in {servers:,} servers",
             "🏆 Who talks the most? Try /leaderboard",
@@ -75,6 +78,7 @@ class Status(commands.Cog):
         try:
             messages, words = await self.bot.db.get_global_totals()
         except (DatabaseError, OSError) as error:
+            # With the database down the status still rotates, just without the totals lines.
             log.warning("Could not read totals for the status: %s", error)
             messages, words = 0, 0
         choice = random.choice([line for line in self.statuses(messages or 0, words or 0) if line != self.last])
@@ -86,6 +90,7 @@ class Status(commands.Cog):
 
     @cycle.before_loop
     async def before_cycle(self) -> None:
+        # The lines quote the server count and the presence is sent over the gateway, so wait until the bot is ready.
         await self.bot.wait_until_ready()
 
     @commands.Cog.listener()

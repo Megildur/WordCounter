@@ -1,3 +1,8 @@
+"""Keeps banned users and servers from using WordCounter.
+
+Gateway events from them are dropped by `screen`, which MyBot.dispatch calls first. Commands, buttons and modals don't go through dispatch, so `install` wraps discord.py's INTERACTION_CREATE parser to answer them with a ban notice. The ids live in `bot.blacklisted`, loaded from the blacklist table at startup and changed by /owner blacklist. A cog with `acts_on_blacklisted` still gets a banned user's events, never a banned server's.
+"""
+
 from __future__ import annotations
 import asyncio
 import logging
@@ -10,12 +15,15 @@ log = logging.getLogger(__name__)
 
 USER = "user"
 SERVER = "server"
+# The cog attribute that opts a cog in to a banned user's events.
 GUARD = "acts_on_blacklisted"
 USER_TYPES = (discord.user.BaseUser, discord.Member)
+# Keeps the refusal tasks referenced until they finish, because the event loop only holds weak references to tasks.
 _TASKS: Set[asyncio.Task] = set()
 
 
 def ids(bot: Any) -> Set[int]:
+    """Returns the bot's set of banned user and server ids, creating an empty one if the bot doesn't have it yet."""
     found = getattr(bot, "blacklisted", None)
     if found is None:
         found = bot.blacklisted = set()
@@ -23,6 +31,7 @@ def ids(bot: Any) -> Set[int]:
 
 
 def _ids_in(value: Any) -> Iterator[Tuple[str, int]]:
+    """Yields (kind, id) for each user or server an event argument refers to: itself, its guild or guild_id, its user_id, author or user, and the author and guild of a message it carries."""
     if isinstance(value, discord.Guild):
         yield SERVER, value.id
         return
@@ -47,6 +56,7 @@ def _ids_in(value: Any) -> Iterator[Tuple[str, int]]:
 
 
 def blocked_by(bot: Any, args: Sequence[Any]) -> Optional[str]:
+    """Returns SERVER or USER if any event argument is banned, otherwise None. A banned server wins over a banned user. If the check itself fails, the event is let through."""
     blocked = ids(bot)
     if not blocked:
         return None
@@ -64,6 +74,10 @@ def blocked_by(bot: Any, args: Sequence[Any]) -> Optional[str]:
 
 
 def screen(bot: Any, event: str, args: Sequence[Any], kwargs: Dict[str, Any]) -> bool:
+    """Returns True if the event is blocked, and MyBot.dispatch then drops it.
+
+    When only a user is banned, the listeners of cogs with `acts_on_blacklisted` still get the event, scheduled directly. Only cog listeners are re-sent, not the bot's own handlers.
+    """
     kind = blocked_by(bot, args)
     if kind is None:
         return False
@@ -83,6 +97,7 @@ def _snowflake(value: Any) -> Optional[int]:
 
 
 def blocked_kind(bot: Any, data: dict) -> Optional[str]:
+    """Runs the same check on a raw INTERACTION_CREATE payload, before discord.py builds an Interaction from it. Returns USER, SERVER or None, looking at the user first."""
     blocked = ids(bot)
     if not blocked:
         return None
@@ -106,6 +121,7 @@ def banned_view(kind: str) -> discord.ui.LayoutView:
 
 
 async def _refuse(interaction: discord.Interaction, kind: str) -> None:
+    """Answers an interaction from a banned user, or in a banned server, with the ban notice that only the person who triggered it sees, or with no choices for autocomplete. Discord errors are only logged."""
     try:
         if interaction.type is discord.InteractionType.autocomplete:
             await interaction.response.autocomplete([])
@@ -116,8 +132,13 @@ async def _refuse(interaction: discord.Interaction, kind: str) -> None:
 
 
 def install(bot: discord.Client) -> None:
+    """Wraps discord.py's INTERACTION_CREATE parser so banned users and servers never reach commands, buttons or modals.
+
+    That parser hands interactions straight to the command tree and the views, not through `dispatch`, so `screen` can't see them. Installing twice does nothing.
+    """
     state = bot._connection
     original = state.parsers["INTERACTION_CREATE"]
+    # The marker set on the wrapper below tells a second call that the parser is already wrapped.
     if getattr(original, "blacklist_gate", False):
         return
 
@@ -131,6 +152,7 @@ def install(bot: discord.Client) -> None:
         except Exception as error:
             log.warning("Couldn't answer a blacklisted interaction: %s", error)
             return
+        # The parser is not async, so the reply runs as its own task.
         task = asyncio.get_running_loop().create_task(_refuse(interaction, kind))
         _TASKS.add(task)
         task.add_done_callback(_TASKS.discard)

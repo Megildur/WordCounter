@@ -1,3 +1,8 @@
+"""The signed-in dashboard at /dashboard.
+
+Everyone sees their own stats in the servers they share with the bot. People with Manage Server also get that server's leaderboard, members, per-member resets and settings, which do the same things as /settings in Discord. Pages are Jinja templates, and every change is a plain HTML form POST that redirects back with a `?msg=` code, since the site has no JavaScript.
+"""
+
 from __future__ import annotations
 import math
 import time
@@ -9,7 +14,7 @@ from aiohttp import web
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, current_user, error_page, redirect, render
+from web.core import ENV, current_user, error_page, post_form, redirect, render
 
 routes = web.RouteTableDef()
 
@@ -24,6 +29,7 @@ def _int(value: Any) -> Optional[int]:
 
 
 def page_url(path: str, anchor: str = "", **query: Any) -> str:
+    """Builds a URL from a path, a query string that leaves out empty values, and an optional #anchor."""
     filled = {key: value for key, value in query.items() if value not in (None, "")}
     return path + (f"?{urlencode(filled)}" if filled else "") + (f"#{anchor}" if anchor else "")
 
@@ -32,10 +38,12 @@ def leaderboard_url(guild_id: int, metric: str, channel_id: Optional[int] = None
     return page_url(f"/dashboard/{guild_id}/leaderboard", metric=metric, channel=channel_id, page=page)
 
 
+# Registered as a template global, so templates build leaderboard links with this same function.
 ENV.globals["leaderboard_url"] = leaderboard_url
 
 
 def paginate(items: List[Any], requested: Any) -> Tuple[List[Any], int, int]:
+    """Returns (the items on the requested page, the page number, the page count). A page number outside the range is clamped to it. Pages hold PAGE_SIZE items."""
     pages = max(1, math.ceil(len(items) / PAGE_SIZE))
     page = min(max(1, _int(requested) or 1), pages)
     start = (page - 1) * PAGE_SIZE
@@ -43,6 +51,7 @@ def paginate(items: List[Any], requested: Any) -> Tuple[List[Any], int, int]:
 
 
 def require_user(request: web.Request) -> auth.User:
+    """Returns the signed-in user. Someone who isn't signed in is redirected to /login and back to this page afterwards, and a banned user gets a 403. Every dashboard handler goes through this, directly or through `member_access`."""
     user = current_user(request)
     if user is None:
         raise web.HTTPFound(f"/login?next={quote(request.path_qs, safe='/?=&')}")
@@ -57,6 +66,7 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
 
 async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
     member = guild.get_member(user_id)
+    # Only ask Discord when the member list isn't fully cached. A fully cached list already shows the person isn't in the server.
     if member is None and not guild.chunked:
         try:
             member = await guild.fetch_member(user_id)
@@ -66,6 +76,10 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
 
 
 async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:
+    """Checks the signed-in person may see this server's dashboard, and returns (guild, their member, whether they have Manage Server).
+
+    The bot not being in the server, or the person not being in it, gives the same 404 as any missing page. A banned server gives a 403. Every `/dashboard/{guild_id}` handler calls this, and the manager-only pages then check the flag.
+    """
     user = require_user(request)
     guild = request.app["bot"].get_guild(int(request.match_info["guild_id"]))
     if guild is None:
@@ -83,6 +97,7 @@ def manager_only(request: web.Request) -> web.Response:
 
 
 def person(guild: discord.Guild, user_id: int) -> Dict[str, Any]:
+    """Name and avatar for a row in a list. Someone who has left the server (not in the member cache) shows as "Former member" with no avatar."""
     member = guild.get_member(user_id)
     return {
         "id": user_id,
@@ -92,6 +107,7 @@ def person(guild: discord.Guild, user_id: int) -> Dict[str, Any]:
 
 
 def channel_label(guild: discord.Guild, channel_id: int) -> str:
+    # Channel id 1 is stored in the channels table to mean the whole server.
     if channel_id == 1:
         return "Entire server"
     channel = guild.get_channel(channel_id)
@@ -103,6 +119,10 @@ def channel_label(guild: discord.Guild, channel_id: int) -> str:
 
 
 def channel_groups(guild: discord.Guild, include_categories: bool, exclude: Tuple[int, ...] = ()) -> List[Dict[str, Any]]:
+    """Groups the server's trackable channels by category for a channel picker, as a list of {label, options}.
+
+    With `include_categories` each category also gets a "whole category" option at the top of its group. Ids in `exclude`, such as ones already listed, are left out.
+    """
     groups = []
     for category, channels in guild.by_category():
         options = [
@@ -118,6 +138,7 @@ def channel_groups(guild: discord.Guild, include_categories: bool, exclude: Tupl
 
 
 def channel_menu(groups: List[Dict[str, Any]], selected: Optional[int], link: Callable[[Optional[int]], str], empty_label: str) -> Dict[str, Any]:
+    """Builds a channel picker out of links, because there is no JavaScript to react to a select. Each option's `url` (from `link(channel id)`) reloads the page with that channel chosen, and the first option, `empty_label`, clears the choice."""
     return {
         "current": next((option["label"] for group in groups for option in group["options"] if option["id"] == selected), empty_label),
         "selected": selected,
@@ -132,12 +153,14 @@ def channel_menu(groups: List[Dict[str, Any]], selected: Optional[int], link: Ca
 
 
 def valid_channel(guild: discord.Guild, value: Any, include_categories: bool) -> Optional[int]:
+    """Returns the channel id when it exists in this server and is a type the dashboard allows, otherwise None. Query and form values come from the browser, so they are checked before use."""
     channel = guild.get_channel(_int(value) or 0)
     allowed = LISTABLE_TYPES if include_categories else TRACKABLE_CHANNEL_TYPES
     return channel.id if channel is not None and channel.type in allowed else None
 
 
 async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any]:
+    """One member's totals, keywords and monthly history shaped for the templates, months newest first with each month's channels sorted by words. `empty` is True when nothing is recorded."""
     words, messages, attachments, emojis, keywords = await bot.db.get_user_full_stats(guild.id, user_id)
     months = []
     for month in await bot.db.get_user_monthly_breakdown(guild.id, user_id):
@@ -159,6 +182,7 @@ async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any
 
 
 async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """The swear jar numbers for one member, or None when the jar is off in this server."""
     settings = await bot.db.jar_settings(guild_id)
     if not settings["enabled"]:
         return None
@@ -181,6 +205,7 @@ async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, An
 
 
 def refresh_jar(request: web.Request, guild_id: int) -> None:
+    """Drops the swear jar cog's cached state for a server, so a change made on the website takes effect in Discord at once instead of when the cache expires."""
     cog = request.app["bot"].get_cog("SwearJar")
     if cog is not None:
         cog.invalidate(guild_id)
@@ -191,6 +216,10 @@ def guild_context(guild: discord.Guild, can_manage: bool, tab: str) -> Dict[str,
 
 
 async def confirmed_and_free(request: web.Request, form, guild: discord.Guild, running_only: bool = False) -> Optional[str]:
+    """Returns the `?msg=` code for why a destructive action must not run, or None when it may.
+
+    "confirm_needed" means the confirmation box wasn't ticked. "busy" means an analysis is running or, unless `running_only` is set, a saved run exists.
+    """
     if form.get("confirm") != "yes":
         return "confirm_needed"
     running, busy = await analysis_state(request.app["bot"], guild.id)
@@ -198,8 +227,9 @@ async def confirmed_and_free(request: web.Request, form, guild: discord.Guild, r
 
 
 async def read_form(request: web.Request) -> Tuple[Any, bool]:
+    """Returns the POSTed form and whether its CSRF token is valid for the signed-in user. Handlers must check the flag before changing anything."""
     user = require_user(request)
-    form = await request.post()
+    form = await post_form(request)
     return form, auth.check_csrf(user, form.get("csrf"))
 
 
@@ -347,6 +377,7 @@ async def member_action(request: web.Request) -> web.Response:
     db = request.app["bot"].db
     form, csrf_ok = await read_form(request)
     action = form.get("action")
+    # Nothing changes unless the CSRF token matches. Every outcome ends in a redirect with a `?msg=` code, so refreshing the page never repeats the action.
     if not csrf_ok:
         result = "expired_form"
     else:
@@ -371,7 +402,9 @@ async def settings(request: web.Request) -> web.Response:
         return manager_only(request)
     bot = request.app["bot"]
     watched, ignored = await bot.db.get_guild_tracking_config(guild.id)
+    # The same rule as /settings: no channel rows means tracking is off, and channel id 1 means the whole server.
     mode = "off" if not watched else ("whole" if 1 in watched else "specific")
+    # The list shown is the ignore list in whole server mode, and the watch list otherwise.
     listed = tuple(sorted(ignored) if mode == "whole" else sorted(cid for cid in watched if cid != 1))
     running, busy = await analysis_state(bot, guild.id)
     return render(
@@ -403,6 +436,7 @@ async def settings_action(request: web.Request) -> web.Response:
     form, csrf_ok = await read_form(request)
     action = form.get("action")
     result = "expired_form"
+    # Same as member_action: no change without a valid CSRF token, and every outcome redirects with a `?msg=` code.
     if csrf_ok:
         watched, _ = await db.get_guild_tracking_config(guild.id)
         whole = 1 in watched
@@ -410,6 +444,7 @@ async def settings_action(request: web.Request) -> web.Response:
             await (db.enable_whole_server(guild.id) if form.get("mode") == "whole" else db.switch_to_specific_mode(guild.id))
             result = "mode_saved"
         elif action == "add_channels":
+            # In whole server mode the picked channels go on the ignore list, otherwise on the watch list.
             ids = [cid for cid in (valid_channel(guild, value, True) for value in form.getall("channel", [])) if cid]
             if ids:
                 await (db.add_ignored_channels(guild.id, ids) if whole else db.add_watched_channels(guild.id, ids))
@@ -419,9 +454,11 @@ async def settings_action(request: web.Request) -> web.Response:
             await (db.remove_ignored_channels(guild.id, ids) if whole else db.remove_watched_channels(guild.id, ids))
             result = "channels_saved"
         elif action == "keywords":
+            # The same 2000 character limit as the keyword list in Discord's edit modal.
             await db.replace_keywords(guild.id, parse_keywords(str(form.get("keywords", ""))[:2000]))
             result = "keywords_saved"
         elif action == "tracking_off":
+            # running_only: turning tracking off and resetting the server are blocked only by an analysis that is running now, while the count resets below also wait for an interrupted one.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "tracking_off"
             if result == "tracking_off":
                 await db.disable_server_tracking(guild.id)

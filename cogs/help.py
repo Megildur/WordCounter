@@ -1,3 +1,8 @@
+"""The /help guide, the /advertisement poster and the welcome message sent when the bot joins a server.
+
+All three are Components v2 with a pixel-art banner from `assets/` attached as a file. The guide's text lives in `HELP_PAGES` and is shown with the shared paginator, with the link buttons on every page. Nothing here touches the database.
+"""
+
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -18,6 +23,7 @@ GAME_URL = f"{BOTZILLA_URL}/game"
 NO_PINGS = discord.AllowedMentions.none()
 WELCOME_NEEDS = ("view_channel", "send_messages", "embed_links", "attach_files")
 
+# (file in assets/, filename it is attached under, alt text).
 Picture = Tuple[str, str, str]
 HELP_BANNER: Picture = (
     "help.png",
@@ -32,31 +38,19 @@ WELCOME_BANNER: Picture = (
 AD_POSTER: Picture = (
     "advertisement.png",
     "wordcounter_ad.png",
-    "WordCounter floating above Earth beside its name and the words Who talks the most, with chat bubbles rising "
-    "toward it, above signs for words, emojis, files, keywords, ranks, history, swears and stats",
+    "WordCounter floating above Earth beside its name and the words Who talks the most, with chat bubbles rising toward it, above signs for words, emojis, files, keywords, ranks, history, swears and stats",
 )
 
-ABOUT_TEXT = (
-    "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and "
-    "channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
-)
+ABOUT_TEXT = "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
 BOTZILLA_TEXT = (
     "### Meet Specimen 01\n"
-    "WordCounter comes from the same lab as **Botzilla**, one bot for your whole server: moderation and AutoMod, "
-    "welcome cards, levels, an economy, pixel-art pets and games with friends."
+    "WordCounter comes from the same lab as **Botzilla**, one bot for your whole server: moderation and AutoMod, welcome cards, levels, an economy, pixel-art pets and games with friends."
 )
-GAME_TEXT = (
-    "**Botzilla: Specimen 01** is a free pixel adventure about how Botzilla began, on a research station in orbit. "
-    "WordCounter is in it too, as the station's archivist. Play in your browser, on Discord or on Android."
-)
-AD_PITCH = (
-    "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own "
-    "keywords for every member and channel, and turns them into leaderboards."
-)
+GAME_TEXT = "**Botzilla: Specimen 01** is a free pixel adventure about how Botzilla began, on a research station in orbit. WordCounter is in it too, as the station's archivist. Play in your browser, on Discord or on Android."
+AD_PITCH = "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own keywords for every member and channel, and turns them into leaderboards."
 AD_FEATURES = (
     "### What it does\n"
-    "- **Leaderboards:** `/leaderboard` ranks words, messages, attachments, emojis, keywords and swears, for the "
-    "whole server or one channel.\n"
+    "- **Leaderboards:** `/leaderboard` ranks words, messages, attachments, emojis, keywords and swears, for the whole server or one channel.\n"
     "- **Member stats:** `/stats user` shows anyone's totals, month by month and channel by channel.\n"
     "- **Keywords:** count an inside joke or a catchphrase and see who says it most.\n"
     "- **Past messages:** `/analyze_chat` counts what was said before WordCounter joined.\n"
@@ -64,6 +58,7 @@ AD_FEATURES = (
     "- **Website:** see your stats in every server you share with WordCounter, and manage the servers you run."
 )
 
+# (page title, description, [(field name, field text)]). Each page becomes one container after the welcome page.
 HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
     (
         "Stats and leaderboards",
@@ -71,8 +66,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         [
             (
                 "/leaderboard [channel]",
-                "Rankings for words, messages, attachments, emojis, keywords and swears. "
-                "Pick a channel to see its top members and a month-by-month history.",
+                "Rankings for words, messages, attachments, emojis, keywords and swears. Pick a channel to see its top members and a month-by-month history.",
             ),
             (
                 "/stats user [member]",
@@ -113,13 +107,11 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ),
             (
                 "/analyze_chat whole_server",
-                "Reads every tracked channel and thread once and counts past messages for every member who "
-                "hasn't been analyzed yet. Progress is saved as it goes, so a restart picks up where it left off.",
+                "Reads every tracked channel and thread once and counts past messages for every member who hasn't been analyzed yet. Progress is saved as it goes, so a restart picks up where it left off.",
             ),
             (
                 "Nothing counted twice",
-                "Messages sent while tracking was on are already counted, so only older messages and any gaps "
-                "when tracking was off are added. Each member is analyzed once.",
+                "Messages sent while tracking was on are already counted, so only older messages and any gaps when tracking was off are added. Each member is analyzed once.",
             ),
             (
                 "Set keywords first",
@@ -133,13 +125,11 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         [
             (
                 "How fines work",
-                "Swears are fined by tier: mild, explicit, and slurs or words your server adds. A message is fined for "
-                f"at most {MAX_FINED_PER_MESSAGE} swears. WordCounter reacts with 🫙, or deletes the message in delete mode.",
+                f"Swears are fined by tier: mild, explicit, and slurs or words your server adds. A message is fined for at most {MAX_FINED_PER_MESSAGE} swears. WordCounter reacts with 🫙, or deletes the message in delete mode.",
             ),
             (
                 "Paying it off",
-                "Only clean streaks pay debt back. Every clean active day (5 or more messages, no swears) pays back one unit, "
-                "with bonuses at 7 and 30 days. Members who never swear build up a wallet instead.",
+                "Only clean streaks pay debt back. Every clean active day (5 or more messages, no swears) pays back one unit, with bonuses at 7 and 30 days. Members who never swear build up a wallet instead.",
             ),
             ("Spamming", SPAM_NOTE),
             ("/swearjar wallet [member]", "A member's wallet or debt, clean streak and swears."),
@@ -147,8 +137,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("/swearjar goal", "What the jar is saving up for, like a movie night."),
             (
                 "/swearjar settings",
-                "Turn it on, pick money or tokens, set prices, edit the word list, choose channels, roles and a goal. "
-                "Needs Manage Server.",
+                "Turn it on, pick money or tokens, set prices, edit the word list, choose channels, roles and a goal. Needs Manage Server.",
             ),
             ("Past swears", "`/analyze_chat swears` adds past swears to the Swears leaderboard. They aren't fined."),
             ("Right-click menu", "Right-click a message, then Apps > Swear Jar to see its fine."),
@@ -163,8 +152,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
             (
                 "From the same lab",
-                f"WordCounter is Specimen 02. Specimen 01 is [Botzilla]({BOTZILLA_URL}), and its free game "
-                f"[Botzilla: Specimen 01]({GAME_URL}) has WordCounter in it as the station's archivist.",
+                f"WordCounter is Specimen 02. Specimen 01 is [Botzilla]({BOTZILLA_URL}), and its free game [Botzilla: Specimen 01]({GAME_URL}) has WordCounter in it as the station's archivist.",
             ),
         ],
     ),
@@ -172,11 +160,13 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
 
 
 def picture_file(picture: Picture) -> discord.File:
+    """Opens the banner as a new discord.File. Make one for each message, because a File is used up once it has been sent."""
     name, filename, _ = picture
     return discord.File(ASSETS / name, filename=filename)
 
 
 def gallery(picture: Picture) -> discord.ui.MediaGallery:
+    """A media gallery showing the banner attached to the same message, found by its filename."""
     _, filename, description = picture
     return discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{filename}", description=description))
 
@@ -221,6 +211,7 @@ def help_paginator(bot: commands.Bot, author_id: int) -> ButtonPaginator:
         create_v2_container(title=title, description=description, fields=fields, color=BRAND_COLOR)
         for title, description, fields in HELP_PAGES
     ]
+    # The paginator draws these link buttons as a row under the page buttons, on every page.
     paginator = ButtonPaginator(pages, author_id=author_id, custom_buttons=link_buttons(bot))
     paginator.denied_message = "Only the person who opened this help menu can change pages."
     return paginator
@@ -250,6 +241,7 @@ def welcome_view(bot: commands.Bot) -> discord.ui.LayoutView:
 
 
 def welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Returns where to post the welcome: the system channel, otherwise the first text channel by position, whichever first gives the bot every permission in WELCOME_NEEDS, otherwise None."""
     me = guild.me
     if me is None:
         return None
@@ -283,16 +275,7 @@ class HelpCog(commands.Cog, name="Help"):
         name="help",
         description="How to use WordCounter",
         extras={
-            "details": (
-                "Opens WordCounter's guide. It starts on a welcome page under WordCounter's banner: what it "
-                "counts, how to find your way, and good commands to start with for everyone and for server "
-                "staff. Previous and Next flip through the pages on stats and leaderboards, settings, counting "
-                "past messages, the swear jar and WordCounter itself, and every page has Add to server, Support "
-                "server and Website buttons. Only you can turn the pages. Choose ephemeral to see it privately. "
-                "When WordCounter joins a server, it posts a welcome with the same banner in the server's system "
-                "channel, or the first channel where it can attach a picture, pointing staff to /settings and "
-                "/help, with Botzilla and its game from the same lab. Nobody is pinged."
-            ),
+            "details": "Opens WordCounter's guide. It starts on a welcome page under WordCounter's banner: what it counts, how to find your way, and good commands to start with for everyone and for server staff. Previous and Next flip through the pages on stats and leaderboards, settings, counting past messages, the swear jar and WordCounter itself, and every page has Add to server, Support server and Website buttons. Only you can turn the pages. Choose ephemeral to see it privately. When WordCounter joins a server, it posts a welcome with the same banner in the server's system channel, or the first channel where it can attach a picture, pointing staff to /settings and /help, with Botzilla and its game from the same lab. Nobody is pinged.",
             "bot_perms": (
                 "Attach Files, for the banner"
             ),
@@ -302,6 +285,7 @@ class HelpCog(commands.Cog, name="Help"):
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(ephemeral="Only show the help menu to you (default: no)")
     async def help_command(self, interaction: discord.Interaction, ephemeral: bool = False) -> None:
+        # can_attach answers the interaction itself when it fails, so it runs before the first reply is sent. Nothing is deferred, so the reply can be private.
         if not await can_attach(interaction, "Can't show the help here"):
             return
         await help_paginator(self.bot, interaction.user.id).start(
@@ -312,13 +296,7 @@ class HelpCog(commands.Cog, name="Help"):
         name="advertisement",
         description="Post a card about WordCounter with invite links",
         extras={
-            "details": (
-                "Posts a card about WordCounter for anyone to see: a pixel-art poster of WordCounter over Earth "
-                "with signs for what it counts, a short pitch, a line on each part of it, and Add to server, "
-                "Support server and Website buttons. Anyone can post it, to show a friend or a server what "
-                "WordCounter does. It's your reply to the command, so Discord shows who posted it. Nobody is "
-                "pinged."
-            ),
+            "details": "Posts a card about WordCounter for anyone to see: a pixel-art poster of WordCounter over Earth with signs for what it counts, a short pitch, a line on each part of it, and Add to server, Support server and Website buttons. Anyone can post it, to show a friend or a server what WordCounter does. It's your reply to the command, so Discord shows who posted it. Nobody is pinged.",
             "bot_perms": (
                 "Attach Files, for the poster"
             ),
@@ -341,6 +319,7 @@ class HelpCog(commands.Cog, name="Help"):
         try:
             await channel.send(view=welcome_view(self.bot), file=picture_file(WELCOME_BANNER), allowed_mentions=NO_PINGS)
         except discord.HTTPException:
+            # A failed post is only logged: the welcome is optional, and the permission check above can already be out of date.
             log.info("Could not post the welcome in %s", guild.id, exc_info=True)
 
 

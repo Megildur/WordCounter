@@ -1,3 +1,8 @@
+"""The public pages and the Discord login routes.
+
+The home page, command reference, terms, privacy policy, invite and support redirects, robots.txt and sitemap.xml, plus /login, /callback and /logout. The command reference is built live from the bot's command tree, so it always matches the commands the bot has.
+"""
+
 from __future__ import annotations
 from typing import Any, Dict, List
 from aiohttp import web
@@ -5,11 +10,12 @@ from discord import AppCommandOptionType, AppCommandType, app_commands
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
 from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
-from web.core import SECURE_COOKIES, client_id, current_user, redirect, render
+from web.core import SECURE_COOKIES, client_id, current_user, post_form, redirect, render
 from web.developer import developer_profile
 
 routes = web.RouteTableDef()
 
+# The pages listed in sitemap.xml. The dashboard and login routes are left out and disallowed in robots.txt.
 PUBLIC_PATHS = ("/", "/commands", "/terms", "/privacy")
 
 OPTION_TYPES = {
@@ -26,6 +32,7 @@ OPTION_TYPES = {
 APP_PLACES = {AppCommandType.user: "Right-click a member", AppCommandType.message: "Right-click a message"}
 
 
+# Which group on /commands a command is listed under, by its top-level name. A command that isn't here lands under "Other", so a new command needs an entry.
 MODULES = {
     "leaderboard": "Stats",
     "stats": "Stats",
@@ -44,6 +51,7 @@ def module_key(name: str) -> str:
 
 
 def works_anywhere(*items) -> bool:
+    """True when a command can be installed to a user's account, so it works anywhere, even in servers without the bot. Uses the first item that sets `allowed_installs`, so pass the command first and its root group after."""
     for item in items:
         installs = getattr(item, "allowed_installs", None)
         if installs is not None:
@@ -52,11 +60,13 @@ def works_anywhere(*items) -> bool:
 
 
 def extras_of(item) -> Dict[str, str]:
+    """Returns the 'details', 'user_perms' and 'bot_perms' text the /commands page shows, taken from a command's `extras` and empty when not set."""
     extras = getattr(item, "extras", None) or {}
     return {key: str(extras.get(key) or "") for key in ("details", "user_perms", "bot_perms")}
 
 
 def command_reference(bot) -> Dict[str, List[Dict[str, Any]]]:
+    """Builds the /commands data from the live command tree: slash commands (subcommands included, groups skipped) and the right-click menus. A command is manager-only when it or its root group requires Manage Server."""
     slash = []
     for command in bot.tree.walk_commands():
         if isinstance(command, app_commands.Group):
@@ -99,6 +109,7 @@ def command_reference(bot) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def command_filters(request: web.Request, reference: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Applies the search, group and "works anywhere" filters from the query string and returns what the template needs, counts included. The filtering happens here on the server, since the page has no JavaScript."""
     everything = reference["slash"] + reference["apps"]
     query = request.query.get("q", "").strip()[:80]
     wanted = request.query.get("module", "")
@@ -143,6 +154,7 @@ async def home(request: web.Request) -> web.Response:
     bot = request.app["bot"]
     messages, words = await bot.db.get_global_totals()
     members = sum(guild.member_count or 0 for guild in bot.guilds)
+    # A count of 0 becomes None, which the `num` filter shows as a dash.
     stats = {
         "servers": len(bot.guilds) or None,
         "members": members or None,
@@ -174,6 +186,7 @@ async def terms(request: web.Request) -> web.Response:
 
 @routes.get("/privacy")
 async def privacy(request: web.Request) -> web.Response:
+    # The "what we keep after a deletion request" section is rendered from KEPT_POLICY, the same text /owner kept_data quotes.
     return render(request, "privacy.html", "privacy", kept_policy=KEPT_POLICY)
 
 
@@ -211,10 +224,12 @@ async def login(request: web.Request) -> web.Response:
     if not DISCORD_CLIENT_SECRET:
         return redirect("/?msg=oauth_missing_secret")
     next_url = auth.safe_next(request.query.get("next"))
+    # Someone already signed in goes straight on, unless ?force=1 asks to sign in again.
     if current_user(request) and request.query.get("force") != "1":
         return redirect(next_url)
     nonce, state = auth.new_state(next_url)
     response = redirect(auth.login_url(client_id(request.app["bot"]), state))
+    # SameSite=Lax rather than Strict, so the browser still sends this cookie when Discord redirects back to /callback.
     response.set_cookie(
         auth.STATE_COOKIE, nonce, max_age=auth.STATE_MAX_AGE, httponly=True, samesite="Lax", secure=SECURE_COOKIES, path="/"
     )
@@ -226,9 +241,11 @@ async def callback(request: web.Request) -> web.Response:
     state = request.query.get("state")
     error = request.query.get("error")
     code = request.query.get("code")
+    # The state is checked before anything else, so a stray or forged callback is turned away without contacting Discord.
     next_url = auth.check_state(state, request.cookies.get(auth.STATE_COOKIE))
     if next_url is None:
         return redirect("/?msg=oauth_expired")
+    # The first attempt asks Discord to skip its consent screen. If Discord answers with one of these errors, send them back with the screen shown.
     if error in auth.CONSENT_ERRORS:
         return redirect(auth.login_url(client_id(request.app["bot"]), state, prompt="consent"))
     if error == "access_denied":
@@ -257,8 +274,9 @@ async def callback(request: web.Request) -> web.Response:
 
 @routes.post("/logout")
 async def logout(request: web.Request) -> web.Response:
+    # A POST with the CSRF token, so another site can't sign someone out with a link or an image.
     user = current_user(request)
-    form = await request.post()
+    form = await post_form(request)
     if user is None or not auth.check_csrf(user, form.get("csrf")):
         return redirect("/")
     response = redirect("/?msg=logged_out")

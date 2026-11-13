@@ -1,3 +1,8 @@
+"""Discord login and sessions for the dashboard.
+
+There is no session table: the session is a signed cookie holding the Discord user's id, name and avatar, checked with an HMAC keyed by SESSION_SECRET. The login is Discord OAuth with the `identify` scope only, so the site learns who someone is and nothing else.
+"""
+
 from __future__ import annotations
 import asyncio
 import base64
@@ -26,20 +31,29 @@ CONSENT_ERRORS = ("consent_required", "interaction_required", "login_required")
 User = Dict[str, Any]
 
 
+def _same(first: str, second: str) -> bool:
+    """Compares two strings in constant time. They are compared as bytes, because compare_digest raises TypeError for a str with non-ASCII characters, and a cookie or form field can hold any text, even a lone surrogate."""
+    return hmac.compare_digest(first.encode("utf-8", "surrogatepass"), second.encode("utf-8", "surrogatepass"))
+
+
 def _sign(value: str) -> str:
-    return hmac.new(SESSION_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+    # surrogatepass, because aiohttp turns a byte that isn't valid UTF-8 into a lone surrogate, which a strict encode refuses.
+    return hmac.new(SESSION_SECRET.encode(), value.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()
 
 
 def sign_session(user: User) -> str:
+    """Returns the cookie value "payload.signature": the user plus a timestamp as base64 JSON, signed with HMAC-SHA256. It is signed, not encrypted, so the browser can read the contents but can't change them."""
     payload = base64.urlsafe_b64encode(json.dumps({**user, "ts": int(time.time())}).encode()).decode()
     return f"{payload}.{_sign(payload)}"
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
+    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, a wrong signature, bad contents or an old one gives None."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
-    if not hmac.compare_digest(signature, _sign(payload)):
+    # compare_digest takes the same time wherever the strings differ, so the signature can't be found out a piece at a time.
+    if not _same(signature, _sign(payload)):
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(payload.encode()))
@@ -53,34 +67,41 @@ def read_session(token: Optional[str]) -> Optional[User]:
 
 
 def csrf_token(user: User) -> str:
+    """The form token for a signed-in user: an HMAC of their id and their session's timestamp, so each login has its own and nothing is stored. Forms send it as `csrf` and `check_csrf` compares it."""
     return _sign(f"csrf:{user['id']}:{user['ts']}")
 
 
 def check_csrf(user: User, token: Optional[str]) -> bool:
-    return bool(token) and hmac.compare_digest(token, csrf_token(user))
+    return isinstance(token, str) and bool(token) and _same(token, csrf_token(user))
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
+    """Returns `path` when it starts with a single `/` and has no backslash, space or control character, otherwise `default`. `//` and a backslash are refused because browsers read them as another site, and so is a tab or line break, because browsers drop those from a URL, which turns `/<tab>/host` into `//host`."""
     if not path or not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return default
+    if any(char.isspace() or not char.isprintable() for char in path):
         return default
     return path
 
 
 def new_state(next_url: str) -> Tuple[str, str]:
+    """Returns (nonce, state). The nonce goes in a cookie and `state` goes to Discord with the next page inside it, so `check_state` can prove the callback belongs to the browser that started the login."""
     nonce = secrets.token_urlsafe(16)
     return nonce, f"{nonce}:{next_url}"
 
 
 def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
+    """Returns the safe next page when the state's nonce matches the cookie's, otherwise None."""
     if not state or not nonce or ":" not in state:
         return None
     sent_nonce, next_url = state.split(":", 1)
-    if not hmac.compare_digest(sent_nonce, nonce):
+    if not _same(sent_nonce, nonce):
         return None
     return safe_next(next_url)
 
 
 def login_url(client_id: int, state: str, prompt: str = "none") -> str:
+    # The default value asks Discord to skip its consent screen when it can. If Discord answers with one of CONSENT_ERRORS, the callback builds this URL again with "consent".
     query = {
         "client_id": client_id,
         "response_type": "code",
@@ -96,10 +117,15 @@ def avatar_url(raw: Dict[str, Any]) -> str:
     user_id, avatar = raw.get("id"), raw.get("avatar")
     if avatar:
         return f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.{'gif' if avatar.startswith('a_') else 'png'}?size=128"
+    # No custom avatar: Discord's default pictures are numbered 0 to 5, picked from the id.
     return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 
 
 async def fetch_user(code: str, client_id: int) -> Optional[User]:
+    """Trades the OAuth `code` for a token, reads the Discord user and returns {id, username, name, avatar_url}, or None when anything fails.
+
+    The token is used once for /users/@me and then dropped, never stored. The id is kept as a string.
+    """
     if not DISCORD_CLIENT_SECRET:
         return None
     form = {

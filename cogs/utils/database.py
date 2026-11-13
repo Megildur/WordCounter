@@ -1,3 +1,10 @@
+"""Every MySQL read and write WordCounter makes, as methods on `WordCounterDatabase` (`bot.db`).
+
+This file holds the schema, the counter upserts, tracking periods, resets and the analysis run tables that `/analyze_chat` checkpoints into. The swear jar and the owner data tools add their own methods through `SwearJarQueries` (swear_store.py) and `StoredDataQueries` (stored_data.py).
+
+The connection and `?` placeholder handling live in mysql.py, and the one-time copy of the old SQLite file in sqlite_import.py.
+"""
+
 from __future__ import annotations
 import asyncio
 import os
@@ -15,13 +22,17 @@ from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, S
 
 log = logging.getLogger(__name__)
 
+# What an analysis hands over for one user: counts per (channel_id, year, month) as [words, messages, attachments, emojis], and keyword counts per (channel_id, keyword, year, month).
 MonthlyKey = Tuple[int, int, int]
 MonthlyKeywordKey = Tuple[int, str, int, int]
 UserActivity = Tuple[Mapping[MonthlyKey, Sequence[int]], Mapping[MonthlyKeywordKey, int]]
+# What `_write` takes: pairs of an SQL statement and the rows to run it with.
 Statements = Sequence[Tuple[str, Sequence[Sequence[Any]]]]
 
+# A Discord snowflake ID holds its creation time as milliseconds since this moment, 2015-01-01 UTC.
 DISCORD_EPOCH_MS = 1420070400000
 
+# Every counter table with a single count column (monthly_user_stats has four and uses the MONTHLY_* statements): its key columns in the order the INSERT and `_key_values` use, and the column that holds the count. The statements for these tables are built from this, so a new counter table starts here.
 COUNT_TABLES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "counters": (("guild_id", "user_id", "channel_id"), "count"),
     "server": (("guild_id", "user_id"), "count"),
@@ -37,6 +48,7 @@ COUNT_TABLES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     **SWEAR_COUNT_TABLES,
 }
 
+# Each metric's (per-channel table, per-user table). A message adds to both, and a channel reset subtracts from the per-user one because it has no channel column.
 METRIC_TABLES: Dict[str, Tuple[str, str]] = {
     "words": ("counters", "server"),
     "messages": ("message_channels", "message_user"),
@@ -48,6 +60,7 @@ LEADERBOARD_TABLES: Dict[str, Tuple[str, str]] = {**METRIC_TABLES, "swears": ("s
 
 MONTHLY_KEYS = "guild_id = ? AND user_id = ? AND channel_id = ? AND year = ? AND month = ?"
 
+# One row, run with execute, so `?` is filled in the UPDATE part too. The insert gets the deltas clamped to 0 and the update adds the signed deltas, floored at 0, because an edit can add words and remove emojis in one go.
 MONTHLY_UPSERT = """
     INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -58,6 +71,18 @@ MONTHLY_UPSERT = """
         emojis = GREATEST(0, emojis + ?)
 """
 
+# The same upsert for executemany, which only fills the VALUES list, so the UPDATE part adds VALUES(col) instead of using `?`. Every value is non-negative here, so there is no floor.
+MONTHLY_BULK_UPSERT = """
+    INSERT INTO monthly_user_stats (guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+        words = words + VALUES(words),
+        messages = messages + VALUES(messages),
+        attachments = attachments + VALUES(attachments),
+        emojis = emojis + VALUES(emojis)
+"""
+
+# For a deleted or shortened message. It only changes a row that exists, and MONTHLY_PRUNE then deletes the row once everything in it is zero.
 MONTHLY_DECREMENT = f"""
     UPDATE monthly_user_stats SET
         words = GREATEST(0, words + ?),
@@ -72,18 +97,23 @@ MONTHLY_PRUNE = f"""
     WHERE {MONTHLY_KEYS} AND words <= 0 AND messages <= 0 AND attachments <= 0 AND emojis <= 0
 """
 
+# The width of the keyword VARCHAR(255) columns.
 KEYWORD_LIMIT = 255
 
+# Run on every start. CREATE TABLE IF NOT EXISTS leaves existing tables alone, so a column added later also needs an entry in ADDED_COLUMNS.
 SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
+    # counters (per channel) and server (per user) hold the word counts. The other metrics have tables named after them.
     """CREATE TABLE IF NOT EXISTS counters (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
+    # Where counting is on. channel_id is a channel, a category, or 1 for the entire server.
     """CREATE TABLE IF NOT EXISTS channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
     """CREATE TABLE IF NOT EXISTS server (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
+    # `ignore` is a reserved word in MySQL, so it is always written with backticks.
     """CREATE TABLE IF NOT EXISTS `ignore` (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
@@ -130,12 +160,15 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL,
         year INT NOT NULL, month INT NOT NULL, count BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id, channel_id, keyword, year, month))""",
+    # started and ended are snowflakes (see now_snowflake), so they compare directly with message IDs. ended is NULL while counting is on.
     """CREATE TABLE IF NOT EXISTS tracking_periods (
         guild_id BIGINT NOT NULL, started BIGINT NOT NULL, ended BIGINT,
         PRIMARY KEY (guild_id, started))""",
+    # One marker per reset scope, with user_id or channel_id 0 meaning all. Messages older than reset_at lost their counts, so an analysis counts them again.
     """CREATE TABLE IF NOT EXISTS count_resets (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, reset_at BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
+    # The next three tables hold an analysis that is running or was interrupted, one run per server. analysis_runs keeps the kind (member, server or swears), the snowflake the crawl reads back from (cutoff), the progress message to edit, and the running totals as JSON.
     """CREATE TABLE IF NOT EXISTS analysis_runs (
         guild_id BIGINT PRIMARY KEY, kind VARCHAR(32) NOT NULL, cutoff BIGINT NOT NULL,
         status_channel_id BIGINT, status_message_id BIGINT, started_at DOUBLE NOT NULL,
@@ -143,11 +176,13 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS analysis_run_members (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
+    # Per channel: while status is reading, before_id is the oldest message read so far and where a restart continues. Finished channels have no before_id and a status of done, unreadable or failed.
     """CREATE TABLE IF NOT EXISTS analysis_run_channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, before_id BIGINT, status VARCHAR(32) NOT NULL,
         PRIMARY KEY (guild_id, channel_id))""",
 ))
 
+# Everything a counts reset clears: the counted activity, but none of the settings.
 COUNT_DATA_TABLES = (
     "server", "counters", "message_user", "message_channels", "attachments_users", "attachments_channels",
     "emojis_users", "emojis_channels", "keyword_user", "keyword_channel", "monthly_user_stats", "monthly_user_keywords",
@@ -155,6 +190,7 @@ COUNT_DATA_TABLES = (
 
 ANALYSIS_RUN_TABLES = ("analysis_runs", "analysis_run_members", "analysis_run_channels")
 
+# Every table with a guild_id. `reset_entire_server` deletes one server's rows from each, so a new per-server table must be added here.
 GUILD_TABLES = (
     *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword",
     "tracking_periods", "count_resets", *ANALYSIS_RUN_TABLES, *JAR_TABLES,
@@ -162,11 +198,13 @@ GUILD_TABLES = (
 
 
 def now_snowflake() -> int:
+    """The current time as a Discord snowflake, so a moment can be compared with message IDs. Tracking periods and reset markers use it."""
     return (int(time.time() * 1000) - DISCORD_EPOCH_MS) << 22
 
 
 @lru_cache(maxsize=None)
 def _increment_sql(table: str) -> str:
+    """The upsert that adds to a counter table. It uses VALUES(col) rather than `?` in the UPDATE part because the same statement also runs through executemany."""
     keys, column = COUNT_TABLES[table]
     names = ", ".join(keys)
     marks = ", ".join("?" * (len(keys) + 1))
@@ -178,6 +216,7 @@ def _increment_sql(table: str) -> str:
 
 @lru_cache(maxsize=None)
 def _decrement_sql(table: str) -> Tuple[str, str]:
+    """Returns the pair of statements that take a count off a counter table: an UPDATE floored at 0, then a DELETE of rows that reached 0 so empty rows don't pile up."""
     keys, column = COUNT_TABLES[table]
     where = " AND ".join(f"{key} = ?" for key in keys)
     return (
@@ -190,7 +229,9 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
     return tuple(values[key] for key in COUNT_TABLES[table][0])
 
 
+# The db_meta row that records the SQLite copy as done.
 SQLITE_IMPORT = "sqlite_import"
+# Columns added after their table first shipped, as (table, column, definition). They are in CREATE TABLE too, and `create_tables` adds them to databases made before them.
 ADDED_COLUMNS = (
     ("monthly_user_stats", "emojis", "BIGINT NOT NULL DEFAULT 0"),
     ("jar_settings", "english", "INT NOT NULL DEFAULT 1"),
@@ -199,10 +240,17 @@ ADDED_COLUMNS = (
 
 
 class NotMigrated(RuntimeError):
+    """Raised at start-up when copying the old SQLite file into MySQL didn't finish. main.py exits with its message."""
     pass
 
 
 class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
+    """The bot's database, available as `bot.db`.
+
+    `self.db` is the open `Session` and exists only inside `async with self.db_lock:`, which commits when the block ends. Public methods that read or write open their own block, so they can't be called from inside one: the lock is not re-entrant and the task would wait on itself.
+
+    Methods that start with an underscore expect the caller to hold the lock already, except `_write`, which takes it.
+    """
     def __init__(self, bot) -> None:
         self.pool = None
         self.db = None
@@ -218,6 +266,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self.initialize_database()
 
     async def ensure_connected(self) -> None:
+        """Opens the pool and creates the tables if that hasn't happened yet. Public methods call it before they take `db_lock`."""
         if self.pool is None:
             await self.connect()
 
@@ -231,6 +280,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         async with self.db_lock:
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA):
                 await self.db.execute(statement)
+            # MySQL has no ADD COLUMN IF NOT EXISTS, so look at information_schema before altering.
             cursor = await self.db.execute(
                 "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
             )
@@ -247,6 +297,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self._write([("REPLACE INTO db_meta (name, value) VALUES (?, ?)", [(SQLITE_IMPORT, note)])])
 
     async def initialize_database(self) -> None:
+        """Creates the tables, then copies the old SQLite file once, if it exists and db_meta doesn't already record a copy. A failed copy raises NotMigrated, which stops the bot from starting."""
         await self.create_tables()
         if os.path.isfile(config.SQLITE_PATH) and not await self.sqlite_imported():
             log.info("Copying %s into MySQL before starting", config.SQLITE_PATH)
@@ -256,11 +307,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             log.info("Copied %s rows from %s into MySQL", f"{sum(result.copied.values()):,}", config.SQLITE_PATH)
 
     async def _fetch_value(self, sql: str, params: Sequence[Any]) -> int:
+        """Returns the first column of the first row, or 0 when there is no row or the value is NULL (a SUM over no rows). Call it inside `db_lock`."""
         cursor = await self.db.execute(sql, params)
         row = await cursor.fetchone()
         return row[0] if row and row[0] is not None else 0
 
     async def _write(self, statements: Statements, sync_tracking_for: Optional[int] = None) -> None:
+        """Runs each (sql, rows) pair with executemany in one transaction and commits. It takes `db_lock` itself, so don't call it from inside a lock block. Pass `sync_tracking_for` when the statements change a server's channels, so its tracking period is opened or closed in the same transaction."""
         await self.ensure_connected()
         async with self.db_lock:
             for sql, rows in statements:
@@ -270,6 +323,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self.db.commit()
 
     async def _sync_tracking_period(self, guild_id: int) -> None:
+        """Keeps tracking_periods in step with `channels`: a period opens when the first channel is switched on and closes when the last one is switched off."""
         enabled = await self._fetch_value("SELECT COUNT(*) FROM channels WHERE guild_id = ?", (guild_id,))
         is_open = await self._fetch_value(
             "SELECT COUNT(*) FROM tracking_periods WHERE guild_id = ? AND ended IS NULL", (guild_id,)
@@ -286,6 +340,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             )
 
     async def ensure_tracking_period(self, guild_id: int, started: int) -> None:
+        """Opens a period starting at the snowflake `started` when the server has tracking on but no open period. Start-up passes the time the bot joined."""
         await self.ensure_connected()
         async with self.db_lock:
             enabled = await self._fetch_value("SELECT COUNT(*) FROM channels WHERE guild_id = ?", (guild_id,))
@@ -300,6 +355,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
                 await self.db.commit()
 
     async def get_count_history(self, guild_id: int) -> Tuple[List[Tuple[int, Optional[int]]], Dict[Tuple[int, int], int]]:
+        """Returns the server's tracking periods as (started, ended) and its reset markers as {(user_id, channel_id): reset_at}, with 0 meaning all users or all channels. The analysis skips messages inside a period unless a reset marker says their counts were wiped."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
@@ -309,6 +365,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         return periods, resets
 
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
+        """Returns (watched IDs, ignored IDs). Either set can hold categories as well as channels, and 1 in the watched set means the entire server."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,))
@@ -388,6 +445,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         emojis: int = 0,
         keywords: Optional[Mapping[str, int]] = None,
     ) -> None:
+        """Applies one message's effect to every counter table in a single transaction. Each value is a change, so a deleted message passes negatives and an edit passes the difference. `keywords` maps keyword to its change."""
         ids: Dict[str, Any] = {"guild_id": guild_id, "user_id": user_id, "channel_id": channel_id, "year": year, "month": month}
         changes: List[Tuple[str, Mapping[str, Any], int]] = []
         for metric, delta in (("words", words), ("messages", messages), ("attachments", attachments), ("emojis", emojis)):
@@ -410,6 +468,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         async with self.db_lock:
             for table, values, delta in changes:
                 key_values = _key_values(table, values)
+                # A positive change upserts. A negative one subtracts without going below zero and deletes the row once it reaches zero.
                 if delta > 0:
                     await self.db.execute(_increment_sql(table), (*key_values, delta))
                 else:
@@ -419,6 +478,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
 
             if any(monthly):
                 month_key = (guild_id, user_id, channel_id, year, month)
+                # Any positive change takes the upsert, which applies the negative ones too. Only an all-negative change needs the update and prune.
                 if any(delta > 0 for delta in monthly):
                     await self.db.execute(MONTHLY_UPSERT, (*month_key, *(max(0, d) for d in monthly), *monthly))
                 else:
@@ -427,13 +487,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self.db.commit()
 
     async def _write_results(self, guild_id: int, results: Mapping[int, UserActivity]) -> None:
+        """Adds analysis results, a `UserActivity` per user, to the counter tables. It adds to what is already stored instead of replacing it, so a checkpoint's partial results can be saved one after another. The caller holds `db_lock` and commits."""
         rows: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
         monthly_rows: List[Tuple[int, ...]] = []
 
         for user_id, (monthly, monthly_keywords) in results.items():
+            # The per-channel and per-user totals are summed from the monthly counts, so every table agrees with them.
             channel_totals: Dict[int, List[int]] = defaultdict(lambda: [0, 0, 0, 0])
             for (channel_id, year, month), counts in monthly.items():
-                monthly_rows.append((guild_id, user_id, channel_id, year, month, *counts, *counts))
+                monthly_rows.append((guild_id, user_id, channel_id, year, month, *counts))
                 totals = channel_totals[channel_id]
                 for index, value in enumerate(counts):
                     totals[index] += value
@@ -462,11 +524,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             for keyword, count in keyword_users.items():
                 rows["keyword_user"].append((guild_id, user_id, keyword, count))
 
+        # executemany only fills the VALUES list, which is why both of these add with VALUES(col) in their UPDATE part.
         for table, table_rows in rows.items():
             await self.db.executemany(_increment_sql(table), table_rows)
-        await self.db.executemany(MONTHLY_UPSERT, monthly_rows)
+        await self.db.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
+        """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time. Members already marked are ignored."""
         await self.db.executemany(
             "INSERT IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
             [(user_id, guild_id) for user_id in user_ids],
@@ -478,6 +542,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         results: Mapping[int, UserActivity],
         analyzed_user_ids: Iterable[int],
     ) -> None:
+        """Saves a finished search for one member, and marks them analyzed, in one transaction. A search has no checkpoints, so nothing is saved until it is done."""
         await self.ensure_connected()
         async with self.db_lock:
             await self._write_results(guild_id, results)
@@ -493,6 +558,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         status_message_id: Optional[int],
         user_ids: Iterable[int],
     ) -> None:
+        """Records a new run so it can resume after a restart, replacing any earlier run for the server. `kind` is member, server or swears, `cutoff` is the snowflake the crawl reads back from, and `user_ids` are the members to mark analyzed when it finishes."""
         await self.ensure_connected()
         async with self.db_lock:
             for table in ANALYSIS_RUN_TABLES:
@@ -509,6 +575,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self.db.commit()
 
     async def get_analysis_run(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Returns the saved run for a server, or None. It has kind, cutoff, status_channel_id, status_message_id, started_at, messages_read and `totals` (still the raw JSON string), plus `members` (a set of user IDs) and `channels` ({channel_id: (before_id, status)})."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(
@@ -555,8 +622,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         totals: str,
         swears: Optional[SwearCounts] = None,
     ) -> bool:
+        """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running `totals` JSON, and where each channel stands. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
+
+        Counts and cursors commit together, so after a restart the crawl continues from exactly where the saved counts stop and nothing is counted twice.
+
+        Returns False, with nothing written, when the run row is gone because the server was reset. The crawl treats that as a cancel.
+        """
         await self.ensure_connected()
         async with self.db_lock:
+            # Updated first on purpose. The reset deletes this row, so a rowcount of 0 means the run was cancelled and none of the writes below should happen.
             cursor = await self.db.execute(
                 "UPDATE analysis_runs SET messages_read = ?, totals = ? WHERE guild_id = ?",
                 (messages_read, totals, guild_id),
@@ -582,8 +656,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         swears: Optional[SwearCounts] = None,
         swear_history_before: Optional[int] = None,
     ) -> bool:
+        """Saves the last results, marks the members analyzed and removes the run, all in one transaction. Returns False without writing anything when the run row is already gone. For a swear run, `swear_history_before` is the snowflake the crawl read back from, and everything older than it is recorded as covered."""
         await self.ensure_connected()
         async with self.db_lock:
+            # Deleting the run row first doubles as the cancel check, like the update in a checkpoint.
             cursor = await self.db.execute("DELETE FROM analysis_runs WHERE guild_id = ?", (guild_id,))
             if cursor.rowcount == 0:
                 return False
@@ -593,15 +669,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
                 await self._write_swear_counts(guild_id, swears)
             if swear_history_before is not None:
                 await self._cover_swear_history(guild_id, swear_history_before)
+            # analysis_runs is already deleted, so this clears the other two run tables.
             for table in ANALYSIS_RUN_TABLES[1:]:
                 await self.db.execute(f"DELETE FROM `{table}` WHERE guild_id = ?", (guild_id,))
             await self.db.commit()
             return True
 
     async def get_leaderboard(self, metric: str, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[int, int]]:
+        """Returns [(user_id, count)] with the biggest first, for the whole server or for one channel. Members with a count of 0 are left out. `metric` must be a key of LEADERBOARD_TABLES."""
         channel_table, user_table = LEADERBOARD_TABLES[metric]
         await self.ensure_connected()
         async with self.db_lock:
+            # The table and column names in these f-strings come from LEADERBOARD_TABLES and COUNT_TABLES, never from user input.
             if channel_id is None:
                 column = COUNT_TABLES[user_table][1]
                 cursor = await self.db.execute(
@@ -617,6 +696,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             return await cursor.fetchall()
 
     async def get_keyword_leaders(self, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[str, List[Tuple[int, int]]]]:
+        """Returns [(keyword, [(user_id, count), ...])] sorted by keyword, with each member list biggest first. Covers the whole server or one channel."""
         await self.ensure_connected()
         async with self.db_lock:
             if channel_id is None:
@@ -639,6 +719,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         ]
 
     async def get_global_totals(self) -> Tuple[int, int]:
+        """Returns (messages, words) counted across every server, in that order. The status line uses it."""
         await self.ensure_connected()
         async with self.db_lock:
             messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
@@ -652,6 +733,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             return [row[0] for row in await cursor.fetchall()]
 
     async def add_keywords(self, guild_id: int, keywords: Sequence[str]) -> Tuple[List[str], List[str]]:
+        """Returns (added, skipped). Keywords are lowercased. A keyword is skipped when the server already has it or it is longer than KEYWORD_LIMIT."""
         await self.ensure_connected()
         added: List[str] = []
         skipped: List[str] = []
@@ -687,6 +769,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         await self._write([("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)])])
 
     async def get_user_full_stats(self, guild_id: int, user_id: int) -> Tuple[int, int, int, int, List[Tuple[str, int]]]:
+        """Returns (words, messages, attachments, emojis, [(keyword, count)]). A member with no rows gets zeros and an empty list."""
         await self.ensure_connected()
         params = (guild_id, user_id)
         async with self.db_lock:
@@ -702,12 +785,14 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         return words, messages, attachments, emojis, keywords
 
     async def reset_counts(self, guild_id: int, user_id: Optional[int] = None, channel_id: Optional[int] = None) -> None:
+        """Clears counts for the whole server, one member, one channel, or one member in one channel, and records a reset marker. Settings, the keyword list and the analyzed flags are kept."""
         await self.ensure_connected()
         async with self.db_lock:
             await self._clear_counts(guild_id, user_id, channel_id)
             await self.db.commit()
 
     async def allow_reanalysis(self, guild_id: int, user_id: Optional[int] = None) -> None:
+        """Clears the counts and the analyzed flags for the whole server or one member, so `/analyze_chat` can read their messages again."""
         await self.ensure_connected()
         async with self.db_lock:
             await self._clear_counts(guild_id, user_id, None)
@@ -718,6 +803,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self.db.commit()
 
     async def _clear_counts(self, guild_id: int, user_id: Optional[int], channel_id: Optional[int]) -> None:
+        """Deletes counts for the given scope and writes the reset marker. The caller holds `db_lock` and commits."""
         if channel_id is None:
             scope = "guild_id = ?" + (" AND user_id = ?" if user_id is not None else "")
             params = (guild_id,) + ((user_id,) if user_id is not None else ())
@@ -726,6 +812,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         else:
             scope = "guild_id = ? AND channel_id = ?" + (" AND user_id = ?" if user_id is not None else "")
             params = (guild_id, channel_id) + ((user_id,) if user_id is not None else ())
+            # The per-user tables have no channel column, so read what the channel held, delete its rows, then take that off each member's total.
             for channel_table, user_table in METRIC_TABLES.values():
                 column = COUNT_TABLES[channel_table][1]
                 cursor = await self.db.execute(f"SELECT user_id, {column} FROM {channel_table} WHERE {scope}", params)
@@ -741,6 +828,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             for table in ("monthly_user_stats", "monthly_user_keywords"):
                 await self.db.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
 
+        # A marker of 0 for the user or the channel means all of them. The analysis reads these to count the wiped messages again.
         await self.db.execute(
             """INSERT INTO count_resets (guild_id, user_id, channel_id, reset_at) VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE reset_at = VALUES(reset_at)""",
@@ -748,6 +836,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         )
 
     async def _subtract(self, table: str, removed: List[Dict[str, Any]]) -> None:
+        """Takes each row's `amount` off a counter table and deletes rows that reach zero. Each row holds the table's key columns and `amount`."""
         decrement, prune = _decrement_sql(table)
         await self.db.executemany(decrement, [(row["amount"], *_key_values(table, row)) for row in removed])
         await self.db.executemany(prune, [_key_values(table, row) for row in removed])
@@ -771,6 +860,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             return {row[0] for row in await cursor.fetchall()}
 
     async def get_user_monthly_breakdown(self, guild_id: int, user_id: int) -> List[Dict[str, Any]]:
+        """Returns one dict per month that has stats, newest first. Each has year, month, words, messages, attachments, emojis, `keywords` ({keyword: count}) and `channels` ({channel_id: the same counts and keywords}). Keyword rows for a month with no stats row are dropped."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(
@@ -834,6 +924,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         return ordered
 
     async def get_channel_monthly_breakdown(self, guild_id: int, channel_id: int) -> List[Tuple[int, int, int, int, int, int]]:
+        """Returns (year, month, words, messages, attachments, emojis) per month, summed over every member, newest first."""
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(

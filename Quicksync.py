@@ -1,3 +1,5 @@
+"""!wcquicksync, a text command for administrators that pushes the /owner commands to every server in ALLOWED_GUILDS, since /owner sync can't be used before they are there."""
+
 from __future__ import annotations
 import discord
 from discord.ext import commands
@@ -10,8 +12,10 @@ class QuickSync(commands.Cog):
         self.bot = bot
 
     @commands.command(name="quicksync", hidden=True)
-    @commands.is_owner()
     async def quicksync(self, ctx: commands.Context) -> None:
+        # A hidden command stays quiet unless the member has the Administrator permission.
+        if not (isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator):
+            return
         if not ALLOWED_GUILD_IDS:
             await ctx.send(view=error_view("`ALLOWED_GUILDS` isn't set in the .env file."))
             return
@@ -22,6 +26,7 @@ class QuickSync(commands.Cog):
         count = len(ALLOWED_GUILD_IDS)
         status = await ctx.send(view=create_v2_view("Syncing commands", f"Syncing to {count} allowed server(s).", color=WARNING_COLOR))
         try:
+            # A guild sync only sends the commands registered to that guild, the /owner group. Global commands are synced with /owner sync.
             for guild_id in ALLOWED_GUILD_IDS:
                 await self.bot.tree.sync(guild=discord.Object(id=guild_id))
         except discord.HTTPException as error:

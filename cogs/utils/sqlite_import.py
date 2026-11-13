@@ -1,3 +1,10 @@
+"""One-time copy of the old SQLite file (Data/WordCounter.db) into MySQL.
+
+`copy_sqlite` runs from `WordCounterDatabase.initialize_database` when the file exists and `db_meta` has no `sqlite_import` row. It copies the tables and columns MySQL also has, checks the row counts, and records the copy in `db_meta` only when everything matches.
+
+Rows are written with REPLACE, so a copy that failed halfway can be run again without counting anything twice.
+"""
+
 from __future__ import annotations
 import datetime
 import logging
@@ -10,11 +17,13 @@ from cogs.utils.mysql import DatabaseError
 log = logging.getLogger(__name__)
 
 BATCH = 2000
+# The longest text the MySQL columns hold (keyword VARCHAR(255), jar word VARCHAR(100)). SQLite has no limit, so longer rows are skipped and reported.
 TEXT_LIMITS = {"keyword": 255, "word": 100}
 
 
 @dataclass
 class ImportResult:
+    """What a copy did. `copied` is the row count each table has in MySQL afterwards, `skipped` the rows that were too long for a column, `failures` the rows MySQL rejected, and `mismatched` the tables whose counts don't add up."""
     copied: Dict[str, int] = field(default_factory=dict)
     skipped: List[str] = field(default_factory=list)
     failures: List[str] = field(default_factory=list)
@@ -25,8 +34,7 @@ class ImportResult:
         return not self.failures and not self.mismatched
 
     def problem(self) -> str:
-        lines = [f"Copying WordCounter's SQLite data into MySQL didn't finish: {len(self.failures):,} rows failed and "
-                 f"{len(self.mismatched)} tables don't match ({', '.join(self.mismatched) or 'none'})."]
+        lines = [f"Copying WordCounter's SQLite data into MySQL didn't finish: {len(self.failures):,} rows failed and {len(self.mismatched)} tables don't match ({', '.join(self.mismatched) or 'none'})."]
         lines += [f"  {line}" for line in self.failures[:20]]
         lines.append("Nothing is lost: restart the bot to try again. Rows already copied are replaced, never counted twice.")
         return "\n".join(lines)
@@ -65,6 +73,7 @@ async def _copy_rows(target: Any, table: str, columns: Sequence[str], rows: List
             await target.db.executemany(sql, rows)
         return []
     except DatabaseError:
+        # The failed batch was rolled back. Retry one row at a time so a single bad row only loses itself.
         failed = []
         for row in rows:
             try:
@@ -76,6 +85,7 @@ async def _copy_rows(target: Any, table: str, columns: Sequence[str], rows: List
 
 
 async def copy_sqlite(target: Any, path: Path) -> ImportResult:
+    """Copies the SQLite file at `path` into the database `target` and returns what happened. The caller must check `result.ok`, which is also what decides whether the copy is recorded as done."""
     result = ImportResult()
     source = sqlite3.connect(str(path))
     try:
@@ -108,6 +118,7 @@ async def copy_sqlite(target: Any, path: Path) -> ImportResult:
                 result.failures += await _copy_rows(target, table, columns, kept)
             copied = await _count(target, table)
             result.copied[table] = copied
+            # Every SQLite row should be in MySQL now, apart from the ones skipped for being too long.
             if copied != total - skipped:
                 result.mismatched.append(table)
             log.info("SQLite import: %s has %s rows in MySQL (%s in SQLite, %s skipped)", table, copied, total, skipped)
@@ -115,6 +126,7 @@ async def copy_sqlite(target: Any, path: Path) -> ImportResult:
         source.close()
     for line in result.skipped:
         log.warning("SQLite import: skipped %s, too long for MySQL", line)
+    # Only a clean copy is recorded. After a failed one the bot refuses to start, and the next start tries again.
     if result.ok:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         await target.mark_sqlite_imported(f"{path.name} copied {stamp}, {sum(result.copied.values()):,} rows")

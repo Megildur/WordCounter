@@ -1,6 +1,14 @@
+"""The /analyze_chat commands: count messages that were sent before tracking started or while it was off, and past swears for the swear jar.
+
+One member can be counted with Discord's message search. A whole-server run, a swear run, or a member whose search isn't available reads every channel's history instead. That crawl runs in the background, saves a checkpoint to MySQL every CHECKPOINT_INTERVAL seconds (the analysis_runs tables in database.py) and resumes after a restart.
+
+Messages the live counters already counted are skipped through `LiveCoverage`, so nothing is counted twice.
+"""
+
 from __future__ import annotations
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -8,7 +16,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable, List, Optional, Set, Tuple, Union
 import aiohttp
 import discord
 from discord import app_commands
@@ -35,20 +43,30 @@ from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE, SwearMatcher, languag
 
 log = logging.getLogger(__name__)
 
+# Results asked for per search request. A page with fewer hits than this may have been cut short.
 SEARCH_PAGE_SIZE = 25
+# The least time between two search requests, shared by every server through the cog's search_lock.
 SEARCH_INTERVAL = 6.0
 SEARCH_MAX_FAILURES = 5
+# Extra passes over the windows that came back short while the search's own total says more messages exist.
 SEARCH_RECHECKS = 2
+# The longest wait, in seconds and per search request, for Discord to finish indexing a server before search is given up.
 INDEX_WAIT_LIMIT = 120.0
+# Channels read at the same time, across all servers.
 CRAWL_CONCURRENCY = 4
 CRAWL_ATTEMPTS = 3
 CHECKPOINT_INTERVAL = 60.0
+UNLOAD_WAIT = 10.0
+# Seconds between edits of the progress message.
 PROGRESS_INTERVAL = 8.0
 LIST_LIMIT = 15
 
+# Errors treated as temporary. Forbidden and NotFound are HTTPException subclasses too, so code that handles both catches those first.
 NETWORK_ERRORS = (discord.HTTPException, aiohttp.ClientError, OSError, asyncio.TimeoutError)
 HISTORY_CHANNEL_TYPES = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel)
+# Forum channels have no messages of their own, only posts (threads), so they are searched for threads and never read directly.
 TRACKABLE_TYPES = (*HISTORY_CHANNEL_TYPES, discord.ForumChannel)
+# Message types that count, as the raw numbers a search result carries. Joins, pins, boosts and other system messages don't. The history crawl gets the same effect from `message.is_system()`.
 COUNTED_MESSAGE_TYPES = frozenset(
     kind.value
     for kind in (
@@ -65,10 +83,12 @@ HistoryChannel = Union[discord.TextChannel, discord.VoiceChannel, discord.StageC
 
 
 class SearchUnavailable(Exception):
+    """Message search can't be used for this server: it was rejected, kept failing, or its index isn't ready. `run_member` then reads channel history instead."""
     pass
 
 
 class AnalysisCancelled(Exception):
+    """The run's rows are gone from the database, because the server's data was reset while it ran. A checkpoint or the final write raises it to stop the crawl."""
     pass
 
 
@@ -91,9 +111,11 @@ def mention_list(channel_ids: Iterable[int]) -> str:
 
 
 def can_read(channel: Union[discord.abc.GuildChannel, discord.Thread], me: discord.Member) -> bool:
+    """Returns whether the bot can read the channel's history: View Channel and Read Message History, plus Connect for voice and stage channels."""
     try:
         perms = channel.permissions_for(me)
     except discord.ClientException:
+        # A thread whose parent channel isn't cached can't be checked.
         return False
     if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)) and not perms.connect:
         return False
@@ -101,6 +123,7 @@ def can_read(channel: Union[discord.abc.GuildChannel, discord.Thread], me: disco
 
 
 class Tally:
+    """Running counts for one member's messages. `monthly` is keyed by (channel_id, year, month) and holds [words, messages, attachments, emojis], and `monthly_keywords` by (channel_id, keyword, year, month). `activity` is the pair the database saves."""
     __slots__ = ("words", "messages", "attachments", "emojis", "keywords", "monthly", "monthly_keywords")
 
     def __init__(self) -> None:
@@ -146,6 +169,7 @@ class Tally:
 
 
 def combine(tallies: Iterable[Tally]) -> Tally:
+    """Adds up the totals of several tallies. The monthly breakdown isn't carried over, because it is written to the database at each checkpoint instead of being kept."""
     total = Tally()
     for tally in tallies:
         total.messages += tally.messages
@@ -158,6 +182,12 @@ def combine(tallies: Iterable[Tally]) -> Tally:
 
 
 class LiveCoverage:
+    """Decides which old messages still need counting, so nothing the live counters already counted is counted again.
+
+    `periods` are the (start, end) snowflake spans in which messages were counted live, with end None while one is still open. `resets` maps (user_id, channel_id) to the snowflake of a reset, with 0 meaning all users or all channels. `command_cutoff` is the snowflake of the moment the command ran, or the run's saved cutoff when a saved run is rebuilt.
+
+    `scan_before` is where a crawl starts reading, working back in time. It is the command's moment, or an earlier one when live counting has been on since then, because newer messages were counted live.
+    """
     def __init__(
         self,
         periods: List[Tuple[int, Optional[int]]],
@@ -172,18 +202,22 @@ class LiveCoverage:
         if self.tracking_since is None:
             self.scan_before = command_cutoff
         else:
+            # Everything after the later of the tracking start and the newest reset was counted live, so only older messages need reading.
             self.scan_before = min(command_cutoff, max([self.tracking_since, *resets.values()]))
 
     def counts(self, user_id: int, channel_id: int, message_id: int) -> bool:
+        """Returns whether the analysis should count this message, which is when it is older than a reset or falls outside every tracking period. Swear runs pass user_id 0 and have no reset markers."""
         key = (user_id, channel_id)
         reset_before = self._reset_before.get(key)
         if reset_before is None:
+            # A reset can cover everyone, one member, one channel, or one member in one channel, so take the newest one that applies. The answer is cached per key because this runs for every message read.
             reset_before = self._reset_before[key] = max(
                 self.resets.get((0, 0), 0),
                 self.resets.get((user_id, 0), 0),
                 self.resets.get((0, channel_id), 0),
                 self.resets.get((user_id, channel_id), 0),
             )
+        # A reset may have wiped the count of any message older than it, so those are counted again even inside a tracking period.
         if message_id < reset_before:
             return True
         return not any(start <= message_id and (end is None or message_id < end) for start, end in self.periods)
@@ -191,6 +225,7 @@ class LiveCoverage:
 
 @dataclass
 class Progress:
+    """The numbers the progress card shows. `found` and `total` are for the search path. `read` and the channel counts are for the history crawl. `unreadable` and `failed` hold channel IDs listed in the summary."""
     started: float = field(default_factory=time.monotonic)
     note: str = ""
     found: int = 0
@@ -210,6 +245,7 @@ class Progress:
 
 
 class ChannelScope:
+    """Decides which channels count and which channel a message is credited to, where a thread counts toward its parent. With `jar_rules` it adds the swear jar's channel rules on top of the tracking settings."""
     def __init__(
         self,
         guild: discord.Guild,
@@ -240,8 +276,10 @@ class ChannelScope:
         return jar_checks(self.guild, channel, self.watched, self.ignored, self.jar_rules, self.skip_age_restricted, self.thread_parents)
 
     async def resolve(self, channel_id: int) -> Optional[int]:
+        """Returns the channel a search hit is credited to, or None when it isn't tracked. Answers are cached, since a search returns many hits from the same channel."""
         if channel_id in self._resolved:
             return self._resolved[channel_id]
+        # A hit can come from a thread the bot hasn't cached, such as an archived one, so look it up once to learn its parent.
         if channel_id not in self.thread_parents and self.guild.get_channel_or_thread(channel_id) is None:
             try:
                 channel = await self.guild.fetch_channel(channel_id)
@@ -257,6 +295,7 @@ class ChannelScope:
 
 
 class StatusMessage:
+    """The message that shows progress, saved with the run so a restart can edit the same one. `show` edits the message and falls back to the interaction's original response. After a restart only the message is known, so `interaction` is None."""
     def __init__(
         self,
         message: Optional[Union[discord.Message, discord.PartialMessage]],
@@ -272,6 +311,7 @@ class StatusMessage:
         return self.message.channel.id, self.message.id
 
     async def show(self, view: discord.ui.LayoutView) -> None:
+        """Edits the status message. An HTTP error from the edit is logged, not raised, so a deleted message can't stop an analysis."""
         error: Optional[Exception] = None
         if self.message is not None:
             try:
@@ -290,6 +330,10 @@ class StatusMessage:
 
 
 class CrawlRun:
+    """The in-memory state of one crawl, rebuilt from the saved run record when it resumes.
+
+    `authors` are the member IDs being counted. `tallies` hold counts not saved yet: `flush` hands them over and folds them into `totals`. `cursors` maps channel_id to the oldest message read so far in channels still being read, and `finished` maps channel_id to its final status (done, unreadable or failed).
+    """
     def __init__(self, guild_id: int, record: Dict[str, Any], coverage: LiveCoverage) -> None:
         state = json.loads(record["totals"] or "{}")
         self.guild_id = guild_id
@@ -318,6 +362,7 @@ class CrawlRun:
     def add_swears(self, user_id: int, channel_id: int, content: str) -> None:
         found = self.matcher.find(content) if self.matcher else []
         if found:
+            # A message counts at most MAX_FINED_PER_MESSAGE swears, the same cap the live swear jar uses.
             self.swears[user_id][channel_id] += min(len(found), MAX_FINED_PER_MESSAGE)
 
     def flush_swears(self) -> Dict[int, Dict[int, int]]:
@@ -338,6 +383,7 @@ class CrawlRun:
         return tally
 
     def flush(self) -> Dict[int, Any]:
+        """Hands over the counts not saved yet as {user_id: activity} and folds them into `totals`, so `state()` taken afterwards includes them. Members with no counted message are left out."""
         flushed, self.tallies = self.tallies, {}
         self.totals = combine([self.totals, *flushed.values()])
         self.credited.update(user_id for user_id, tally in flushed.items() if tally.messages)
@@ -350,6 +396,7 @@ class CrawlRun:
         return len(self.credited | {user_id for user_id, tally in self.tallies.items() if tally.messages})
 
     def state(self) -> str:
+        """The running totals as the JSON saved in analysis_runs.totals, which `__init__` reads back on a resume."""
         return json.dumps({
             **self.totals.totals(),
             "credited": sorted(self.credited),
@@ -359,6 +406,7 @@ class CrawlRun:
 
 
 class AnalyzeConfirmView(AuthorOnlyView):
+    """The Start and Cancel card shown before an analysis. Start hands over to the cog's `run_swears`, `run_member` or `run_server`, and that card is then edited into the progress card."""
     def __init__(
         self,
         cog: AnalyzeChat,
@@ -386,25 +434,16 @@ class AnalyzeConfirmView(AuthorOnlyView):
             if len(keywords) > LIST_LIMIT:
                 keyword_text += f" and {len(keywords) - LIST_LIMIT} more"
         else:
-            keyword_text = (
-                "None set. Keywords only count in old messages if they exist before you start, "
-                "so add them in `/settings` first if you want them."
-            )
+            keyword_text = "None set. Keywords only count in old messages if they exist before you start, so add them in `/settings` first if you want them."
 
         if swears:
             title = "Count past swears"
-            description = (
-                "Reads every channel the swear jar listens in and adds past swears to the Swears leaderboard. "
-                "Past swears aren't fined, and swears the jar already counted are skipped."
-            )
+            description = "Reads every channel the swear jar listens in and adds past swears to the Swears leaderboard. Past swears aren't fined, and swears the jar already counted are skipped."
             fields = [("Words", "The swear jar's word list for this server, including your changes.")]
             footer = "Big servers can take a while. Progress is saved, so a restart picks up where it left off."
         elif target is not None:
             title = "Count past messages"
-            description = (
-                f"Reads {target.mention}'s older messages and adds them to their stats. "
-                "Each member can only be analyzed once."
-            )
+            description = f"Reads {target.mention}'s older messages and adds them to their stats. Each member can only be analyzed once."
             fields = [("Keywords", keyword_text)]
             footer = "Usually takes a few minutes."
         else:
@@ -438,7 +477,9 @@ class AnalyzeConfirmView(AuthorOnlyView):
         )
 
     async def _on_start(self, interaction: discord.Interaction) -> None:
+        # Stopping the view keeps on_timeout from firing later and overwriting the progress card.
         self.stop()
+        # The button press must be answered within 3 seconds, and the run takes far longer, so edit the card first and start the run after.
         await interaction.response.edit_message(
             view=create_v2_view("Starting", "Getting the channel list ready.", color=WARNING_COLOR)
         )
@@ -468,7 +509,26 @@ class AnalyzeConfirmView(AuthorOnlyView):
             )
 
 
+def tracked(method):
+    """Registers the task that runs an analysis in `self._tasks` for the whole call, so `cog_unload` can cancel it even while it is still loading members or saving the run. A call made after the cog was unloaded is refused by cancelling it."""
+    @functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        if self._closed:
+            raise asyncio.CancelledError
+        task = asyncio.current_task()
+        added = task is not None and task not in self._tasks
+        if added:
+            self._tasks.add(task)
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            if added:
+                self._tasks.discard(task)
+    return wrapper
+
+
 class AnalyzeChat(commands.Cog):
+    # Discord's default permission only, which server admins can change, so every command also checks Manage Server itself.
     analyze_chat = app_commands.Group(
         name="analyze_chat",
         description="Count messages sent before tracking started",
@@ -477,15 +537,36 @@ class AnalyzeChat(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # Servers with an analysis running in this process, whether it is searching or reading history. Other cogs read it through server_settings.analysis_state.
         self.running_guilds: Set[int] = set()
+        # Search requests from every server go through one lock and one clock, so they stay SEARCH_INTERVAL apart.
         self.search_lock = asyncio.Lock()
         self.last_search = 0.0
         self.crawl_slots = asyncio.Semaphore(CRAWL_CONCURRENCY)
+        # on_ready can fire again after a reconnect, and start-up must only run once.
         self._started_up = False
+        # References to background tasks, because asyncio only keeps weak ones and could drop a task mid-run.
+        self._tasks: Set[asyncio.Task] = set()
+        self._closed = False
 
     async def cog_load(self) -> None:
+        # When the cog is loaded after the bot is already ready, on_ready won't fire for it, so start up now.
         if self.bot.is_ready():
-            asyncio.create_task(self._startup())
+            self._spawn(self._startup())
+
+    async def cog_unload(self) -> None:
+        # Cancels every analysis, whether this cog spawned it or a button press is running it, even one still loading members, and refuses new ones. Then it waits for them to stop. What a crawl counted since its last checkpoint is read again when the run resumes. Without the wait, a reloaded cog could resume the run while the old crawl is still saving, and count a message twice.
+        self._closed = True
+        pending = [task for task in self._tasks if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=UNLOAD_WAIT)
+
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -495,6 +576,7 @@ class AnalyzeChat(commands.Cog):
         if self._started_up:
             return
         self._started_up = True
+        # A server with tracking on needs an open tracking period, because the crawl skips messages inside one as already counted live. One is opened here, starting when the bot joined, if it has none.
         for guild in self.bot.guilds:
             if guild.me is not None and guild.me.joined_at is not None:
                 await self.bot.db.ensure_tracking_period(guild.id, discord.utils.time_snowflake(guild.me.joined_at))
@@ -502,12 +584,14 @@ class AnalyzeChat(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if guild is not None and guild_id not in self.running_guilds:
                 log.info("Resuming interrupted analysis in guild %s", guild_id)
-                asyncio.create_task(self._resume(guild))
+                # Spawned instead of awaited: a crawl can run for hours, and each server's run must go on alongside the others.
+                self._spawn(self._resume(guild))
 
     async def is_busy(self, guild_id: int) -> bool:
         return guild_id in self.running_guilds or await self.bot.db.has_analysis_run(guild_id)
 
     async def _resume(self, guild: discord.Guild) -> None:
+        """Continues an interrupted run after a restart. Only the saved message IDs survive a restart, so progress is shown by editing that message."""
         record = await self.bot.db.get_analysis_run(guild.id)
         if record is None:
             return
@@ -518,6 +602,7 @@ class AnalyzeChat(commands.Cog):
         await self._run_crawl(guild, StatusMessage(message))
 
     async def _blocked_reason(self, interaction: discord.Interaction) -> Optional[str]:
+        """Returns why the command can't run (not a manager, tracking is off, or an analysis is already running), or None when it can."""
         reason = manager_check_error(interaction)
         if reason:
             return reason
@@ -528,12 +613,15 @@ class AnalyzeChat(commands.Cog):
         return None
 
     async def _send(self, interaction: discord.Interaction, view: discord.ui.LayoutView) -> discord.Message:
+        """Replies to the command and returns the sent message. An interaction that was already deferred can only be answered with a follow-up."""
         if interaction.response.is_done():
             return await interaction.followup.send(view=view, wait=True)
         await interaction.response.send_message(view=view)
         return await interaction.original_response()
 
+    @tracked
     async def _resume_interrupted(self, interaction: discord.Interaction) -> bool:
+        """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
         if not await self.bot.db.has_analysis_run(interaction.guild.id):
             return False
         sent = await self._send(
@@ -545,11 +633,14 @@ class AnalyzeChat(commands.Cog):
             ),
         )
         message = interaction.channel.get_partial_message(sent.id)
+        # Saved before the run starts, so a restart edits this message and not the old one.
         await self.bot.db.set_analysis_run_message(interaction.guild.id, message.channel.id, message.id)
         await self._run_crawl(interaction.guild, StatusMessage(message, interaction))
         return True
 
     async def _pending_members(self, guild: discord.Guild) -> Tuple[List[discord.Member], int]:
+        """Returns the members still to analyze and how many humans were skipped as already analyzed. Bots and banned members are never counted."""
+        # Every member has to be cached to know who is pending. Loading a big server's list can take longer than 3 seconds, which is why `whole_server` defers first.
         if not guild.chunked:
             try:
                 await guild.chunk()
@@ -579,6 +670,7 @@ class AnalyzeChat(commands.Cog):
     async def _live_status(
         self, status: StatusMessage, render: Callable[[], discord.ui.LayoutView]
     ) -> AsyncGenerator[None, None]:
+        """Edits the progress message every PROGRESS_INTERVAL seconds while the block runs. `render` builds a fresh view each time. The refresh task is stopped however the block ends."""
         async def refresh() -> None:
             while True:
                 await status.show(render())
@@ -593,6 +685,8 @@ class AnalyzeChat(commands.Cog):
                 await task
 
     async def _search(self, guild_id: int, author_id: int, before: int, progress: Progress) -> Dict[str, Any]:
+        """Asks Discord's message search for one page of a member's messages older than the snowflake `before`, newest first, and returns the response. It raises SearchUnavailable when the request is rejected, keeps failing, or the search index isn't ready."""
+        # discord.py has no method for searching a server's messages, so the request is made by hand through its HTTP client.
         route = Route("GET", "/guilds/{guild_id}/messages/search", guild_id=guild_id)
         params = {
             "author_id": author_id,
@@ -613,8 +707,10 @@ class AnalyzeChat(commands.Cog):
                     try:
                         data = await self.bot.http.request(route, params=params)
                     finally:
+                        # Set even when the request fails, so failed attempts are spaced out too.
                         self.last_search = time.monotonic()
             except discord.HTTPException as error:
+                # A client error other than 429 won't fix itself, so give up on search. Rate limits and server errors are retried with a growing delay.
                 if 400 <= error.status < 500 and error.status != 429:
                     raise SearchUnavailable(f"search was rejected ({error.status}): {error.text}") from error
                 failures += 1
@@ -629,6 +725,7 @@ class AnalyzeChat(commands.Cog):
                 await asyncio.sleep(min(60.0, 5.0 * 2**failures))
                 continue
 
+            # A response without a `messages` field, or with doing_deep_historical_index set, means Discord is still building the index. Wait and ask again.
             if isinstance(data, dict) and "messages" in data and not data.get("doing_deep_historical_index"):
                 progress.note = ""
                 return data
@@ -642,8 +739,10 @@ class AnalyzeChat(commands.Cog):
 
     @staticmethod
     def _author_hits(data: Dict[str, Any], author_id: int, before: int) -> Dict[int, Dict[str, Any]]:
+        """Returns {message_id: payload} for the real hits in a search response that were written by `author_id` and are older than `before`."""
         author = str(author_id)
         hits: Dict[int, Dict[str, Any]] = {}
+        # Each group can hold context messages around a hit, and those are marked hit False.
         for group in data.get("messages") or []:
             for payload in group:
                 if payload.get("hit") is False or payload.get("author", {}).get("id") != author:
@@ -665,6 +764,7 @@ class AnalyzeChat(commands.Cog):
         keywords: List[str],
         progress: Progress,
     ) -> Tuple[Dict[int, Dict[str, Any]], int]:
+        """Fetches one search page and tallies the hits not seen before. Returns the page's hits and how many were new. `seen` holds the message IDs already handled, so windows that overlap don't count a message twice."""
         data = await self._search(guild.id, author_id, before, progress)
         progress.pages += 1
         if not progress.total:
@@ -698,6 +798,7 @@ class AnalyzeChat(commands.Cog):
         keywords: List[str],
         progress: Progress,
     ) -> None:
+        """Counts one member's past messages with search, paging back from `coverage.scan_before`. A page that comes back short while the search's total says more exist is searched again, up to SEARCH_RECHECKS more passes."""
         seen: Set[int] = set()
         starts = [coverage.scan_before]
         for sweep in range(1 + SEARCH_RECHECKS):
@@ -707,8 +808,10 @@ class AnalyzeChat(commands.Cog):
                     hits, new = await self._search_window(
                         guild, author_id, cursor, seen, tally, coverage, scope, keywords, progress
                     )
+                    # Remember where this window started, so a later pass can search it again.
                     if len(hits) < SEARCH_PAGE_SIZE and len(seen) < progress.total:
                         short_windows.append(cursor)
+                    # In a recheck pass a window stops as soon as a page brings nothing new.
                     if not hits or (sweep and not new):
                         break
                     cursor = min(hits)
@@ -717,6 +820,7 @@ class AnalyzeChat(commands.Cog):
             starts = short_windows
 
     async def _crawl_targets(self, guild: discord.Guild, scope: ChannelScope, progress: Progress) -> List[HistoryChannel]:
+        """Lists every channel and thread to read: the tracked channels the bot can read and their active and archived threads. Tracked channels it can't read are added to `progress.unreadable`."""
         me = guild.me
         targets: List[HistoryChannel] = []
         parents: List[Union[discord.TextChannel, discord.ForumChannel]] = []
@@ -731,6 +835,7 @@ class AnalyzeChat(commands.Cog):
             if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
                 parents.append(channel)
 
+        # The cache only has threads the bot has seen, so ask Discord for the active ones too. Archived threads are listed per channel below.
         threads: Dict[int, discord.Thread] = {thread.id: thread for thread in guild.threads}
         try:
             threads.update((thread.id, thread) for thread in await guild.active_threads())
@@ -740,6 +845,7 @@ class AnalyzeChat(commands.Cog):
         for parent in parents:
             listings: List[Dict[str, bool]] = [{}]
             if isinstance(parent, discord.TextChannel):
+                # Private archived threads are only all listed with Manage Threads. Without it Discord lists the ones the bot has joined.
                 listings.append({"private": True, "joined": not parent.permissions_for(me).manage_threads})
             for options in listings:
                 try:
@@ -759,6 +865,8 @@ class AnalyzeChat(commands.Cog):
         scope: ChannelScope,
         progress: Progress,
     ) -> None:
+        """Reads one channel's history from its saved cursor, or from `run.scan_before` when it has none, back to its first message, and tallies into `run`. The outcome is done, unreadable or failed. A cancel leaves it unset, so the channel isn't marked finished and resumes from its last checkpointed cursor."""
+        # Threads are credited to their parent channel.
         effective_id = scope.check(channel)[1]
         before: discord.abc.Snowflake = discord.Object(id=run.cursors.get(channel.id, run.scan_before))
         outcome: Optional[str] = None
@@ -768,6 +876,7 @@ class AnalyzeChat(commands.Cog):
                 for attempt in range(1, CRAWL_ATTEMPTS + 1):
                     try:
                         async for message in channel.history(limit=None, before=before):
+                            # The cursor moves and the message is tallied with no await in between, so a checkpoint never sees one without the other. A retry also continues from here.
                             before = discord.Object(id=message.id)
                             run.cursors[channel.id] = message.id
                             progress.read += 1
@@ -778,6 +887,7 @@ class AnalyzeChat(commands.Cog):
                                 if not message.author.bot and not message.is_system() and run.coverage.counts(0, effective_id, message.id):
                                     run.add_swears(author_id, effective_id, message.content)
                                 continue
+                            # Only the members this run is analyzing are counted. Anyone analyzed earlier isn't in `authors`, so they aren't counted twice.
                             if (
                                 author_id not in run.authors
                                 or message.is_system()
@@ -788,6 +898,7 @@ class AnalyzeChat(commands.Cog):
                         outcome = "done"
                         return
                     except (discord.Forbidden, discord.NotFound):
+                        # Access was lost or the channel was deleted during the run. It isn't retried.
                         outcome = "unreadable"
                         progress.unreadable.append(channel.id)
                         return
@@ -800,12 +911,15 @@ class AnalyzeChat(commands.Cog):
                         await asyncio.sleep(5.0 * attempt)
             finally:
                 progress.active.discard(channel.id)
+                # A cancelled task leaves outcome as None, so the channel isn't marked finished and resumes from its last checkpointed cursor.
                 if outcome is not None:
                     run.cursors.pop(channel.id, None)
                     run.finished[channel.id] = outcome
                     progress.channels_done += 1
 
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
+        """Saves the crawl's progress. Raises AnalysisCancelled when the run was deleted, which stops the crawl."""
+        # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them.
         results = run.flush()
         swears = run.flush_swears()
         saved = await self.bot.db.checkpoint_analysis_run(
@@ -822,12 +936,15 @@ class AnalyzeChat(commands.Cog):
         keywords: List[str],
         progress: Progress,
     ) -> None:
+        """Reads every target channel and thread in parallel and saves a checkpoint every CHECKPOINT_INTERVAL seconds until they are all done. The caller makes the final write."""
         progress.used_history = True
         progress.note = "Listing channels and threads."
         targets = await self._crawl_targets(guild, scope, progress)
         progress.note = ""
+        # Unreadable channels are recorded as finished, so a resumed run skips them.
         for channel_id in progress.unreadable:
             run.finished.setdefault(channel_id, "unreadable")
+        # Channels finished before a restart are skipped. The ones still being read continue from their saved cursor.
         remaining = [channel for channel in targets if channel.id not in run.finished]
         progress.channels_total = len(targets)
         progress.channels_done = len(targets) - len(remaining)
@@ -838,12 +955,14 @@ class AnalyzeChat(commands.Cog):
         ]
         crawl = asyncio.gather(*tasks)
         try:
+            # Wake every CHECKPOINT_INTERVAL seconds to save. Unlike wait_for, asyncio.wait doesn't cancel the crawl when its timeout passes.
             while not crawl.done():
                 await asyncio.wait({crawl}, timeout=CHECKPOINT_INTERVAL)
                 if not crawl.done():
                     await self._checkpoint(run, progress)
             crawl.result()
         finally:
+            # When a checkpoint raises, such as AnalysisCancelled, or the run itself is cancelled, the channel tasks still reading are stopped here.
             for task in tasks:
                 task.cancel()
             if not crawl.done():
@@ -939,8 +1058,7 @@ class AnalyzeChat(commands.Cog):
         if not progress.used_history and progress.found < progress.total:
             fields.append((
                 "Not returned by Discord",
-                f"Search listed {progress.total:,} messages but returned {progress.found:,}. "
-                "The gap is usually messages deleted during the run or in channels the bot can't see.",
+                f"Search listed {progress.total:,} messages but returned {progress.found:,}. The gap is usually messages deleted during the run or in channels the bot can't see.",
             ))
         return create_v2_view(
             "Past swears added" if swears is not None else "Past messages added",
@@ -951,13 +1069,16 @@ class AnalyzeChat(commands.Cog):
             color=SUCCESS_COLOR,
         )
 
+    @tracked
     async def _run_crawl(self, guild: discord.Guild, status: StatusMessage) -> None:
+        """Runs the saved analysis for a server to the end and shows the result. Everything is read from the saved run record, so a new run and a resume after a restart take the same path."""
         self.running_guilds.add(guild.id)
         try:
             record = await self.bot.db.get_analysis_run(guild.id)
             if record is None:
                 return
             if record["kind"] == "swears":
+                # A swear run skips spans whose swears are already counted, live or by an earlier run (jar_coverage), and has no reset markers.
                 scope, keywords = await self._load_jar_scope(guild), []
                 coverage = LiveCoverage(await self.bot.db.jar_coverage(guild.id), {}, record["cutoff"])
             else:
@@ -967,7 +1088,9 @@ class AnalyzeChat(commands.Cog):
             if run.counts_swears:
                 overrides = tuple(await self.bot.db.jar_word_overrides(guild.id))
                 languages = languages_for(await self.bot.db.jar_settings(guild.id))
+                # Built in a thread so it can't hold up the event loop.
                 run.matcher = await asyncio.to_thread(matcher_for, overrides, languages)
+            # The clock starts where the run first began, so a resumed run shows its full running time.
             progress = Progress(
                 started=time.monotonic() - max(0.0, time.time() - record["started_at"]),
                 read=record["messages_read"],
@@ -986,6 +1109,7 @@ class AnalyzeChat(commands.Cog):
 
             async with self._live_status(status, render):
                 await self._crawl(guild, run, scope, keywords, progress)
+                # Whatever is still unsaved goes in with the final write, which also marks the members analyzed. A swear run records the span it read as covered too, so later runs skip it.
                 results = run.flush()
                 swear_counts = run.flush_swears()
                 finished = await self.bot.db.finish_analysis_run(
@@ -1015,20 +1139,21 @@ class AnalyzeChat(commands.Cog):
                 )
             )
         except Exception:
+            # The run stays saved, so it resumes from its last checkpoint.
             log.exception("Analysis in guild %s failed", guild.id)
             await status.show(
-                error_view(
-                    "The analysis hit an unexpected error. Everything up to the last checkpoint is saved, and it "
-                    "picks up from there when the bot restarts or you run the command again."
-                )
+                error_view("The analysis hit an unexpected error. Everything up to the last checkpoint is saved, and it picks up from there when the bot restarts or you run the command again.")
             )
         finally:
             self.running_guilds.discard(guild.id)
 
+    @tracked
     async def run_member(self, interaction: discord.Interaction, target: discord.Member) -> None:
+        """Counts one member, trying message search first. When search isn't available it saves a run and hands over to the history crawl. With search nothing is written until it finishes."""
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
         members = {target.id}
+        # Whether the results were already written, which decides what the error message says.
         saved = False
         self.running_guilds.add(guild.id)
         try:
@@ -1049,6 +1174,7 @@ class AnalyzeChat(commands.Cog):
                     await self._search_member(guild, target.id, coverage, tally, scope, keywords, progress)
             except SearchUnavailable as reason:
                 log.info("Search unavailable in guild %s (%s); reading channel history instead", guild.id, reason)
+                # Saving a run first lets the history crawl checkpoint and resume like a server run.
                 await self.bot.db.start_analysis_run(guild.id, "member", coverage.scan_before, *status.ids, members)
                 await self._run_crawl(guild, status)
                 return
@@ -1068,6 +1194,7 @@ class AnalyzeChat(commands.Cog):
         finally:
             self.running_guilds.discard(guild.id)
 
+    @tracked
     async def run_server(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
@@ -1080,6 +1207,7 @@ class AnalyzeChat(commands.Cog):
                 )
                 return
             coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
+            # The members to count are saved with the run, so a resume after a restart covers the same people.
             await self.bot.db.start_analysis_run(
                 guild.id, "server", coverage.scan_before, *status.ids, [member.id for member in pending]
             )
@@ -1087,6 +1215,7 @@ class AnalyzeChat(commands.Cog):
         finally:
             self.running_guilds.discard(guild.id)
 
+    @tracked
     async def run_swears(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
@@ -1104,10 +1233,7 @@ class AnalyzeChat(commands.Cog):
         name="swears",
         description="Add past swears to the Swears leaderboard (nobody is fined)",
         extras={
-            "details": (
-                "Reads past messages for swears and adds them to the Swears leaderboard. Nobody is fined, and "
-                "wallets, debts and streaks don't change."
-            ),
+            "details": "Reads past messages for swears and adds them to the Swears leaderboard. Nobody is fined, and wallets, debts and streaks don't change.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -1137,14 +1263,7 @@ class AnalyzeChat(commands.Cog):
         name="single_user",
         description="Count one member's past messages",
         extras={
-            "details": (
-                "Counts one member's past messages using Discord's message search, usually in a few minutes. If "
-                "search isn't available for the server, it reads channel history instead. Messages already "
-                "counted live are skipped and gaps when tracking was off are filled in, so nothing is counted "
-                "twice, and each member is analyzed once (Allow re-analysis in /settings clears them first to "
-                "redo it). Set keywords in /settings first if they should count in old messages. A progress card "
-                "shows how far it's got."
-            ),
+            "details": "Counts one member's past messages using Discord's message search, usually in a few minutes. If search isn't available for the server, it reads channel history instead. Messages already counted live are skipped and gaps when tracking was off are filled in, so nothing is counted twice, and each member is analyzed once (Allow re-analysis in /settings clears them first to redo it). Set keywords in /settings first if they should count in old messages. A progress card shows how far it's got.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -1180,13 +1299,7 @@ class AnalyzeChat(commands.Cog):
         name="whole_server",
         description="Count every member's past messages",
         extras={
-            "details": (
-                "Reads every tracked channel, voice chat and thread, active and archived, once, and credits each "
-                "past message to its author, for every member who hasn't been analyzed yet. Messages already "
-                "counted live are skipped, so nothing is counted twice. Progress is saved every minute, so if "
-                "WordCounter restarts mid-run it picks up where it stopped on its own. Channels it can't read "
-                "are listed at the end so you know what was left out. One analysis runs in a server at a time."
-            ),
+            "details": "Reads every tracked channel, voice chat and thread, active and archived, once, and credits each past message to its author, for every member who hasn't been analyzed yet. Messages already counted live are skipped, so nothing is counted twice. Progress is saved every minute, so if WordCounter restarts mid-run it picks up where it stopped on its own. Channels it can't read are listed at the end so you know what was left out. One analysis runs in a server at a time.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -1203,6 +1316,7 @@ class AnalyzeChat(commands.Cog):
         if await self._resume_interrupted(interaction):
             return
 
+        # Loading the member list of a big server can take longer than the 3 seconds Discord allows for a first reply, so defer first when it isn't cached.
         if not interaction.guild.chunked:
             await interaction.response.defer()
         pending, already_done = await self._pending_members(interaction.guild)

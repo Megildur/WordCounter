@@ -1,3 +1,10 @@
+"""The swear jar: members are fined for swearing in the channels it listens in, and pay it back with clean days.
+
+on_message and on_message_edit look for swears with the server's word list (swear_filter.py), charge a fine in units and keep each member's balance, streak and the server's goal. A one-minute background loop saves message counts, credits finished clean days and moves the weekly Potty Mouth role. The /swearjar commands (wallet, top, goal, settings) and the Swear Jar message menu read the same data.
+
+The data lives in the jar_* tables and the swears_users and swears_channels counts, all read and written through swear_store.py, and a server's settings and word matcher are cached for a short time. The cog sets acts_on_blacklisted, so a banned user's swearing is still removed in delete mode, but they are never fined, counted or saved.
+"""
+
 from __future__ import annotations
 import asyncio
 import contextlib
@@ -24,6 +31,7 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     member_names,
+    private_followup,
     rank_prefix,
     tab_rows,
 )
@@ -80,8 +88,11 @@ log = logging.getLogger(__name__)
 
 JAR_EMOJI = "🫙"
 SPAM_EMOJI = "🚫"
+# How long the "message removed" notice stays up in delete mode.
 NOTICE_SECONDS = 5
+# Seconds a server's cached JarState is reused before it is rebuilt from the database.
 STATE_TTL = 15.0
+# Seconds between daily credit checks. The upkeep loop itself runs every minute.
 DAILY_INTERVAL = 600.0
 WORDS_PER_PAGE = 60
 
@@ -106,6 +117,10 @@ SECTIONS = (
 
 @dataclass
 class JarState:
+    """A server's jar settings and what the listeners need to act on them, cached by SwearJar.state.
+
+    `matcher` is None while the jar is off. `rules` maps channel ids to "include" or "exclude", `watched` and `ignored` come from the tracking settings, and `live_since` is a snowflake for when the jar was last turned on, to compare with message ids. `loaded_at` is a monotonic time.
+    """
     settings: Dict[str, Any]
     matcher: Optional[SwearMatcher] = None
     rules: Dict[int, str] = field(default_factory=dict)
@@ -141,13 +156,11 @@ def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[
 
 
 def earning_footer(settings: Dict[str, Any]) -> str:
-    return (
-        f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. "
-        "Streak bonuses at 7 and 30 days."
-    )
+    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. Streak bonuses at 7 and 30 days."
 
 
 class FormModal(discord.ui.Modal):
+    """A modal built from (label, default, placeholder, max length) tuples. On submit it hands the stripped answers to `handler` in order. Fields that allow more than 200 characters become paragraph boxes."""
     def __init__(
         self,
         title: str,
@@ -169,6 +182,7 @@ class FormModal(discord.ui.Modal):
         self.handler = handler
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Defer first: a modal submit must be answered within 3 seconds, and the handler goes on to the database.
         await interaction.response.defer()
         await self.handler(interaction, [item.value.strip() for item in self.inputs])
 
@@ -241,6 +255,7 @@ class JarSettingsView(SectionMenu):
         self.overrides = await db.jar_word_overrides(self.guild.id)
         self.rules = await db.jar_channel_rules(self.guild.id)
         self.goal = await db.jar_goal(self.guild.id)
+        # Every change ends in a reload, which drops the cached state so the listeners use the new settings straight away.
         self.cog.invalidate(self.guild.id)
 
     def description(self) -> str:
@@ -341,11 +356,7 @@ class JarSettingsView(SectionMenu):
         counts = default_counts()
         sizes = " and ".join(f"**{counts[code]}** {name}" for code, (name, _) in LANGUAGES.items())
         container.add_item(
-            discord.ui.TextDisplay(
-                f"### Words\nThe default list has {sizes} swear words and slurs in three tiers. Turn on the languages your "
-                "server speaks: words in a language that's off aren't fined. Matching ignores case and accents, and catches "
-                "leetspeak like `sh!t`, stretched letters and spacing like `f u c k`."
-            )
+            discord.ui.TextDisplay(f"### Words\nThe default list has {sizes} swear words and slurs in three tiers. Turn on the languages your server speaks: words in a language that's off aren't fined. Matching ignores case and accents, and catches leetspeak like `sh!t`, stretched letters and spacing like `f u c k`.")
         )
         for code, (name, _) in LANGUAGES.items():
             on = bool(self.settings.get(LANGUAGE_COLUMNS[code]))
@@ -498,10 +509,7 @@ class JarSettingsView(SectionMenu):
     def _populate_reset_tab(self, container: discord.ui.Container) -> None:
         member = f"<@{self.reset_user_id}>" if self.reset_user_id else "Nobody picked"
         container.add_item(
-            discord.ui.TextDisplay(
-                "### Resets\nResetting deletes swear counts, fines, wallets and streaks. Settings, words and the goal stay. "
-                f"Past swears aren't counted again after a reset.\n\n**Member:** {member}"
-            )
+            discord.ui.TextDisplay(f"### Resets\nResetting deletes swear counts, fines, wallets and streaks. Settings, words and the goal stay. Past swears aren't counted again after a reset.\n\n**Member:** {member}")
         )
         if self.pending_confirmation == "reset_member":
             self._confirmation(container, f"**Reset <@{self.reset_user_id}>'s jar?**\nIt can't be undone.", "Reset member", discord.ButtonStyle.danger, self._reset(True))
@@ -573,6 +581,7 @@ class JarSettingsView(SectionMenu):
                 ("Token name, for more than one", s["token_plural"], "Jar Dimes", 30),
                 ("Tokens per unit", str(s["tokens_per_unit"]), "5", 6),
             ]
+        # A modal has to be the first response to the click, so these openers can't defer first.
         await interaction.response.send_modal(FormModal("Fine currency", fields, self._save_currency))
 
     async def _save_currency(self, interaction: discord.Interaction, values: List[str]) -> None:
@@ -733,6 +742,7 @@ class JarSettingsView(SectionMenu):
 
     async def _open_goal_modal(self, interaction: discord.Interaction) -> None:
         goal = self.goal if self.goal and not self.goal["completed_at"] else None
+        # Fills the amount box the way an admin would type it: money without the $, or the token count without the name.
         target = money(self.settings, goal["target"]).lstrip("$").split(" ")[0] if goal else ""
         fields = [
             ("What the jar is saving up for", goal["label"] if goal else "", "Movie night", 100),
@@ -747,7 +757,9 @@ class JarSettingsView(SectionMenu):
             self._done("Give the goal a name and an amount above zero.", WARNING_COLOR)
         else:
             current = self.goal if self.goal and not self.goal["completed_at"] else None
+            # Changing a goal keeps its announcement channel. A new goal is announced where the settings were opened.
             channel_id = current["channel_id"] if current and current["channel_id"] else interaction.channel_id
+            # Saving starts the goal again from zero progress, even when an admin only changes one that is running.
             await self.bot.db.jar_set_goal(self.guild.id, label[:100], target, channel_id, bool(current and current["ping"]))
             self._done(f"Goal set: {label[:100]}, {money(self.settings, target)}. It's announced in <#{channel_id}>.")
         await self.refresh_and_edit(interaction)
@@ -804,23 +816,25 @@ class JarSettingsView(SectionMenu):
 
 class SwearJar(commands.Cog):
     jar = app_commands.Group(name="swearjar", description="Fines for swearing, paid back with clean streaks")
+    # Lets this cog keep getting a banned user's events (see blacklist.py). In delete mode it removes their swearing, and it never fines, counts or saves them.
     acts_on_blacklisted = True
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.states: Dict[int, JarState] = {}
+        # Times of each member's recent fined messages, for the spam rule. In memory only.
         self.recent: Dict[Tuple[int, int], Deque[float]] = defaultdict(deque)
+        # When each member's doubled fines end. In memory only, so a restart clears it: the spam rule reads this, and jar_members.spam_until is a copy for the wallet display.
         self.spam_until: Dict[Tuple[int, int], float] = {}
+        # Messages per (guild, user, UTC day) that aren't saved yet. upkeep writes them to jar_days every minute, so counting a message doesn't touch the database.
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
         self.last_daily = 0.0
+        # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
         self.fine_menu = app_commands.ContextMenu(
             name="Swear Jar",
             callback=self.message_fine,
             extras={
-                "details": (
-                    "Right-click a message, then Apps > Swear Jar, to see what it was fined and for how many "
-                    "swears."
-                ),
+                "details": "Right-click a message, then Apps > Swear Jar, to see what it was fined and for how many swears.",
             },
         )
         self.bot.tree.add_command(self.fine_menu)
@@ -834,15 +848,18 @@ class SwearJar(commands.Cog):
         await self._flush_days()
 
     def invalidate(self, guild_id: int) -> None:
+        """Drops a server's cached state so the next message rebuilds it from the database. Called after settings change, including from the dashboard."""
         self.states.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts are dropped instead of saved later. A flush that has already taken its counts and is waiting for the database lock can still write them after the delete."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
                 del store[key]
 
     async def state(self, guild_id: int) -> JarState:
+        """Returns the server's JarState, reused for STATE_TTL seconds. With the jar off the state has no matcher, which tells the listeners to stop early."""
         state = self.states.get(guild_id)
         if state is not None and time.monotonic() - state.loaded_at < STATE_TTL:
             return state
@@ -853,9 +870,11 @@ class SwearJar(commands.Cog):
         else:
             overrides = tuple(await db.jar_word_overrides(guild_id))
             watched, ignored = await db.get_guild_tracking_config(guild_id)
+            # live_since is the start of the open coverage period, which is when the jar was last turned on.
             live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
             state = JarState(
                 settings,
+                # Building a matcher compiles regexes, so it runs in a thread to keep the event loop free. matcher_for caches the result.
                 await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
                 await db.jar_channel_rules(guild_id),
                 watched,
@@ -876,8 +895,10 @@ class SwearJar(commands.Cog):
         if state.matcher is None:
             return
         allowed, channel_id = self._checks(message.guild, message.channel, state)
+        # Banned users are dropped here, after the channel check, so only their swearing where the jar listens is removed.
         if not allowed or await self._banned(message, state):
             return
+        # Every message that gets this far counts toward the member's active day, whether or not it is fined.
         self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
         tiers = state.matcher.find(message.content)
         if tiers:
@@ -885,9 +906,11 @@ class SwearJar(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        # discord.py only sends this event for messages it still has cached, so edits to older messages aren't fined.
         if after.guild is None or after.author.bot or before.content == after.content:
             return
         state = await self.state(after.guild.id)
+        # Edits to messages from before the jar was last turned on are skipped, so past messages can't be fined.
         if state.matcher is None or after.id < state.live_since:
             return
         allowed, channel_id = self._checks(after.guild, after.channel, state)
@@ -895,9 +918,11 @@ class SwearJar(commands.Cog):
             return
         tiers = state.matcher.find(after.content)
         if tiers:
+            # The message's earlier fine goes along, so only the increase is charged.
             await self._fine(after, channel_id, state, tiers, await self.bot.db.jar_message_fine(after.id))
 
     def _register_fine(self, key: Tuple[int, int], now: float) -> bool:
+        """Adds a fined message to the member's recent list and returns True if this fine is doubled. More than SPAM_LIMIT fines within SPAM_WINDOW seconds starts a penalty of SPAM_PENALTY seconds, and the message that trips it is already doubled."""
         recent = self.recent[key]
         recent.append(now)
         while recent and now - recent[0] > SPAM_WINDOW:
@@ -914,6 +939,10 @@ class SwearJar(commands.Cog):
         tiers: List[int],
         previous: Optional[Dict[str, Any]],
     ) -> None:
+        """Charges a swearing message and replies to it.
+
+        `previous` is the message's earlier fine when this is an edit. Only the increase is charged, and nothing is refunded if swears were removed. Nothing happens if nothing new is owed.
+        """
         swears, amount = fine_for(tiers, prices(state.settings))
         before_swears, before_amount = (previous["swears"], previous["amount"]) if previous else (0, 0)
         added_swears, added_amount = max(0, swears - before_swears), max(0, amount - before_amount)
@@ -922,8 +951,10 @@ class SwearJar(commands.Cog):
         now = time.time()
         key = (message.guild.id, message.author.id)
         spam = self._register_fine(key, now)
+        # The doubled amount is what is charged, and what jar_fines keeps in the message's total.
         if spam:
             added_amount *= SPAM_MULTIPLIER
+        # Saved before anything is sent to Discord, so a failed reply can't lose the fine.
         member, reached = await self.bot.db.jar_record_fine(
             message.guild.id,
             message.author.id,
@@ -937,12 +968,14 @@ class SwearJar(commands.Cog):
             spam_until=self.spam_until.get(key, 0.0),
         )
         await self._answer(message, state.settings, added_amount, member["balance"], spam)
+        # A fine ends the clean streak, so that role is taken away. Only a Member has roles, and the author can be a plain User.
         if hasattr(message.author, "roles"):
             await self._set_role(message.guild, state.settings["clean_role_id"], remove=[message.author])
         if reached is not None:
             await self._announce_goal(message.guild, state.settings, reached)
 
     async def _banned(self, message: discord.Message, state: JarState) -> bool:
+        """Returns True if the author is banned from WordCounter, and the caller then skips them. In delete mode their swearing is still removed, with a notice, but they are never fined or counted."""
         if message.author.id not in self.bot.blacklisted:
             return False
         if state.settings["delete_mode"] and state.matcher.find(message.content):
@@ -950,10 +983,12 @@ class SwearJar(commands.Cog):
         return True
 
     async def _remove(self, message: discord.Message, description: str) -> bool:
+        """Deletes a message and posts a short notice. Returns False if the message couldn't be deleted."""
         try:
             await message.delete()
         except discord.HTTPException:
             return False
+        # The notice names the author but pings nobody, and deletes itself after NOTICE_SECONDS.
         notice = create_v2_view("Message removed", description, color=WARNING_COLOR)
         with contextlib.suppress(discord.HTTPException):
             await message.channel.send(view=notice, delete_after=NOTICE_SECONDS, allowed_mentions=discord.AllowedMentions.none())
@@ -968,6 +1003,7 @@ class SwearJar(commands.Cog):
             )
             if await self._remove(message, description):
                 return
+        # The reply when delete mode is off, and the fallback when the message couldn't be deleted: a reaction, a different one during the spam penalty.
         with contextlib.suppress(discord.HTTPException):
             await message.add_reaction(SPAM_EMOJI if spam else JAR_EMOJI)
 
@@ -979,6 +1015,7 @@ class SwearJar(commands.Cog):
         add: Sequence[discord.Member] = (),
         remove: Sequence[discord.Member] = (),
     ) -> None:
+        """Gives `add` the role and takes it from `remove`. Does nothing if the role is gone or the bot can't manage it (see role_problem), and Discord errors are ignored."""
         role = guild.get_role(role_id or 0)
         if role is None or role_problem(guild, role):
             return
@@ -992,17 +1029,18 @@ class SwearJar(commands.Cog):
                     await member.remove_roles(role, reason="Swear jar")
 
     async def _announce_goal(self, guild: discord.Guild, settings: Dict[str, Any], goal: Dict[str, Any]) -> None:
+        """Posts the goal reached message in the goal's channel. It stays quiet if there is no channel or the bot can't send in it."""
         channel = guild.get_channel(goal["channel_id"] or 0)
         if channel is None or guild.me is None:
             return
         permissions = channel.permissions_for(guild.me)
         if not permissions.send_messages:
             return
+        # The bot pings nobody by default, so this message passes its own allowed_mentions: @everyone only if the goal asks for it and the bot may.
         ping = bool(goal["ping"]) and permissions.mention_everyone
         view = create_v2_view(
             "Swear jar goal reached",
-            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, "
-            f"so it's time for: **{goal['label']}**",
+            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, so it's time for: **{goal['label']}**",
             footer="Admins can set the next goal in /swearjar settings.",
             color=SUCCESS_COLOR,
         )
@@ -1012,10 +1050,12 @@ class SwearJar(commands.Cog):
     async def _flush_days(self) -> None:
         if not self.day_counts:
             return
+        # Swap in a new dict before the write, so messages that arrive during it are counted in the new one.
         counts, self.day_counts = self.day_counts, defaultdict(int)
         await self.bot.db.jar_add_day_messages((guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items())
 
     def _forget_old_spam(self, now: float) -> None:
+        """Drops spam tracking that has expired, so the dicts don't grow without limit."""
         for key in [key for key, recent in self.recent.items() if not recent or now - recent[-1] > SPAM_WINDOW]:
             del self.recent[key]
         for key in [key for key, until in self.spam_until.items() if until <= now]:
@@ -1023,6 +1063,7 @@ class SwearJar(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def upkeep(self) -> None:
+        # Errors are logged here, because an exception that escaped would stop the loop for good.
         try:
             await self._flush_days()
             now = time.time()
@@ -1035,26 +1076,36 @@ class SwearJar(commands.Cog):
 
     @upkeep.before_loop
     async def _before_upkeep(self) -> None:
+        # run_daily skips guilds it can't find, so wait until the guild cache is filled.
         await self.bot.wait_until_ready()
 
     async def run_daily(self, today: int) -> None:
+        """Credits every finished day since the last one processed, for each server with the jar on, then moves the Potty Mouth role if a new week has started.
+
+        `today` is the current UTC day and is never credited itself. Each day is recorded in processed_day, so running this again does nothing new. Old jar_fines rows are pruned at the end.
+        """
         db = self.bot.db
+        # Save the pending message counts first, so a day that just ended is credited with all its messages.
         await self._flush_days()
         for guild_id in await db.jar_enabled_guilds():
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue
             settings = await db.jar_settings(guild_id)
+            # Each finished day is credited on its own, oldest first, going back at most DAY_HISTORY_DAYS days.
             for day in range(max(settings["processed_day"] + 1, today - DAY_HISTORY_DAYS), today):
                 credited = await db.jar_credit_day(guild_id, day, ACTIVE_DAY_MESSAGES, credit_for)
+                # Anyone credited with a streak of CLEAN_ROLE_STREAK days or more gets the clean streak role.
                 clean = [guild.get_member(uid) for uid, streak in credited if streak >= CLEAN_ROLE_STREAK]
                 await self._set_role(guild, settings["clean_role_id"], add=[member for member in clean if member])
             if settings["rotated_week"] < week_index(today):
                 await self._rotate_potty_role(guild, settings, today)
+                # Saved even when no role is set, so each new week is only looked at once.
                 await db.jar_update(guild_id, rotated_week=week_index(today))
         await db.jar_prune_fines()
 
     async def _rotate_potty_role(self, guild: discord.Guild, settings: Dict[str, Any], today: int) -> None:
+        """Gives the Potty Mouth role to whoever was fined the most last week (Monday to Sunday, UTC) and takes it from everyone else who has it. If nobody was fined, nobody holds it."""
         role = guild.get_role(settings["potty_role_id"] or 0)
         if role is None or role_problem(guild, role):
             return
@@ -1068,15 +1119,23 @@ class SwearJar(commands.Cog):
             remove=[member for member in role.members if winner is None or member.id != winner.id],
         )
 
-    async def _enabled_settings(self, interaction: discord.Interaction) -> Optional[Dict[str, Any]]:
+    async def _enabled_settings(self, interaction: discord.Interaction, deferred: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+        """Returns the server's jar settings, or None after answering privately that the command can't run here (not in a server, or the jar is off).
+
+        `deferred` is None before the interaction is answered, True after a public defer and False after `defer(ephemeral=True)`. Reading the settings can be slow, so a command defers first and passes it.
+        """
         if interaction.guild is None:
-            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
-            return None
-        settings = await self.bot.db.jar_settings(interaction.guild.id)
-        if not settings["enabled"]:
-            await interaction.response.send_message(view=error_view(JAR_OFF_MESSAGE), ephemeral=True)
-            return None
-        return settings
+            problem = error_view(SERVER_ONLY_MESSAGE)
+        else:
+            settings = await self.bot.db.jar_settings(interaction.guild.id)
+            if settings["enabled"]:
+                return settings
+            problem = error_view(JAR_OFF_MESSAGE)
+        if deferred is None:
+            await interaction.response.send_message(view=problem, ephemeral=True)
+        else:
+            await private_followup(interaction, problem, public_defer=deferred)
+        return None
 
     async def _member_data(self, guild_id: int, user_id: int) -> Dict[str, Any]:
         return await self.bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
@@ -1085,12 +1144,7 @@ class SwearJar(commands.Cog):
         name="wallet",
         description="See a member's swear jar wallet, debt and clean streak",
         extras={
-            "details": (
-                "Shows a member's swear jar on an archive shelf, filled with gold coins for what they've saved or "
-                "red IOU slips for what they owe, beside their picture, the amount, their clean streak and how "
-                "many swears they've been fined for. Leave member empty to see your own. It works once staff turn "
-                "the jar on in /swearjar settings."
-            ),
+            "details": "Shows a member's swear jar on an archive shelf, filled with gold coins for what they've saved or red IOU slips for what they owe, beside their picture, the amount, their clean streak and how many swears they've been fined for. Leave member empty to see your own. It works once staff turn the jar on in /swearjar settings.",
             "bot_perms": (
                 "Attach Files, for the jar picture"
             ),
@@ -1098,8 +1152,9 @@ class SwearJar(commands.Cog):
     )
     @app_commands.describe(member="Whose wallet to show (yours if you leave it empty)")
     async def wallet(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
-        settings = await self._enabled_settings(interaction)
-        if settings is None:
+        # The checks that need no database run before the defer, so their errors can be private without extra steps.
+        if interaction.guild is None:
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
         member = member or interaction.user
         if member.bot:
@@ -1107,7 +1162,11 @@ class SwearJar(commands.Cog):
             return
         if not await can_attach(interaction, "Can't show the wallet here"):
             return
+        # Reading the settings and the wallet and drawing the card can take longer than the 3 seconds Discord allows for a first reply.
         await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
+        if settings is None:
+            return
         data = await self._member_data(interaction.guild.id, member.id)
         balance = data["balance"]
         if balance < 0:
@@ -1122,6 +1181,7 @@ class SwearJar(commands.Cog):
             f"About {days_to_clear(-balance, data['streak']):,} more clean day(s) to pay it off"
             if balance < 0 else f"{money(settings, data['week_fines'])} fined this week",
         ]
+        # Drawing the card with Pillow is blocking work, so it runs in a thread.
         picture = await asyncio.to_thread(
             cards.jar_card, member.display_name, await cards.avatar(member), headline, lines, balance < 0, abs(balance),
         )
@@ -1144,15 +1204,12 @@ class SwearJar(commands.Cog):
         name="top",
         description="Who swears most, owes most, saved most and has the longest clean streak",
         extras={
-            "details": (
-                "Four rankings: who swears most, who owes most, who has saved most and who has the longest clean "
-                "streak, with buttons to switch between them and pages of ten. Members who left show by name, "
-                "and nobody is pinged."
-            ),
+            "details": "Four rankings: who swears most, who owes most, who has saved most and who has the longest clean streak, with buttons to switch between them and pages of ten. Members who left show by name, and nobody is pinged.",
         },
     )
     async def top(self, interaction: discord.Interaction) -> None:
-        settings = await self._enabled_settings(interaction)
+        await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
         if settings is None:
             return
         paginator = JarTopPaginator(self.bot, interaction.guild, interaction.user.id, settings)
@@ -1163,15 +1220,12 @@ class SwearJar(commands.Cog):
         name="goal",
         description="See what the swear jar is saving up for",
         extras={
-            "details": (
-                "What the swear jar is saving up for, like a movie night, and how close it is. When the jar "
-                "collects enough, WordCounter posts once in the goal's channel, and pings @everyone there only "
-                "if staff chose that."
-            ),
+            "details": "What the swear jar is saving up for, like a movie night, and how close it is. When the jar collects enough, WordCounter posts once in the goal's channel, and pings @everyone there only if staff chose that.",
         },
     )
     async def goal(self, interaction: discord.Interaction) -> None:
-        settings = await self._enabled_settings(interaction)
+        await interaction.response.defer()
+        settings = await self._enabled_settings(interaction, deferred=True)
         if settings is None:
             return
         goal = await self.bot.db.jar_goal(interaction.guild.id)
@@ -1193,28 +1247,17 @@ class SwearJar(commands.Cog):
                 footer="Every fine goes into the jar.",
                 color=BRAND_COLOR,
             )
-        await interaction.response.send_message(view=view)
+        await interaction.followup.send(view=view)
 
     @jar.command(
         name="settings",
         description="Turn the swear jar on and choose fines, words, channels, roles and goals",
         extras={
-            "details": (
-                "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server "
-                "tokens and what each tier costs, turn English and Polish swears on or off (English is on and "
-                "Polish off until you choose), add, remove or move words on the list, choose where it listens "
-                "with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick "
-                "the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by "
-                "tier, and debt is only paid back by clean days. It stays off until you turn it on."
-            ),
+            "details": "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server tokens and what each tier costs, turn English and Polish swears on or off (English is on and Polish off until you choose), add, remove or move words on the list, choose where it listens with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by tier, and debt is only paid back by clean days. It stays off until you turn it on.",
             "user_perms": (
                 "Manage Server"
             ),
-            "bot_perms": (
-                "Add Reactions for the 🫙 reaction, Manage Messages for delete mode, Manage Roles for the Potty "
-                "Mouth and clean streak roles (its role above them), and Mention Everyone if a goal pings "
-                "@everyone"
-            ),
+            "bot_perms": "Add Reactions for the 🫙 reaction, Manage Messages for delete mode, Manage Roles for the Potty Mouth and clean streak roles (its role above them), and Mention Everyone if a goal pings @everyone",
         },
     )
     @app_commands.default_permissions(manage_guild=True)
@@ -1223,28 +1266,29 @@ class SwearJar(commands.Cog):
         if reason:
             await interaction.response.send_message(view=error_view(reason), ephemeral=True)
             return
+        # Reading the settings can take longer than the 3 seconds Discord gives a first reply, so defer first. The menu is private either way.
+        await interaction.response.defer(ephemeral=True)
         menu = JarSettingsView(self, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.response.send_message(view=menu, ephemeral=True)
+        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     async def message_fine(self, interaction: discord.Interaction, message: discord.Message) -> None:
-        settings = await self._enabled_settings(interaction)
+        """The Swear Jar message menu: shows what the message was fined, then its author's wallet. The reply is private."""
+        await interaction.response.defer(ephemeral=True)
+        settings = await self._enabled_settings(interaction, deferred=False)
         if settings is None:
             return
         if message.author.bot:
-            await interaction.response.send_message(view=error_view("Bot messages aren't fined."), ephemeral=True)
+            await interaction.followup.send(view=error_view("Bot messages aren't fined."), ephemeral=True)
             return
         record = await self.bot.db.jar_message_fine(message.id)
         if record:
-            description = (
-                f"{message.author.mention} was fined **{money(settings, record['amount'])}** "
-                f"for {record['swears']} swear(s) in this message."
-            )
+            description = f"{message.author.mention} was fined **{money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
         else:
             description = f"This message from {message.author.mention} wasn't fined."
         data = await self._member_data(interaction.guild.id, message.author.id)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             view=create_v2_view(
                 "Swear jar",
                 description,

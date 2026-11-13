@@ -1,3 +1,10 @@
+"""A thin async layer over aiomysql, so the rest of the code writes `?` placeholders and shares one connection.
+
+`SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection, sets `owner.db` to a `Session` for the block, commits when the block ends and rolls back if it raised.
+
+`SessionLock` is an asyncio.Lock, so database blocks run one at a time and the pool needs only one connection. The lock is not re-entrant, so a block must never open another one.
+"""
+
 from __future__ import annotations
 import asyncio
 import decimal
@@ -8,7 +15,9 @@ import pymysql
 from pymysql.constants import CLIENT
 from cogs.utils import config
 
+# aiomysql raises pymysql's errors, so this catches any MySQL failure.
 DatabaseError = pymysql.err.MySQLError
+# Added to every CREATE TABLE. utf8mb4_bin makes text comparisons case-sensitive.
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 RECYCLE_SECONDS = 120
 
@@ -16,10 +25,12 @@ warnings.filterwarnings("ignore", module="aiomysql")
 
 
 def mysql_sql(sql: str) -> str:
+    """Turns `?` placeholders into MySQL's `%s`, after doubling any `%` so the driver doesn't read it as a placeholder. A `?` inside a string literal would be rewritten too, so keep question marks out of SQL text."""
     return sql.replace("%", "%%").replace("?", "%s")
 
 
 def _plain(value: Any) -> Any:
+    """MySQL returns SUM() and some arithmetic as Decimal, so whole values become int and the rest float."""
     if isinstance(value, decimal.Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     return value
@@ -35,6 +46,7 @@ class Cursor:
 
     @property
     def rowcount(self) -> int:
+        # Rows matched, not rows changed, because create_pool sets CLIENT.FOUND_ROWS. An UPDATE that writes the same values still counts.
         return self._cursor.rowcount
 
     @property
@@ -58,6 +70,10 @@ class Session:
         return Cursor(cursor)
 
     async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> Optional[Cursor]:
+        """Runs one statement for many rows and returns None when there are no rows.
+
+        aiomysql turns an `INSERT ... VALUES (...)` into one multi-row statement and fills in only the VALUES list. A `?` anywhere else, such as in `ON DUPLICATE KEY UPDATE`, gets no value, so bulk upserts write `VALUES(col)` there.
+        """
         rows = [tuple(row) for row in rows]
         if not rows:
             return None
@@ -70,6 +86,7 @@ class Session:
 
 
 class SessionLock:
+    """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, commits on a clean exit and rolls back when the block raised."""
     def __init__(self, owner: Any) -> None:
         self.owner = owner
         self.lock = asyncio.Lock()
@@ -81,10 +98,13 @@ class SessionLock:
             if self.owner.pool is None:
                 await self.owner.connect_pool()
             self.connection = await self.owner.pool.acquire()
+            # Reopens the connection if the server closed it while it sat idle.
             await self.connection.ping(reconnect=True)
         except BaseException:
+            # Also covers a cancelled task. Give the lock back or every later caller waits forever.
             await self._release()
             raise
+        # owner.db exists only while the block is open, which is why queries must run inside `async with db_lock`.
         self.owner.db = Session(self.connection)
         return self.owner.db
 
@@ -119,7 +139,9 @@ async def create_pool() -> aiomysql.Pool:
         db=config.MYSQL_DB,
         charset="utf8mb4",
         autocommit=False,
+        # Makes an UPDATE's rowcount count matched rows, so 0 means the row isn't there even when no value changed.
         client_flag=CLIENT.FOUND_ROWS,
+        # A single connection: the session lock already runs database blocks one at a time.
         minsize=1,
         maxsize=1,
         pool_recycle=RECYCLE_SECONDS,

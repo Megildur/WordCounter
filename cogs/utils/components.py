@@ -1,15 +1,22 @@
+"""Shared Components v2 helpers.
+
+The accent colours, the container and view builders every reply uses, button and tab helpers, display-name lookup, the `can_attach` check, and the channel rules that decide what is tracked (`check_channel_with_config`). Nearly every cog imports from here, so a change affects every reply.
+"""
+
 from __future__ import annotations
 import asyncio
 import time
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import discord
 
+# Accent colours for container stripes, taken from the bot avatar's palette.
 BRAND_COLOR = discord.Colour(0xF08A3A)
 WARNING_COLOR = discord.Colour(0xFBBF24)
 NEUTRAL_COLOR = discord.Colour(0x8C96AC)
 SUCCESS_COLOR = discord.Colour(0x5FAE5A)
 ERROR_COLOR = discord.Colour(0xE04B3C)
 
+# A Components v2 message holds 4000 characters of text in all, so one container keeps its text under this.
 TEXT_BUDGET = 3800
 TRACKING_OFF_MESSAGE = "Tracking is off in this server. An admin can turn it on in `/settings`."
 SERVER_ONLY_MESSAGE = "This command only works in a server."
@@ -25,6 +32,7 @@ def make_button(
     disabled: bool = False,
     url: Optional[str] = None,
 ) -> discord.ui.Button:
+    """Builds a button. With `url` it is a link button, which has no callback and ignores `style` and `disabled`."""
     if url:
         return discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
     button = discord.ui.Button(label=label, style=style, disabled=disabled)
@@ -44,7 +52,9 @@ FORMER_MEMBER = "Former member"
 NAME_TTL = 3600.0
 NAME_WAIT = 1.5
 NAME_CACHE_LIMIT = 5000
+# Names fetched from Discord for people no cache knows: user id to (time fetched, name). Entries last NAME_TTL seconds, and the whole dict is emptied when it reaches NAME_CACHE_LIMIT.
 _fetched_names: Dict[int, Tuple[float, str]] = {}
+# Keeps the lookup tasks referenced until they finish, since asyncio only holds weak references to running tasks.
 _name_lookups: Set[asyncio.Task] = set()
 
 
@@ -61,6 +71,7 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
     except discord.NotFound:
         name = FORMER_MEMBER
     except discord.HTTPException:
+        # Not cached, so a temporary Discord error is tried again on the next call.
         return
     else:
         name = user.display_name
@@ -70,14 +81,20 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
 
 
 def safe_name(name: str) -> str:
+    """Escapes markdown and mentions, so a display name can't format the message around it or look like a ping."""
     return discord.utils.escape_mentions(discord.utils.escape_markdown(name))
 
 
 async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
+    """Same as `display_names`, with each name passed through `safe_name` so it can go straight into a message."""
     return {user_id: safe_name(name) for user_id, name in (await display_names(client, guild, user_ids)).items()}
 
 
 async def display_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
+    """Returns {user id: display name} for every id.
+
+    Looks in the guild's members, then the bot's user cache, then the fetched-name cache, and fetches the rest from Discord together, waiting at most NAME_WAIT seconds in all. Anyone still unknown is called "Former member". Fetches that miss the wait keep running and fill the cache for next time.
+    """
     names: Dict[int, str] = {}
     missing: List[int] = []
     for user_id in dict.fromkeys(user_ids):
@@ -100,17 +117,28 @@ async def display_names(client: discord.Client, guild: discord.Guild, user_ids: 
     return names
 
 
-ATTACH_FILES_NEEDED = (
-    "WordCounter needs the Attach Files permission in this channel to post its picture. "
-    "Ask a server admin to allow it, or try another channel."
-)
+ATTACH_FILES_NEEDED = "WordCounter needs the Attach Files permission in this channel to post its picture. Ask a server admin to allow it, or try another channel."
 
 
 async def can_attach(interaction: discord.Interaction, title: str) -> bool:
+    """Returns True when WordCounter may attach files in this channel.
+
+    When it can't, this answers the interaction with a private explanation titled `title` and returns False. So call it before deferring, and just return when it is False.
+    """
     if interaction.app_permissions.attach_files:
         return True
     await interaction.response.send_message(view=error_view(ATTACH_FILES_NEEDED, title=title), ephemeral=True)
     return False
+
+
+async def private_followup(interaction: discord.Interaction, view: discord.ui.LayoutView, *, public_defer: bool = True) -> None:
+    """Answers privately once the interaction has been deferred. After a public `defer()` the first follow-up replaces the "thinking" message and can't be private, so with `public_defer` that message is deleted first (a failed delete is ignored). Pass False after `defer(ephemeral=True)`."""
+    if public_defer:
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+    await interaction.followup.send(view=view, ephemeral=True)
 
 
 def activity_line(words: int, messages: int, attachments: int, emojis: int, *, bold: bool = True) -> str:
@@ -124,6 +152,7 @@ def keyword_summary(counts: Iterable[Tuple[str, int]]) -> str:
 
 
 def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
+    """Returns why the user can't manage this server's settings (not in a server, or no Manage Server permission), or None when they can."""
     if interaction.guild is None:
         return SERVER_ONLY_MESSAGE
     if not interaction.user.guild_permissions.manage_guild:
@@ -132,6 +161,7 @@ def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
 
 
 def clip_text(text: str, limit: int) -> str:
+    """Shortens text to `limit` characters or fewer (for a `limit` of 2 or more), cutting at the last line break that fits, or mid-line when there is none, and ending with an ellipsis line."""
     if len(text) <= limit:
         return text
     cut = text.rfind("\n", 0, limit - 2)
@@ -150,6 +180,10 @@ def create_v2_container(
     color: Optional[Union[discord.Colour, int]] = BRAND_COLOR,
     action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
 ) -> discord.ui.Container:
+    """Builds the standard reply container: a header with a title and description (and an optional thumbnail), then the fields, a footer line and any action rows, each part under a separator.
+
+    The text is clipped to TEXT_BUDGET in total, header first, so long field text is cut instead of the message failing. Fields are left out when 50 or fewer characters of budget remain.
+    """
     container = discord.ui.Container(accent_colour=color)
     footer_text = f"-# {footer}" if footer else ""
     budget = TEXT_BUDGET - len(footer_text)
@@ -191,6 +225,7 @@ def create_v2_view(
     action_rows: Optional[Sequence[discord.ui.ActionRow]] = None,
     timeout: Optional[float] = 180.0,
 ) -> discord.ui.LayoutView:
+    """Wraps `create_v2_container` in a LayoutView. A view with no action rows is stopped at once, since nothing in it can be pressed."""
     view = discord.ui.LayoutView(timeout=timeout)
     view.add_item(
         create_v2_container(
@@ -213,6 +248,7 @@ def error_view(description: str, title: str = "Something went wrong", footer: Op
 
 
 class AuthorOnlyView(discord.ui.LayoutView):
+    """A LayoutView that only `author_id` can press, or anyone when it is None. Anyone else gets `denied_message` as a private reply."""
     def __init__(
         self,
         *,
@@ -232,6 +268,7 @@ class AuthorOnlyView(discord.ui.LayoutView):
 
 
 def tab_rows(tabs: Dict[str, str], current: str, switch_to: Callable[[str], Callback]) -> List[discord.ui.ActionRow]:
+    """Builds rows of tab buttons from {key: label}, five to a row as Discord allows. The current tab is highlighted and disabled, and `switch_to(key)` supplies each button's callback."""
     buttons = [
         make_button(
             label,
@@ -249,6 +286,10 @@ def channel_family(
     channel_or_id: Union[discord.abc.GuildChannel, discord.Thread, int],
     thread_parent_map: Optional[Dict[int, int]] = None,
 ) -> Tuple[int, Set[int]]:
+    """Returns (effective channel id, related ids) for a channel or an id.
+
+    For a thread the effective id is its parent channel. The related ids are the channel, its parent and the category, which is what the watch and ignore lists are matched against. `thread_parent_map` gives the parents of threads the guild cache doesn't hold, which `/analyze_chat` learns from message history.
+    """
     if isinstance(channel_or_id, int):
         channel_id = channel_or_id
         channel = guild.get_channel_or_thread(channel_id)
@@ -282,6 +323,10 @@ def check_channel_with_config(
     ignored_ids: Set[int],
     thread_parent_map: Optional[Dict[int, int]] = None,
 ) -> Tuple[bool, int]:
+    """Returns (is it tracked, the effective channel id the counts are stored under).
+
+    Nothing is tracked while the watch list is empty. The ignore list beats the watch list. Channel id 1 in the watch list stands for the whole server.
+    """
     effective_id, related = channel_family(guild, channel_or_id, thread_parent_map)
     if not watched_ids:
         return False, effective_id

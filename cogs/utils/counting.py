@@ -1,3 +1,8 @@
+"""What counts as a word, an attachment, an emoji and a keyword hit in one message.
+
+Pure counting with no database access, shared by the live counter (`cogs/counter.py`) and `/analyze_chat`, so a message counted live and one counted from history give the same numbers.
+"""
+
 from __future__ import annotations
 import re
 from dataclasses import dataclass
@@ -7,6 +12,7 @@ import discord
 
 CUSTOM_EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]{2,32}:\d+>')
 
+# One match is one emoji: a base character with any skin tone, variation selector or joined (zero-width joiner) parts, or a flag made of two regional indicators.
 UNICODE_EMOJI_PATTERN = re.compile(
     r'(?:'
     r'[\U0001F1E6-\U0001F1FF]{2}'
@@ -43,10 +49,12 @@ def count_links(text: str) -> int:
 
 @lru_cache(maxsize=4096)
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
+    # Every message is checked against every keyword, so each pattern is compiled once and kept in a cache of 4096 patterns. Matching is by whole word, so `gg` skips `eggs`, and a keyword that starts or ends with a symbol only matches next to a letter, digit or underscore.
     return re.compile(r"\b" + re.escape(keyword.lower()) + r"\b")
 
 
 def count_keywords(text: str, keywords: Iterable[str]) -> Dict[str, int]:
+    """Returns {keyword: hits} for each keyword that appears at least once, matched as a whole word without regard to case."""
     if not text:
         return {}
     lowered = text.lower()
@@ -60,6 +68,10 @@ def count_keywords(text: str, keywords: Iterable[str]) -> Dict[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class MessageStats:
+    """The counts one message adds.
+
+    `words` is the number of whitespace-separated pieces, so a link or an emoji on its own is a word. `attachments` is uploaded files plus stickers plus links in the text. `keywords` maps each keyword found to its hit count.
+    """
     words: int
     attachments: int
     emojis: int
@@ -67,9 +79,11 @@ class MessageStats:
 
     @classmethod
     def measure(cls, content: str, file_count: int, keywords: Iterable[str]) -> MessageStats:
+        """Measures raw text with the number of files and stickers given separately, for callers that have message data but no `discord.Message`."""
         content = content or ""
         return cls(
             words=len(content.split()),
+            # Links count as attachments, the same as uploaded files and stickers.
             attachments=file_count + count_links(content),
             emojis=count_emojis(content),
             keywords=count_keywords(content, keywords),

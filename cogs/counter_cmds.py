@@ -1,3 +1,8 @@
+"""The /settings menu and /leaderboard.
+
+/settings (Manage Server only) opens `SettingsMenuView`, a section menu for the tracking mode, tracked or ignored channels, keywords and count resets. Each change goes through `bot.db` (the `channels`, `ignore` and `keyword` tables and the count tables), then the menu redraws. /leaderboard ranks members for one metric with a podium picture and a tab for each metric.
+"""
+
 from __future__ import annotations
 import asyncio
 import calendar
@@ -19,6 +24,7 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     can_attach,
+    private_followup,
     display_names,
     member_names,
     rank_prefix,
@@ -29,6 +35,7 @@ from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
 
+# (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
 SECTIONS = (
     ("overview", "Overview", "Turn tracking on or off and pick a mode"),
     ("channels", "Channels & Categories", "Choose what to track or ignore"),
@@ -50,6 +57,7 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         self.menu_view = menu_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Defer first: a modal must be answered within 3 seconds too, and the database work below can take longer.
         await interaction.response.defer()
         keywords = parse_keywords(self.keywords_input.value)
         if not keywords:
@@ -79,6 +87,7 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
     def __init__(self, menu_view: SettingsMenuView, current_keywords: List[str]) -> None:
         super().__init__()
         self.menu_view = menu_view
+        # Cut to the input's 2000 character limit. Saving a list longer than that loses the keywords that were cut off, and a keyword cut in half is saved as a new one.
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -90,6 +99,10 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
 
 
 class SettingsMenuView(SectionMenu):
+    """The /settings menu, only usable by the admin who opened it.
+
+    `load_state` reads the server's `channels` rows into `watched_ids`, its `ignore` rows into `ignored_ids` and its keywords on every redraw. Channel id 1 in the watched set means the whole server is tracked, and then the channel list manages the ignore list instead of the watch list. An empty watched set means tracking is off.
+    """
     sections = SECTIONS
     title = "Settings"
     closed_hint = "Run /settings to open them again."
@@ -188,8 +201,7 @@ class SettingsMenuView(SectionMenu):
         if self.is_whole_server:
             header = (
                 "### Ignored channels\n"
-                "Whole server mode is on, so everything is counted unless you ignore it here. "
-                "Ignoring a category ignores every channel in it."
+                "Whole server mode is on, so everything is counted unless you ignore it here. Ignoring a category ignores every channel in it."
             )
             active_list = sorted(self.ignored_ids)
             list_label = "Ignored"
@@ -198,8 +210,7 @@ class SettingsMenuView(SectionMenu):
         else:
             header = (
                 "### Tracked channels\n"
-                "Only these channels and categories are counted. "
-                "Picking a category includes every channel and thread inside it."
+                "Only these channels and categories are counted. Picking a category includes every channel and thread inside it."
             )
             active_list = [cid for cid in sorted(self.watched_ids) if cid != 1]
             list_label = "Tracked"
@@ -220,6 +231,7 @@ class SettingsMenuView(SectionMenu):
 
         if active_list:
             options = []
+            # A select holds at most 25 options, so only the first 25 can be removed one by one. Clear list covers the rest.
             for cid in active_list[:25]:
                 channel = self.guild.get_channel(cid)
                 if isinstance(channel, discord.CategoryChannel):
@@ -258,6 +270,7 @@ class SettingsMenuView(SectionMenu):
         )
 
         if self.keywords:
+            # At most 25 options, and a label or value over 100 characters is cut. Edit list and Remove all handle the rest.
             options = [discord.SelectOption(label=kw[:100], value=kw[:100]) for kw in self.keywords[:25]]
             remove_select = discord.ui.Select(
                 placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
@@ -287,8 +300,7 @@ class SettingsMenuView(SectionMenu):
             self._confirmation(
                 container,
                 "**Reset everything?**\n"
-                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), "
-                "clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
+                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
                 "Reset everything",
                 discord.ButtonStyle.danger,
                 self._confirm_wipe_server,
@@ -298,8 +310,7 @@ class SettingsMenuView(SectionMenu):
             self._confirmation(
                 container,
                 f"**Reset all counts for {self._reset_scope_text()}?**\n"
-                "Words, messages, attachments, emojis, keywords and monthly history are deleted for this scope. "
-                "It can't be undone.",
+                "Words, messages, attachments, emojis, keywords and monthly history are deleted for this scope. It can't be undone.",
                 "Reset all counts",
                 discord.ButtonStyle.danger,
                 self._execute_scoped_reset,
@@ -309,18 +320,17 @@ class SettingsMenuView(SectionMenu):
             if self.selected_reset_user_id is not None:
                 question = (
                     f"**Re-analyze <@{self.selected_reset_user_id}> from scratch?**\n"
-                    "Their counts are cleared now. The next `/analyze_chat single_user` rebuilds their full history, "
-                    "so nothing is counted twice."
+                    "Their counts are cleared now. The next `/analyze_chat single_user` rebuilds their full history, so nothing is counted twice."
                 )
             else:
                 question = (
                     "**Re-analyze everyone from scratch?**\n"
-                    "Every member's counts are cleared now (settings and keywords stay). The next "
-                    "`/analyze_chat whole_server` rebuilds the full history, so nothing is counted twice."
+                    "Every member's counts are cleared now (settings and keywords stay). The next `/analyze_chat whole_server` rebuilds the full history, so nothing is counted twice."
                 )
             self._confirmation(container, question, "Clear and allow re-analysis", discord.ButtonStyle.danger, self._execute_reanalysis)
             return
 
+        # min_values=0 lets the admin clear a pick, which falls back to everyone for the member and the whole server for the channel.
         user_select = discord.ui.UserSelect(placeholder="Pick a member", min_values=0, max_values=1)
         user_select.callback = self._on_reset_user_selected
         container.add_item(discord.ui.ActionRow(user_select))
@@ -348,6 +358,7 @@ class SettingsMenuView(SectionMenu):
         )
 
     async def _btn_enable_whole_server(self, interaction: discord.Interaction) -> None:
+        # Whole server replaces a list of picked channels, so ask first. With no picked channels there is nothing to lose.
         if any(cid != 1 for cid in self.watched_ids):
             await self._prompt("whole_server")(interaction)
         else:
@@ -362,6 +373,7 @@ class SettingsMenuView(SectionMenu):
 
     async def _switch_to_specific_mode(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        # This only removes the whole-server row, so with no channels picked yet nothing is counted until some are added.
         await self.bot.db.switch_to_specific_mode(self.guild.id)
         self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
@@ -377,6 +389,7 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.defer()
         selected = self._selected_ids(interaction)
         listed = ", ".join(format_channel_or_category(self.guild, cid) for cid in selected)
+        # In whole server mode the picked channels go on the ignore list, otherwise on the watch list.
         if self.is_whole_server:
             await self.bot.db.add_ignored_channels(self.guild.id, selected)
             self.status_banner = (f"Now ignoring: {listed}", SUCCESS_COLOR)
@@ -449,6 +462,7 @@ class SettingsMenuView(SectionMenu):
     async def _execute_scoped_reset(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.pending_confirmation = None
+        # Busy means an analysis is running or a saved run exists, and the reset is refused while either holds.
         _, busy = await analysis_state(self.bot, self.guild.id)
         if busy:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
@@ -481,6 +495,7 @@ class SettingsMenuView(SectionMenu):
     async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.pending_confirmation = None
+        # Unlike the other resets, only a run going right now blocks this one, because it also deletes an interrupted run's saved progress.
         running, _ = await analysis_state(self.bot, self.guild.id)
         if running:
             self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
@@ -494,6 +509,10 @@ class SettingsMenuView(SectionMenu):
         await self.refresh_and_edit(interaction)
 
 class LeaderboardPaginator(ButtonPaginator):
+    """Pages of ranked members for one metric, with a podium picture on the first page and a row of buttons to switch metric.
+
+    Build it, `await load(category)` to query the database and set the pages, then `start`. Switching metric calls `load` again.
+    """
     def __init__(
         self,
         bot: commands.Bot,
@@ -541,10 +560,12 @@ class LeaderboardPaginator(ButtonPaginator):
         people = [self.guild.get_member(uid) or self.bot.get_user(uid) for uid, _ in top]
         faces = await asyncio.gather(*(cards.avatar(person) for person in people))
         entries = [(names[uid], face, f"{count:,} {self.category}") for (uid, count), face in zip(top, faces)]
+        # Pillow is synchronous, so the picture is drawn in a thread.
         return await asyncio.to_thread(cards.podium, entries)
 
     async def get_page_kwargs(self, page: Any, skip_formatting: bool = False) -> Dict[str, Any]:
         kwargs = await super().get_page_kwargs(page, skip_formatting)
+        # A new File for every send or edit, because a File can only be sent once. Only the first page carries the picture.
         if self.podium and self.current_page == 0:
             kwargs["files"] = [cards.picture_file(self.podium, cards.PODIUM_FILE)]
         return kwargs
@@ -552,6 +573,7 @@ class LeaderboardPaginator(ButtonPaginator):
     async def update_page(self, interaction: discord.Interaction) -> None:
         if self.message is None:
             self.message = interaction.message
+        # Name lookups and the podium can run past 3 seconds, so answer the click first and edit the message afterwards.
         if not interaction.response.is_done():
             await interaction.response.defer()
         kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
@@ -616,14 +638,7 @@ class Counter_Cmds(commands.Cog):
         name="settings",
         description="Choose what gets tracked, manage keywords and reset data",
         extras={
-            "details": (
-                "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an "
-                "ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category "
-                "covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset "
-                "counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the "
-                "whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the "
-                "person who opened it can press its buttons."
-            ),
+            "details": "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the person who opened it can press its buttons.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -636,24 +651,18 @@ class Counter_Cmds(commands.Cog):
             await interaction.response.send_message(view=error_view(reason), ephemeral=True)
             return
 
+        # Reading the settings can take longer than the 3 seconds Discord gives a first reply, so defer first. The menu is private either way.
+        await interaction.response.defer(ephemeral=True)
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.response.send_message(view=menu, ephemeral=True)
+        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     @app_commands.command(
         name="leaderboard",
         description="Leaderboards for words, messages, attachments, emojis and keywords",
         extras={
-            "details": (
-                "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's "
-                "observation deck, with their pictures, then ten members a page. Buttons switch "
-                "between words, messages, attachments (files, stickers and links), emojis, keywords and swears, "
-                "and Previous and Next page through. The keywords tab shows who says each tracked keyword most. "
-                "Pick a channel to rank only what was said there, with that channel's month-by-month history "
-                "under the list. Members who left show by name. Only the person who ran it can press its "
-                "buttons, and nobody is pinged. It works once tracking is on in /settings."
-            ),
+            "details": "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's observation deck, with their pictures, then ten members a page. Buttons switch between words, messages, attachments (files, stickers and links), emojis, keywords and swears, and Previous and Next page through. The keywords tab shows who says each tracked keyword most. Pick a channel to rank only what was said there, with that channel's month-by-month history under the list. Members who left show by name. Only the person who ran it can press its buttons, and nobody is pinged. It works once tracking is on in /settings.",
             "bot_perms": (
                 "Attach Files, for the podium"
             ),
@@ -664,13 +673,14 @@ class Counter_Cmds(commands.Cog):
         if interaction.guild is None:
             await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
-        if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
-            await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE), ephemeral=True)
-            return
-
+        # can_attach answers the interaction itself when it fails, so it comes before the defer.
         if not await can_attach(interaction, "Can't show the leaderboard here"):
             return
+        # The tracking check, loading the rankings and drawing the podium can take longer than the 3 seconds a slash command gets, so defer before any of them.
         await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild.id):
+            await private_followup(interaction, error_view(TRACKING_OFF_MESSAGE))
+            return
         paginator = LeaderboardPaginator(self.bot, interaction.guild, interaction.user.id, channel)
         await paginator.load("words")
         await paginator.start(interaction)

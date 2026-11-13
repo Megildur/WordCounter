@@ -1,3 +1,8 @@
+"""The live counter and /stats.
+
+Counts each message's words, attachments, emojis and keywords as it is sent, edited or deleted, and writes the change straight to MySQL through `bot.db.apply_activity` (the all-time count tables and `monthly_user_stats`). Also holds /stats user and its User Stats menu, which read the same tables back, and the Message Word Count menu, which counts the words of one message directly.
+"""
+
 from __future__ import annotations
 import asyncio
 import calendar
@@ -15,16 +20,19 @@ from cogs.utils.components import (
     create_v2_view,
     error_view,
     keyword_summary,
+    private_followup,
 )
 from cogs.utils import cards
 from cogs.utils.counting import MessageStats
 from paginator import ButtonPaginator
 
 MonthRecord = Dict[str, Any]
+# Words, messages, attachments, emojis, then (keyword, count) pairs: the shape `get_user_full_stats` returns.
 OverallStats = Tuple[int, int, int, int, List[Tuple[str, int]]]
 
 
 class UserStatsPaginator(ButtonPaginator):
+    """One page per month, newest first, each under the member's all-time totals, and with two or more months a select to jump to one."""
     previous_label = "Newer"
     next_label = "Older"
 
@@ -36,6 +44,7 @@ class UserStatsPaginator(ButtonPaginator):
         overall: OverallStats,
         months: List[MonthRecord],
     ) -> None:
+        # No monthly rows still gives one page, of None, which format_page shows as the all-time totals alone.
         super().__init__(months or [None], author_id=author_id)
         self.denied_message = "Only the person who opened these stats can change the month."
         self.guild = guild
@@ -78,12 +87,14 @@ class UserStatsPaginator(ButtonPaginator):
             footer=footer,
             color=BRAND_COLOR,
         )
+        # The card is attached once when the stats are first sent; later pages are edits that keep it, so each page only points at it by filename.
         picture = cards.gallery(cards.STATS_FILE, f"{self.member.display_name}'s stats card: {words:,} words on WordCounter's flip counter")
         return discord.ui.Container(picture, *container.children, accent_colour=container.accent_colour)
 
     def extra_rows(self) -> List[discord.ui.ActionRow]:
         if len(self.months) < 2:
             return []
+        # A select holds at most 25 options, so it lists a window of months around the current page.
         first = max(0, min(self.current_page - 12, len(self.months) - 25))
         select = discord.ui.Select(placeholder="Jump to a month", min_values=1, max_values=1)
         for index in range(first, min(first + 25, len(self.months))):
@@ -112,20 +123,14 @@ class Counter(commands.Cog):
             name="Message Word Count",
             callback=self.message_word_count,
             extras={
-                "details": (
-                    "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot "
-                    "messages aren't counted."
-                ),
+                "details": "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot messages aren't counted.",
             },
         )
         self.user_stats_menu = app_commands.ContextMenu(
             name="User Stats",
             callback=self.user_stats,
             extras={
-                "details": (
-                    "Right-click a member, then Apps > User Stats, for the same stats card, totals and monthly "
-                    "pages as /stats user."
-                ),
+                "details": "Right-click a member, then Apps > User Stats, for the same stats card, totals and monthly pages as /stats user.",
                 "bot_perms": (
                     "Attach Files, for the stats card"
                 ),
@@ -139,14 +144,19 @@ class Counter(commands.Cog):
         self.bot.tree.remove_command(self.user_stats_menu.name, type=self.user_stats_menu.type)
 
     async def message_word_count(self, interaction: discord.Interaction, message: discord.Message) -> None:
-        if interaction.guild_id is None or not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+        if interaction.guild_id is None:
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
             return
         if message.author.bot:
             await interaction.response.send_message(view=error_view("Bot messages aren't counted."))
             return
+        # Every reply here is public, so deferring before the database check costs nothing and keeps the check inside Discord's 3 second window.
+        await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            return
         words = len(message.content.split())
-        await interaction.response.send_message(
+        await interaction.followup.send(
             view=create_v2_view(
                 "Message word count",
                 f"This message from {message.author.mention} has **{words:,}** words.",
@@ -155,26 +165,32 @@ class Counter(commands.Cog):
         )
 
     async def _send_user_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
-        if interaction.guild_id is None or not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+        if interaction.guild_id is None:
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
             return
         if user.bot:
             await interaction.response.send_message(view=error_view("Bots don't have stats."))
             return
+        # can_attach answers the interaction itself when it fails, so it has to run before the defer.
+        if not await can_attach(interaction, "Can't show the stats card here"):
+            return
 
+        # A slash command must answer within 3 seconds and the database reads and card drawing below can take longer, so defer before any of them.
+        await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            return
         overall = await self.bot.db.get_user_full_stats(interaction.guild_id, user.id)
         if not any(overall):
-            await interaction.response.send_message(
-                view=error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
-                ephemeral=True,
+            await private_followup(
+                interaction,
+                error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
             )
             return
 
-        if not await can_attach(interaction, "Can't show the stats card here"):
-            return
-        await interaction.response.defer()
         months = await self.bot.db.get_user_monthly_breakdown(interaction.guild_id, user.id)
         words, messages, attachments, emojis, _ = overall
+        # Pillow drawing blocks, so it runs in a thread to keep the bot's event loop free.
         picture = await asyncio.to_thread(
             cards.stats_card, user.display_name, interaction.guild.name, await cards.avatar(user, 256),
             words, messages, attachments, emojis,
@@ -190,14 +206,7 @@ class Counter(commands.Cog):
         name="user",
         description="Show detailed statistics for a user",
         extras={
-            "details": (
-                "Your stats card, or another member's when you pick one: their picture and name, their words on "
-                "WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to "
-                "see your own. Under it come their totals (keywords too), then a page "
-                "for each month with a channel-by-channel breakdown. Pick a month from the menu or page through "
-                "with Previous and Next. Only you can use the controls. It works once tracking is on in "
-                "/settings."
-            ),
+            "details": "Your stats card, or another member's when you pick one: their picture and name, their words on WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to see your own. Under it come their totals (keywords too), then a page for each month with a channel-by-channel breakdown. Pick a month from the menu or page through with Previous and Next. Only you can use the controls. It works once tracking is on in /settings.",
             "bot_perms": (
                 "Attach Files, for the stats card"
             ),
@@ -208,6 +217,10 @@ class Counter(commands.Cog):
         await self._send_user_stats(interaction, user or interaction.user)
 
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
+        """Returns the channel id the message counts under, or None when it must not be counted.
+
+        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
+        """
         if message.author.bot or message.guild is None:
             return None
         watched, ignored = await self.bot.db.get_guild_tracking_config(message.guild.id)
@@ -215,6 +228,7 @@ class Counter(commands.Cog):
         return channel_id if tracked else None
 
     async def _apply(self, message: discord.Message, channel_id: int, **changes: Any) -> None:
+        # The month is the one the message was created in, so an edit or delete later adjusts the month it was first counted in.
         await self.bot.db.apply_activity(
             message.guild.id,
             message.author.id,
@@ -225,6 +239,7 @@ class Counter(commands.Cog):
         )
 
     async def _record(self, message: discord.Message, sign: int) -> None:
+        """Adds the message's counts with sign 1, or takes them back out with sign -1 for a deleted message."""
         channel_id = await self._tracked_channel(message)
         if channel_id is None:
             return
@@ -243,10 +258,12 @@ class Counter(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         await self._record(message, 1)
 
+    # discord.py only calls this for a message still in its cache (1000 by default) and never for bulk deletes, so older or purged messages stay counted.
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
         await self._record(message, -1)
 
+    # Also only called for cached messages. An edit adds the difference between the old and new text, and never changes the message count.
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
         channel_id = await self._tracked_channel(before)

@@ -1,3 +1,5 @@
+"""Records the servers the bot joins or leaves (a banned server's events never reach it), in bot_server_joins.log and, when BOT_WEBHOOK_URL is set, as a card posted to that Discord webhook."""
+
 from __future__ import annotations
 import logging
 import discord
@@ -8,6 +10,7 @@ from cogs.utils.http import get_session
 
 
 async def owner_display_name(bot: commands.Bot, guild: discord.Guild) -> str:
+    """Returns the server owner's name, fetching the user when it isn't cached, or "Unknown" when that fails."""
     owner = guild.owner or bot.get_user(guild.owner_id or 0)
     if owner is None and guild.owner_id:
         try:
@@ -38,12 +41,14 @@ class ServerJoinLogger(commands.Cog):
         self.logger.addHandler(self.handler)
 
     async def cog_unload(self) -> None:
+        # The named logger outlives the cog, so the handler must come off or a reload would write every line twice.
         self.logger.removeHandler(self.handler)
         self.handler.close()
 
     async def send_webhook_message(self, view: discord.ui.LayoutView) -> None:
         if not WEBHOOK_URL:
             return
+        # A bad URL or an HTTP error from the post is logged and swallowed, so it doesn't break the join and leave handlers.
         try:
             await discord.Webhook.from_url(WEBHOOK_URL, session=get_session()).send(view=view)
         except (discord.HTTPException, ValueError) as error:
