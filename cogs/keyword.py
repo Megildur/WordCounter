@@ -7,7 +7,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, create_v2_container, error_view
+from cogs.utils.components import BRAND_COLOR, SERVER_ONLY_MESSAGE, create_v2_container, error_view, private_followup
 from paginator import ButtonPaginator
 
 KEYWORDS_PER_PAGE = 30
@@ -28,13 +28,13 @@ class Keyword(commands.Cog):
     )
     async def keyword_list(self, interaction: discord.Interaction) -> None:
         if interaction.guild_id is None:
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
+        # The list is public, so deferring first costs nothing and keeps the database read inside Discord's 3 second window.
+        await interaction.response.defer()
         keywords = await self.bot.db.get_keywords(interaction.guild_id)
         if not keywords:
-            await interaction.response.send_message(
-                view=error_view("No keywords are being tracked here yet. Add some in `/settings`."),
-                ephemeral=True,
-            )
+            await private_followup(interaction, error_view("No keywords are being tracked here yet. Add some in `/settings`."))
             return
 
         pages = [
