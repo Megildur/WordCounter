@@ -108,6 +108,14 @@ class Session:
         await self.connection.commit()
 
 
+def _warn(text: str, *args: Any) -> None:
+    """Logs a warning and swallows anything the logging itself raises: a log line must never be the reason the lock isn't given back or a block isn't committed."""
+    try:
+        log.warning(text, *args)
+    except Exception:
+        pass
+
+
 class SessionLock:
     """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, commits on a clean exit and rolls back when the block raised."""
     def __init__(self, owner: Any) -> None:
@@ -121,9 +129,8 @@ class SessionLock:
         await self.lock.acquire()
         self._held_since = time.monotonic()
         try:
-            # Inside the try, so a failing log call gives the lock back like any other failure here.
             if self._held_since - asked > LOCK_SLOW_SECONDS:
-                log.warning("Waited %.1f s for the database lock", self._held_since - asked)
+                _warn("Waited %.1f s for the database lock", self._held_since - asked)
             if self.owner.pool is None:
                 await self.owner.connect_pool()
             self.connection = await self.owner.pool.acquire()
@@ -142,7 +149,7 @@ class SessionLock:
         try:
             if held > LOCK_SLOW_SECONDS:
                 began = getattr(self.owner.db, "first_sql", None)
-                log.warning("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
+                _warn("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
             if self.connection is not None and not self.connection.closed:
                 if kind is None:
                     await self.connection.commit()

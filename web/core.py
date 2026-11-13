@@ -289,8 +289,8 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
         response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
     except web.HTTPRedirection as moved:
-        # Built again instead of returning the exception, which aiohttp has deprecated.
-        response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() == "location"})
+        # Built again instead of returning the exception, which aiohttp has deprecated. It keeps the headers the exception carries (Location on a redirect), but not its text body.
+        response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() not in ("content-type", "content-length")})
     except web.HTTPException as problem:
         response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
         if "Allow" in problem.headers:
