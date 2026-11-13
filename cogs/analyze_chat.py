@@ -55,6 +55,7 @@ INDEX_WAIT_LIMIT = 120.0
 CRAWL_CONCURRENCY = 4
 CRAWL_ATTEMPTS = 3
 CHECKPOINT_INTERVAL = 60.0
+UNLOAD_WAIT = 10.0
 # Seconds between edits of the progress message.
 PROGRESS_INTERVAL = 8.0
 LIST_LIMIT = 15
@@ -534,9 +535,12 @@ class AnalyzeChat(commands.Cog):
             self._spawn(self._startup())
 
     async def cog_unload(self) -> None:
-        # Cancels the start-up and resume tasks this cog spawned, and what such a crawl counted since its last checkpoint is read again when the run resumes. A crawl started from the Start button runs in that interaction's own task and isn't cancelled here.
-        for task in tuple(self._tasks):
+        # Cancels every crawl, whether this cog spawned it or a button press is running it, and waits for them to stop. What a crawl counted since its last checkpoint is read again when the run resumes. Without the wait, a reloaded cog could resume the run while the old crawl is still saving, and count a message twice.
+        pending = [task for task in self._tasks if task is not asyncio.current_task()]
+        for task in pending:
             task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=UNLOAD_WAIT)
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coroutine)
@@ -1046,6 +1050,10 @@ class AnalyzeChat(commands.Cog):
     async def _run_crawl(self, guild: discord.Guild, status: StatusMessage) -> None:
         """Runs the saved analysis for a server to the end and shows the result. Everything is read from the saved run record, so a new run and a resume after a restart take the same path."""
         self.running_guilds.add(guild.id)
+        # Registered so cog_unload can cancel a crawl that a button press is running, not only the ones this cog spawned.
+        task = asyncio.current_task()
+        if task is not None:
+            self._tasks.add(task)
         try:
             record = await self.bot.db.get_analysis_run(guild.id)
             if record is None:
@@ -1119,6 +1127,7 @@ class AnalyzeChat(commands.Cog):
             )
         finally:
             self.running_guilds.discard(guild.id)
+            self._tasks.discard(task)
 
     async def run_member(self, interaction: discord.Interaction, target: discord.Member) -> None:
         """Counts one member, trying message search first. When search isn't available it saves a run and hands over to the history crawl. With search nothing is written until it finishes."""
