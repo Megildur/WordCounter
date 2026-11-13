@@ -1,3 +1,8 @@
+"""The swear jar page of the dashboard, at /dashboard/{guild_id}/swearjar, for members with Manage Server.
+
+The page shows the jar's settings, words, channel rules, roles and goal. One POST route handles every form on it, picking what to do from the `action` field, and redirects back with a `msg` code for the alert box. It uses the same database methods and rules (cogs/utils/jar.py) as /swearjar settings in Discord.
+"""
+
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import discord
@@ -44,6 +49,7 @@ from web.dashboard import (
 
 routes = web.RouteTableDef()
 
+# Form action to the kind of word change it makes. WORD_RESULTS gives the msg code shown after each kind.
 WORD_ACTIONS = {"words_add": "add", "words_move": "tier", "words_drop": "remove", "words_back": "back"}
 WORD_RESULTS = {"add": "words_saved", "tier": "words_moved", "remove": "words_dropped", "back": "words_back"}
 RULE_ACTIONS = {"rule_include": "include", "rule_exclude": "exclude"}
@@ -51,6 +57,7 @@ ROLE_COLUMNS = ("potty_role_id", "clean_role_id")
 
 
 def word_lists(settings: Dict[str, Any], overrides: List[Override], tab: str) -> Dict[str, Any]:
+    """Builds what the Words tab shows for one language tab: each tier's price and words, the removed words, the tab and language switches, and the totals. `total` counts the words of languages that are on plus the server's own."""
     listed = listed_words(overrides, tab)
     tiers = [
         {"tier": tier, "name": TIER_NAMES[tier], "price": price, "money": money(settings, price), "words": listed[tier]}
@@ -93,6 +100,7 @@ def goal_view(settings: Dict[str, Any], goal: Optional[Dict[str, Any]]) -> Optio
         **goal,
         "progress_text": money(settings, goal["progress"]),
         "target_text": money(settings, goal["target"]),
+        # The amount box is filled the way an admin would type it: money without the $, tokens without their name, and no thousands commas.
         "target_input": money(settings, goal["target"]).lstrip("$").split(" ")[0].replace(",", ""),
         "percent": min(100, goal["progress"] * 100 // max(1, goal["target"])),
     }
@@ -153,6 +161,7 @@ async def _words(db, guild: discord.Guild, action: str, form) -> str:
             return "bad_tier"
         changes, forget, skipped = word_changes(action, parse_keywords(str(form.get("words", ""))[:2000]), tier, overrides)
     else:
+        # Words arrive as list keys, so only keys that are on the list (or, for back, that were removed) are accepted.
         if action == "back":
             allowed = {key for key, _, gone in overrides if gone}
         else:
@@ -193,15 +202,21 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
     ping = form.get("ping") == "yes"
     if ping and not (guild.me and guild.me.guild_permissions.mention_everyone):
         return "need_mention_everyone"
+    # A channel that is missing, or that the bot can't send in, is dropped and the goal is saved without one.
     channel = guild.get_channel(int(form.get("channel")) if str(form.get("channel", "")).isdigit() else 0)
     if channel is not None and not channel.permissions_for(guild.me).send_messages:
         channel = None
+    # Saving starts the goal again from zero progress, even when one is already running.
     await db.jar_set_goal(guild.id, label, target, channel.id if channel else None, ping)
     return "goal_saved"
 
 
 @routes.post(r"/dashboard/{guild_id:\d+}/swearjar")
 async def swearjar_action(request: web.Request) -> web.Response:
+    """Handles every form on the page. The `action` field picks what to do, and the result code goes into the redirect as `msg`.
+
+    The _fines, _words, _roles and _goal helpers each return their code. A form with a bad CSRF token changes nothing and gets "expired_form".
+    """
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
@@ -228,6 +243,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
             column = LANGUAGE_COLUMNS[form.get("lang")]
             turning_on = form.get("state") == "on"
             others = [name for name in LANGUAGE_COLUMNS.values() if name != column and settings.get(name)]
+            # At least one language has to stay on, as in the Discord menu.
             if not turning_on and not others:
                 result = "need_language"
             else:
@@ -259,8 +275,10 @@ async def swearjar_action(request: web.Request) -> web.Response:
             if result == "goal_ended":
                 await db.jar_end_goal(guild.id)
         elif action == "jar_reset":
+            # Needs confirm=yes, and is refused while an analysis is running here.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "jar_reset"
             if result == "jar_reset":
                 await db.jar_reset_members(guild.id)
+        # Drops the bot's cached jar state so the listeners use the change straight away.
         refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}&lang={word_tab(form.get('tab') if csrf_ok else None)}")

@@ -1,3 +1,8 @@
+"""The default swear word lists and the tier constants.
+
+Words are grouped by language (English, Polish) and by tier: 1 mild, 2 explicit, 3 slurs. The markers in front of or behind a word, like a trailing *, are explained on parse_entry in swear_filter.py, which turns these entries into patterns. jar.py and the settings pages show them, and a server's own changes are stored in jar_words.
+"""
+
 from __future__ import annotations
 from typing import Dict, FrozenSet, Tuple
 
@@ -57,7 +62,10 @@ POLISH: Dict[int, Tuple[str, ...]] = {
     ),
 }
 
+# Harmless words that a pattern would still hit, like a food or a painter's name. A match that is exactly one of these is not fined.
 SAFE_WORDS: FrozenSet[str] = frozenset({"shiitake", "shiitakes", "pissarro", "crappie", "crappies"})
 
+# Language code to (display name, that language's words by tier).
 LANGUAGES: Dict[str, Tuple[str, Dict[int, Tuple[str, ...]]]] = {"en": ("English", ENGLISH), "pl": ("Polish", POLISH)}
+# The jar_settings column that turns each language on, keyed by the same language code as LANGUAGES.
 LANGUAGE_COLUMNS: Dict[str, str] = {"en": "english", "pl": "polish"}
