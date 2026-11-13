@@ -141,10 +141,7 @@ def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[
 
 
 def earning_footer(settings: Dict[str, Any]) -> str:
-    return (
-        f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. "
-        "Streak bonuses at 7 and 30 days."
-    )
+    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. Streak bonuses at 7 and 30 days."
 
 
 class FormModal(discord.ui.Modal):
@@ -341,11 +338,7 @@ class JarSettingsView(SectionMenu):
         counts = default_counts()
         sizes = " and ".join(f"**{counts[code]}** {name}" for code, (name, _) in LANGUAGES.items())
         container.add_item(
-            discord.ui.TextDisplay(
-                f"### Words\nThe default list has {sizes} swear words and slurs in three tiers. Turn on the languages your "
-                "server speaks: words in a language that's off aren't fined. Matching ignores case and accents, and catches "
-                "leetspeak like `sh!t`, stretched letters and spacing like `f u c k`."
-            )
+            discord.ui.TextDisplay(f"### Words\nThe default list has {sizes} swear words and slurs in three tiers. Turn on the languages your server speaks: words in a language that's off aren't fined. Matching ignores case and accents, and catches leetspeak like `sh!t`, stretched letters and spacing like `f u c k`.")
         )
         for code, (name, _) in LANGUAGES.items():
             on = bool(self.settings.get(LANGUAGE_COLUMNS[code]))
@@ -498,10 +491,7 @@ class JarSettingsView(SectionMenu):
     def _populate_reset_tab(self, container: discord.ui.Container) -> None:
         member = f"<@{self.reset_user_id}>" if self.reset_user_id else "Nobody picked"
         container.add_item(
-            discord.ui.TextDisplay(
-                "### Resets\nResetting deletes swear counts, fines, wallets and streaks. Settings, words and the goal stay. "
-                f"Past swears aren't counted again after a reset.\n\n**Member:** {member}"
-            )
+            discord.ui.TextDisplay(f"### Resets\nResetting deletes swear counts, fines, wallets and streaks. Settings, words and the goal stay. Past swears aren't counted again after a reset.\n\n**Member:** {member}")
         )
         if self.pending_confirmation == "reset_member":
             self._confirmation(container, f"**Reset <@{self.reset_user_id}>'s jar?**\nIt can't be undone.", "Reset member", discord.ButtonStyle.danger, self._reset(True))
@@ -817,10 +807,7 @@ class SwearJar(commands.Cog):
             name="Swear Jar",
             callback=self.message_fine,
             extras={
-                "details": (
-                    "Right-click a message, then Apps > Swear Jar, to see what it was fined and for how many "
-                    "swears."
-                ),
+                "details": "Right-click a message, then Apps > Swear Jar, to see what it was fined and for how many swears.",
             },
         )
         self.bot.tree.add_command(self.fine_menu)
@@ -1001,8 +988,7 @@ class SwearJar(commands.Cog):
         ping = bool(goal["ping"]) and permissions.mention_everyone
         view = create_v2_view(
             "Swear jar goal reached",
-            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, "
-            f"so it's time for: **{goal['label']}**",
+            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, so it's time for: **{goal['label']}**",
             footer="Admins can set the next goal in /swearjar settings.",
             color=SUCCESS_COLOR,
         )
@@ -1085,12 +1071,7 @@ class SwearJar(commands.Cog):
         name="wallet",
         description="See a member's swear jar wallet, debt and clean streak",
         extras={
-            "details": (
-                "Shows a member's swear jar on an archive shelf, filled with gold coins for what they've saved or "
-                "red IOU slips for what they owe, beside their picture, the amount, their clean streak and how "
-                "many swears they've been fined for. Leave member empty to see your own. It works once staff turn "
-                "the jar on in /swearjar settings."
-            ),
+            "details": "Shows a member's swear jar on an archive shelf, filled with gold coins for what they've saved or red IOU slips for what they owe, beside their picture, the amount, their clean streak and how many swears they've been fined for. Leave member empty to see your own. It works once staff turn the jar on in /swearjar settings.",
             "bot_perms": (
                 "Attach Files, for the jar picture"
             ),
@@ -1144,11 +1125,7 @@ class SwearJar(commands.Cog):
         name="top",
         description="Who swears most, owes most, saved most and has the longest clean streak",
         extras={
-            "details": (
-                "Four rankings: who swears most, who owes most, who has saved most and who has the longest clean "
-                "streak, with buttons to switch between them and pages of ten. Members who left show by name, "
-                "and nobody is pinged."
-            ),
+            "details": "Four rankings: who swears most, who owes most, who has saved most and who has the longest clean streak, with buttons to switch between them and pages of ten. Members who left show by name, and nobody is pinged.",
         },
     )
     async def top(self, interaction: discord.Interaction) -> None:
@@ -1163,11 +1140,7 @@ class SwearJar(commands.Cog):
         name="goal",
         description="See what the swear jar is saving up for",
         extras={
-            "details": (
-                "What the swear jar is saving up for, like a movie night, and how close it is. When the jar "
-                "collects enough, WordCounter posts once in the goal's channel, and pings @everyone there only "
-                "if staff chose that."
-            ),
+            "details": "What the swear jar is saving up for, like a movie night, and how close it is. When the jar collects enough, WordCounter posts once in the goal's channel, and pings @everyone there only if staff chose that.",
         },
     )
     async def goal(self, interaction: discord.Interaction) -> None:
@@ -1199,22 +1172,11 @@ class SwearJar(commands.Cog):
         name="settings",
         description="Turn the swear jar on and choose fines, words, channels, roles and goals",
         extras={
-            "details": (
-                "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server "
-                "tokens and what each tier costs, turn English and Polish swears on or off (English is on and "
-                "Polish off until you choose), add, remove or move words on the list, choose where it listens "
-                "with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick "
-                "the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by "
-                "tier, and debt is only paid back by clean days. It stays off until you turn it on."
-            ),
+            "details": "Opens the swear jar's settings privately. Turn it on or off, pick money or your own server tokens and what each tier costs, turn English and Polish swears on or off (English is on and Polish off until you choose), add, remove or move words on the list, choose where it listens with exceptions per channel and a switch for age-restricted channels, turn on delete mode, pick the weekly Potty Mouth role and the clean streak role, and set a goal. Every swear costs, by tier, and debt is only paid back by clean days. It stays off until you turn it on.",
             "user_perms": (
                 "Manage Server"
             ),
-            "bot_perms": (
-                "Add Reactions for the 🫙 reaction, Manage Messages for delete mode, Manage Roles for the Potty "
-                "Mouth and clean streak roles (its role above them), and Mention Everyone if a goal pings "
-                "@everyone"
-            ),
+            "bot_perms": "Add Reactions for the 🫙 reaction, Manage Messages for delete mode, Manage Roles for the Potty Mouth and clean streak roles (its role above them), and Mention Everyone if a goal pings @everyone",
         },
     )
     @app_commands.default_permissions(manage_guild=True)
@@ -1237,10 +1199,7 @@ class SwearJar(commands.Cog):
             return
         record = await self.bot.db.jar_message_fine(message.id)
         if record:
-            description = (
-                f"{message.author.mention} was fined **{money(settings, record['amount'])}** "
-                f"for {record['swears']} swear(s) in this message."
-            )
+            description = f"{message.author.mention} was fined **{money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
         else:
             description = f"This message from {message.author.mention} wasn't fined."
         data = await self._member_data(interaction.guild.id, message.author.id)

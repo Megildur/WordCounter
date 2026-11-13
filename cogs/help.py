@@ -32,31 +32,19 @@ WELCOME_BANNER: Picture = (
 AD_POSTER: Picture = (
     "advertisement.png",
     "wordcounter_ad.png",
-    "WordCounter floating above Earth beside its name and the words Who talks the most, with chat bubbles rising "
-    "toward it, above signs for words, emojis, files, keywords, ranks, history, swears and stats",
+    "WordCounter floating above Earth beside its name and the words Who talks the most, with chat bubbles rising toward it, above signs for words, emojis, files, keywords, ranks, history, swears and stats",
 )
 
-ABOUT_TEXT = (
-    "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and "
-    "channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
-)
+ABOUT_TEXT = "WordCounter counts words, messages, attachments, emojis and the keywords you choose, for every member and channel. It keeps a monthly history, can count messages sent before it joined, and can run a swear jar."
 BOTZILLA_TEXT = (
     "### Meet Specimen 01\n"
-    "WordCounter comes from the same lab as **Botzilla**, one bot for your whole server: moderation and AutoMod, "
-    "welcome cards, levels, an economy, pixel-art pets and games with friends."
+    "WordCounter comes from the same lab as **Botzilla**, one bot for your whole server: moderation and AutoMod, welcome cards, levels, an economy, pixel-art pets and games with friends."
 )
-GAME_TEXT = (
-    "**Botzilla: Specimen 01** is a free pixel adventure about how Botzilla began, on a research station in orbit. "
-    "WordCounter is in it too, as the station's archivist. Play in your browser, on Discord or on Android."
-)
-AD_PITCH = (
-    "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own "
-    "keywords for every member and channel, and turns them into leaderboards."
-)
+GAME_TEXT = "**Botzilla: Specimen 01** is a free pixel adventure about how Botzilla began, on a research station in orbit. WordCounter is in it too, as the station's archivist. Play in your browser, on Discord or on Android."
+AD_PITCH = "See who talks the most in your server. WordCounter counts words, messages, attachments, emojis and your own keywords for every member and channel, and turns them into leaderboards."
 AD_FEATURES = (
     "### What it does\n"
-    "- **Leaderboards:** `/leaderboard` ranks words, messages, attachments, emojis, keywords and swears, for the "
-    "whole server or one channel.\n"
+    "- **Leaderboards:** `/leaderboard` ranks words, messages, attachments, emojis, keywords and swears, for the whole server or one channel.\n"
     "- **Member stats:** `/stats user` shows anyone's totals, month by month and channel by channel.\n"
     "- **Keywords:** count an inside joke or a catchphrase and see who says it most.\n"
     "- **Past messages:** `/analyze_chat` counts what was said before WordCounter joined.\n"
@@ -71,8 +59,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         [
             (
                 "/leaderboard [channel]",
-                "Rankings for words, messages, attachments, emojis, keywords and swears. "
-                "Pick a channel to see its top members and a month-by-month history.",
+                "Rankings for words, messages, attachments, emojis, keywords and swears. Pick a channel to see its top members and a month-by-month history.",
             ),
             (
                 "/stats user [member]",
@@ -113,13 +100,11 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ),
             (
                 "/analyze_chat whole_server",
-                "Reads every tracked channel and thread once and counts past messages for every member who "
-                "hasn't been analyzed yet. Progress is saved as it goes, so a restart picks up where it left off.",
+                "Reads every tracked channel and thread once and counts past messages for every member who hasn't been analyzed yet. Progress is saved as it goes, so a restart picks up where it left off.",
             ),
             (
                 "Nothing counted twice",
-                "Messages sent while tracking was on are already counted, so only older messages and any gaps "
-                "when tracking was off are added. Each member is analyzed once.",
+                "Messages sent while tracking was on are already counted, so only older messages and any gaps when tracking was off are added. Each member is analyzed once.",
             ),
             (
                 "Set keywords first",
@@ -133,13 +118,11 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
         [
             (
                 "How fines work",
-                "Swears are fined by tier: mild, explicit, and slurs or words your server adds. A message is fined for "
-                f"at most {MAX_FINED_PER_MESSAGE} swears. WordCounter reacts with 🫙, or deletes the message in delete mode.",
+                f"Swears are fined by tier: mild, explicit, and slurs or words your server adds. A message is fined for at most {MAX_FINED_PER_MESSAGE} swears. WordCounter reacts with 🫙, or deletes the message in delete mode.",
             ),
             (
                 "Paying it off",
-                "Only clean streaks pay debt back. Every clean active day (5 or more messages, no swears) pays back one unit, "
-                "with bonuses at 7 and 30 days. Members who never swear build up a wallet instead.",
+                "Only clean streaks pay debt back. Every clean active day (5 or more messages, no swears) pays back one unit, with bonuses at 7 and 30 days. Members who never swear build up a wallet instead.",
             ),
             ("Spamming", SPAM_NOTE),
             ("/swearjar wallet [member]", "A member's wallet or debt, clean streak and swears."),
@@ -147,8 +130,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("/swearjar goal", "What the jar is saving up for, like a movie night."),
             (
                 "/swearjar settings",
-                "Turn it on, pick money or tokens, set prices, edit the word list, choose channels, roles and a goal. "
-                "Needs Manage Server.",
+                "Turn it on, pick money or tokens, set prices, edit the word list, choose channels, roles and a goal. Needs Manage Server.",
             ),
             ("Past swears", "`/analyze_chat swears` adds past swears to the Swears leaderboard. They aren't fined."),
             ("Right-click menu", "Right-click a message, then Apps > Swear Jar to see its fine."),
@@ -163,8 +145,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("Your data", f"WordCounter stores counts, not message text. [Privacy Policy]({PRIVACY_URL}) · [Terms]({TERMS_URL})"),
             (
                 "From the same lab",
-                f"WordCounter is Specimen 02. Specimen 01 is [Botzilla]({BOTZILLA_URL}), and its free game "
-                f"[Botzilla: Specimen 01]({GAME_URL}) has WordCounter in it as the station's archivist.",
+                f"WordCounter is Specimen 02. Specimen 01 is [Botzilla]({BOTZILLA_URL}), and its free game [Botzilla: Specimen 01]({GAME_URL}) has WordCounter in it as the station's archivist.",
             ),
         ],
     ),
@@ -283,16 +264,7 @@ class HelpCog(commands.Cog, name="Help"):
         name="help",
         description="How to use WordCounter",
         extras={
-            "details": (
-                "Opens WordCounter's guide. It starts on a welcome page under WordCounter's banner: what it "
-                "counts, how to find your way, and good commands to start with for everyone and for server "
-                "staff. Previous and Next flip through the pages on stats and leaderboards, settings, counting "
-                "past messages, the swear jar and WordCounter itself, and every page has Add to server, Support "
-                "server and Website buttons. Only you can turn the pages. Choose ephemeral to see it privately. "
-                "When WordCounter joins a server, it posts a welcome with the same banner in the server's system "
-                "channel, or the first channel where it can attach a picture, pointing staff to /settings and "
-                "/help, with Botzilla and its game from the same lab. Nobody is pinged."
-            ),
+            "details": "Opens WordCounter's guide. It starts on a welcome page under WordCounter's banner: what it counts, how to find your way, and good commands to start with for everyone and for server staff. Previous and Next flip through the pages on stats and leaderboards, settings, counting past messages, the swear jar and WordCounter itself, and every page has Add to server, Support server and Website buttons. Only you can turn the pages. Choose ephemeral to see it privately. When WordCounter joins a server, it posts a welcome with the same banner in the server's system channel, or the first channel where it can attach a picture, pointing staff to /settings and /help, with Botzilla and its game from the same lab. Nobody is pinged.",
             "bot_perms": (
                 "Attach Files, for the banner"
             ),
@@ -312,13 +284,7 @@ class HelpCog(commands.Cog, name="Help"):
         name="advertisement",
         description="Post a card about WordCounter with invite links",
         extras={
-            "details": (
-                "Posts a card about WordCounter for anyone to see: a pixel-art poster of WordCounter over Earth "
-                "with signs for what it counts, a short pitch, a line on each part of it, and Add to server, "
-                "Support server and Website buttons. Anyone can post it, to show a friend or a server what "
-                "WordCounter does. It's your reply to the command, so Discord shows who posted it. Nobody is "
-                "pinged."
-            ),
+            "details": "Posts a card about WordCounter for anyone to see: a pixel-art poster of WordCounter over Earth with signs for what it counts, a short pitch, a line on each part of it, and Add to server, Support server and Website buttons. Anyone can post it, to show a friend or a server what WordCounter does. It's your reply to the command, so Discord shows who posted it. Nobody is pinged.",
             "bot_perms": (
                 "Attach Files, for the poster"
             ),

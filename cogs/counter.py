@@ -112,20 +112,14 @@ class Counter(commands.Cog):
             name="Message Word Count",
             callback=self.message_word_count,
             extras={
-                "details": (
-                    "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot "
-                    "messages aren't counted."
-                ),
+                "details": "Right-click a message, then Apps > Message Word Count, to see how many words it has. Bot messages aren't counted.",
             },
         )
         self.user_stats_menu = app_commands.ContextMenu(
             name="User Stats",
             callback=self.user_stats,
             extras={
-                "details": (
-                    "Right-click a member, then Apps > User Stats, for the same stats card, totals and monthly "
-                    "pages as /stats user."
-                ),
+                "details": "Right-click a member, then Apps > User Stats, for the same stats card, totals and monthly pages as /stats user.",
                 "bot_perms": (
                     "Attach Files, for the stats card"
                 ),
@@ -194,14 +188,7 @@ class Counter(commands.Cog):
         name="user",
         description="Show detailed statistics for a user",
         extras={
-            "details": (
-                "Your stats card, or another member's when you pick one: their picture and name, their words on "
-                "WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to "
-                "see your own. Under it come their totals (keywords too), then a page "
-                "for each month with a channel-by-channel breakdown. Pick a month from the menu or page through "
-                "with Previous and Next. Only you can use the controls. It works once tracking is on in "
-                "/settings."
-            ),
+            "details": "Your stats card, or another member's when you pick one: their picture and name, their words on WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to see your own. Under it come their totals (keywords too), then a page for each month with a channel-by-channel breakdown. Pick a month from the menu or page through with Previous and Next. Only you can use the controls. It works once tracking is on in /settings.",
             "bot_perms": (
                 "Attach Files, for the stats card"
             ),

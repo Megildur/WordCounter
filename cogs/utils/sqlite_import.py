@@ -25,8 +25,7 @@ class ImportResult:
         return not self.failures and not self.mismatched
 
     def problem(self) -> str:
-        lines = [f"Copying WordCounter's SQLite data into MySQL didn't finish: {len(self.failures):,} rows failed and "
-                 f"{len(self.mismatched)} tables don't match ({', '.join(self.mismatched) or 'none'})."]
+        lines = [f"Copying WordCounter's SQLite data into MySQL didn't finish: {len(self.failures):,} rows failed and {len(self.mismatched)} tables don't match ({', '.join(self.mismatched) or 'none'})."]
         lines += [f"  {line}" for line in self.failures[:20]]
         lines.append("Nothing is lost: restart the bot to try again. Rows already copied are replaced, never counted twice.")
         return "\n".join(lines)

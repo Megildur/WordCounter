@@ -23,10 +23,7 @@ Kind = Literal["User", "Server"]
 NO_PINGS = discord.AllowedMentions.none()
 LISTED_TABLES = 40
 BLACKLIST_PAGE = 10
-BAD_ID = (
-    "That isn't a Discord ID. Turn on Developer Mode in Discord's settings, then right-click "
-    "the user or server and pick Copy ID."
-)
+BAD_ID = "That isn't a Discord ID. Turn on Developer Mode in Discord's settings, then right-click the user or server and pick Copy ID."
 
 
 def snowflake(raw: str) -> Optional[int]:
@@ -86,8 +83,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
         return view
     view.add_item(discord.ui.Container(
         discord.ui.TextDisplay(
-            f"### Records WordCounter keeps\nEverything else WordCounter stored about {target.label} has been deleted. "
-            "This record stays, and it will not be deleted on request:\n"
+            f"### Records WordCounter keeps\nEverything else WordCounter stored about {target.label} has been deleted. This record stays, and it will not be deleted on request:\n"
             f"- A ban from using WordCounter, since <t:{int(banned.added_at)}:D>"
         ),
         discord.ui.Separator(),
@@ -111,15 +107,9 @@ class DataConfirmView(AuthorOnlyView):
         if ban:
             title = f"Blacklist this {target.what}?"
             if target.kind == blacklist.SERVER:
-                does = (
-                    "WordCounter stays in the server but ignores everything that happens there, and answers its "
-                    "commands and buttons with a notice that the server is banned."
-                )
+                does = "WordCounter stays in the server but ignores everything that happens there, and answers its commands and buttons with a notice that the server is banned."
             else:
-                does = (
-                    "WordCounter stops counting their messages in every server, ignores everything they do, and "
-                    "answers their commands and buttons with a notice that they're banned."
-                )
+                does = "WordCounter stops counting their messages in every server, ignores everything they do, and answers their commands and buttons with a notice that they're banned."
             description = f"{who}.\n{does}"
             if reason:
                 description += f"\n**Reason:** {discord.utils.escape_markdown(reason)}"
@@ -412,8 +402,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             return
         if not (await self.bot.db.find_by_id(target.id)).empty:
             await interaction.response.send_message(view=error_view(
-                f"WordCounter still stores data about {target.label} that a deletion removes. "
-                "Delete it with `/owner delete_data` first, then post this.",
+                f"WordCounter still stores data about {target.label} that a deletion removes. Delete it with `/owner delete_data` first, then post this.",
                 title="Not deleted yet",
             ), ephemeral=True)
             return

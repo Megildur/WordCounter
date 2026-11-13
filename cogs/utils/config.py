@@ -48,7 +48,4 @@ def daily_log_handler(filename: str) -> logging.Handler:
 
 
 def invite_url(client_id: Optional[int] = None) -> str:
-    return (
-        f"https://discord.com/oauth2/authorize?client_id={client_id or DEFAULT_CLIENT_ID}"
-        f"&permissions={INVITE_PERMISSIONS}&scope=bot+applications.commands&integration_type=0"
-    )
+    return f"https://discord.com/oauth2/authorize?client_id={client_id or DEFAULT_CLIENT_ID}&permissions={INVITE_PERMISSIONS}&scope=bot+applications.commands&integration_type=0"

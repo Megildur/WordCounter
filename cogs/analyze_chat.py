@@ -386,25 +386,16 @@ class AnalyzeConfirmView(AuthorOnlyView):
             if len(keywords) > LIST_LIMIT:
                 keyword_text += f" and {len(keywords) - LIST_LIMIT} more"
         else:
-            keyword_text = (
-                "None set. Keywords only count in old messages if they exist before you start, "
-                "so add them in `/settings` first if you want them."
-            )
+            keyword_text = "None set. Keywords only count in old messages if they exist before you start, so add them in `/settings` first if you want them."
 
         if swears:
             title = "Count past swears"
-            description = (
-                "Reads every channel the swear jar listens in and adds past swears to the Swears leaderboard. "
-                "Past swears aren't fined, and swears the jar already counted are skipped."
-            )
+            description = "Reads every channel the swear jar listens in and adds past swears to the Swears leaderboard. Past swears aren't fined, and swears the jar already counted are skipped."
             fields = [("Words", "The swear jar's word list for this server, including your changes.")]
             footer = "Big servers can take a while. Progress is saved, so a restart picks up where it left off."
         elif target is not None:
             title = "Count past messages"
-            description = (
-                f"Reads {target.mention}'s older messages and adds them to their stats. "
-                "Each member can only be analyzed once."
-            )
+            description = f"Reads {target.mention}'s older messages and adds them to their stats. Each member can only be analyzed once."
             fields = [("Keywords", keyword_text)]
             footer = "Usually takes a few minutes."
         else:
@@ -949,8 +940,7 @@ class AnalyzeChat(commands.Cog):
         if not progress.used_history and progress.found < progress.total:
             fields.append((
                 "Not returned by Discord",
-                f"Search listed {progress.total:,} messages but returned {progress.found:,}. "
-                "The gap is usually messages deleted during the run or in channels the bot can't see.",
+                f"Search listed {progress.total:,} messages but returned {progress.found:,}. The gap is usually messages deleted during the run or in channels the bot can't see.",
             ))
         return create_v2_view(
             "Past swears added" if swears is not None else "Past messages added",
@@ -1027,10 +1017,7 @@ class AnalyzeChat(commands.Cog):
         except Exception:
             log.exception("Analysis in guild %s failed", guild.id)
             await status.show(
-                error_view(
-                    "The analysis hit an unexpected error. Everything up to the last checkpoint is saved, and it "
-                    "picks up from there when the bot restarts or you run the command again."
-                )
+                error_view("The analysis hit an unexpected error. Everything up to the last checkpoint is saved, and it picks up from there when the bot restarts or you run the command again.")
             )
         finally:
             self.running_guilds.discard(guild.id)
@@ -1114,10 +1101,7 @@ class AnalyzeChat(commands.Cog):
         name="swears",
         description="Add past swears to the Swears leaderboard (nobody is fined)",
         extras={
-            "details": (
-                "Reads past messages for swears and adds them to the Swears leaderboard. Nobody is fined, and "
-                "wallets, debts and streaks don't change."
-            ),
+            "details": "Reads past messages for swears and adds them to the Swears leaderboard. Nobody is fined, and wallets, debts and streaks don't change.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -1147,14 +1131,7 @@ class AnalyzeChat(commands.Cog):
         name="single_user",
         description="Count one member's past messages",
         extras={
-            "details": (
-                "Counts one member's past messages using Discord's message search, usually in a few minutes. If "
-                "search isn't available for the server, it reads channel history instead. Messages already "
-                "counted live are skipped and gaps when tracking was off are filled in, so nothing is counted "
-                "twice, and each member is analyzed once (Allow re-analysis in /settings clears them first to "
-                "redo it). Set keywords in /settings first if they should count in old messages. A progress card "
-                "shows how far it's got."
-            ),
+            "details": "Counts one member's past messages using Discord's message search, usually in a few minutes. If search isn't available for the server, it reads channel history instead. Messages already counted live are skipped and gaps when tracking was off are filled in, so nothing is counted twice, and each member is analyzed once (Allow re-analysis in /settings clears them first to redo it). Set keywords in /settings first if they should count in old messages. A progress card shows how far it's got.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -1190,13 +1167,7 @@ class AnalyzeChat(commands.Cog):
         name="whole_server",
         description="Count every member's past messages",
         extras={
-            "details": (
-                "Reads every tracked channel, voice chat and thread, active and archived, once, and credits each "
-                "past message to its author, for every member who hasn't been analyzed yet. Messages already "
-                "counted live are skipped, so nothing is counted twice. Progress is saved every minute, so if "
-                "WordCounter restarts mid-run it picks up where it stopped on its own. Channels it can't read "
-                "are listed at the end so you know what was left out. One analysis runs in a server at a time."
-            ),
+            "details": "Reads every tracked channel, voice chat and thread, active and archived, once, and credits each past message to its author, for every member who hasn't been analyzed yet. Messages already counted live are skipped, so nothing is counted twice. Progress is saved every minute, so if WordCounter restarts mid-run it picks up where it stopped on its own. Channels it can't read are listed at the end so you know what was left out. One analysis runs in a server at a time.",
             "user_perms": (
                 "Manage Server"
             ),

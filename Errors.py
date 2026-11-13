@@ -42,10 +42,7 @@ class ErrorDisplayView(AuthorOnlyView):
         container.add_item(TextDisplay(f"### {title}\n{description}"))
         container.add_item(Separator(spacing=discord.SeparatorSpacing.large))
         container.add_item(
-            TextDisplay(
-                "If this keeps happening, let the developer, Brandon, know in the "
-                f"[support server]({SUPPORT_URL})."
-            )
+            TextDisplay(f"If this keeps happening, let the developer, Brandon, know in the [support server]({SUPPORT_URL}).")
         )
         if traceback_str:
             container.add_item(Separator())

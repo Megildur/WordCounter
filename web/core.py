@@ -21,10 +21,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 WEBP_SIZE_MASK = 0x3FFF
 
 SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self'; "
-        "script-src 'none'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
-    ),
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self'; script-src 'none'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "DENY",

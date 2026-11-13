@@ -188,8 +188,7 @@ class SettingsMenuView(SectionMenu):
         if self.is_whole_server:
             header = (
                 "### Ignored channels\n"
-                "Whole server mode is on, so everything is counted unless you ignore it here. "
-                "Ignoring a category ignores every channel in it."
+                "Whole server mode is on, so everything is counted unless you ignore it here. Ignoring a category ignores every channel in it."
             )
             active_list = sorted(self.ignored_ids)
             list_label = "Ignored"
@@ -198,8 +197,7 @@ class SettingsMenuView(SectionMenu):
         else:
             header = (
                 "### Tracked channels\n"
-                "Only these channels and categories are counted. "
-                "Picking a category includes every channel and thread inside it."
+                "Only these channels and categories are counted. Picking a category includes every channel and thread inside it."
             )
             active_list = [cid for cid in sorted(self.watched_ids) if cid != 1]
             list_label = "Tracked"
@@ -287,8 +285,7 @@ class SettingsMenuView(SectionMenu):
             self._confirmation(
                 container,
                 "**Reset everything?**\n"
-                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), "
-                "clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
+                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
                 "Reset everything",
                 discord.ButtonStyle.danger,
                 self._confirm_wipe_server,
@@ -298,8 +295,7 @@ class SettingsMenuView(SectionMenu):
             self._confirmation(
                 container,
                 f"**Reset all counts for {self._reset_scope_text()}?**\n"
-                "Words, messages, attachments, emojis, keywords and monthly history are deleted for this scope. "
-                "It can't be undone.",
+                "Words, messages, attachments, emojis, keywords and monthly history are deleted for this scope. It can't be undone.",
                 "Reset all counts",
                 discord.ButtonStyle.danger,
                 self._execute_scoped_reset,
@@ -309,14 +305,12 @@ class SettingsMenuView(SectionMenu):
             if self.selected_reset_user_id is not None:
                 question = (
                     f"**Re-analyze <@{self.selected_reset_user_id}> from scratch?**\n"
-                    "Their counts are cleared now. The next `/analyze_chat single_user` rebuilds their full history, "
-                    "so nothing is counted twice."
+                    "Their counts are cleared now. The next `/analyze_chat single_user` rebuilds their full history, so nothing is counted twice."
                 )
             else:
                 question = (
                     "**Re-analyze everyone from scratch?**\n"
-                    "Every member's counts are cleared now (settings and keywords stay). The next "
-                    "`/analyze_chat whole_server` rebuilds the full history, so nothing is counted twice."
+                    "Every member's counts are cleared now (settings and keywords stay). The next `/analyze_chat whole_server` rebuilds the full history, so nothing is counted twice."
                 )
             self._confirmation(container, question, "Clear and allow re-analysis", discord.ButtonStyle.danger, self._execute_reanalysis)
             return
@@ -616,14 +610,7 @@ class Counter_Cmds(commands.Cog):
         name="settings",
         description="Choose what gets tracked, manage keywords and reset data",
         extras={
-            "details": (
-                "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an "
-                "ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category "
-                "covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset "
-                "counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the "
-                "whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the "
-                "person who opened it can press its buttons."
-            ),
+            "details": "Opens WordCounter's settings privately. Choose how tracking works: the whole server with an ignore list, only the channels and categories you pick, or off. Tracking or ignoring a category covers every channel in it. Add and remove keywords, then use the Data & Reset Tools to reset counts for a member, a channel or both, let a member be re-analyzed from scratch, or reset the whole server. Nothing is counted until you pick channels or turn on whole server mode. Only the person who opened it can press its buttons.",
             "user_perms": (
                 "Manage Server"
             ),
@@ -645,15 +632,7 @@ class Counter_Cmds(commands.Cog):
         name="leaderboard",
         description="Leaderboards for words, messages, attachments, emojis and keywords",
         extras={
-            "details": (
-                "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's "
-                "observation deck, with their pictures, then ten members a page. Buttons switch "
-                "between words, messages, attachments (files, stickers and links), emojis, keywords and swears, "
-                "and Previous and Next page through. The keywords tab shows who says each tracked keyword most. "
-                "Pick a channel to rank only what was said there, with that channel's month-by-month history "
-                "under the list. Members who left show by name. Only the person who ran it can press its "
-                "buttons, and nobody is pinged. It works once tracking is on in /settings."
-            ),
+            "details": "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's observation deck, with their pictures, then ten members a page. Buttons switch between words, messages, attachments (files, stickers and links), emojis, keywords and swears, and Previous and Next page through. The keywords tab shows who says each tracked keyword most. Pick a channel to rank only what was said there, with that channel's month-by-month history under the list. Members who left show by name. Only the person who ran it can press its buttons, and nobody is pinged. It works once tracking is on in /settings.",
             "bot_perms": (
                 "Attach Files, for the podium"
             ),

@@ -100,10 +100,7 @@ async def display_names(client: discord.Client, guild: discord.Guild, user_ids: 
     return names
 
 
-ATTACH_FILES_NEEDED = (
-    "WordCounter needs the Attach Files permission in this channel to post its picture. "
-    "Ask a server admin to allow it, or try another channel."
-)
+ATTACH_FILES_NEEDED = "WordCounter needs the Attach Files permission in this channel to post its picture. Ask a server admin to allow it, or try another channel."
 
 
 async def can_attach(interaction: discord.Interaction, title: str) -> bool:
