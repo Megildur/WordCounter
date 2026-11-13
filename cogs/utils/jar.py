@@ -39,7 +39,6 @@ ListedWord = Tuple[str, str, str]
 
 TIER_INPUTS = {"1": MILD, "2": EXPLICIT, "3": SLUR, "mild": MILD, "explicit": EXPLICIT, "slur": SLUR, "slurs": SLUR}
 SHORT_TIER_NAMES = {MILD: "Mild", EXPLICIT: "Explicit", SLUR: "Slurs"}
-# The tier every default word has before a server moves it, by key.
 DEFAULT_TIERS = {entry.key: entry.tier for entry in DEFAULT_ENTRIES}
 PRICE_LIMIT = 1000
 CENTS_LIMIT = 100_000

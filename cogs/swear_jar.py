@@ -2,7 +2,7 @@
 
 on_message and on_message_edit look for swears with the server's word list (swear_filter.py), charge a fine in units and keep each member's balance, streak and the server's goal. A one-minute background loop saves message counts, credits finished clean days and moves the weekly Potty Mouth role. The /swearjar commands (wallet, top, goal, settings) and the Swear Jar message menu read the same data.
 
-Everything is stored through swear_store.py in the jar_* tables, and a server's settings and word matcher are cached for a short time. The cog sets acts_on_blacklisted, so a banned user's swearing is still removed in delete mode, but they are never fined, counted or saved.
+The data lives in the jar_* tables and the swears_users and swears_channels counts, all read and written through swear_store.py, and a server's settings and word matcher are cached for a short time. The cog sets acts_on_blacklisted, so a banned user's swearing is still removed in delete mode, but they are never fined, counted or saved.
 """
 
 from __future__ import annotations
@@ -815,18 +815,17 @@ class JarSettingsView(SectionMenu):
 
 class SwearJar(commands.Cog):
     jar = app_commands.Group(name="swearjar", description="Fines for swearing, paid back with clean streaks")
-    # Lets this cog keep getting a banned user's events (see blacklist.py). It only removes their swearing, and never fines, counts or saves them.
+    # Lets this cog keep getting a banned user's events (see blacklist.py). In delete mode it removes their swearing, and it never fines, counts or saves them.
     acts_on_blacklisted = True
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # Per-server cache of settings and matcher, see state().
         self.states: Dict[int, JarState] = {}
         # Times of each member's recent fined messages, for the spam rule. In memory only.
         self.recent: Dict[Tuple[int, int], Deque[float]] = defaultdict(deque)
         # When each member's doubled fines end. In memory only, so a restart clears it: the spam rule reads this, and jar_members.spam_until is a copy for the wallet display.
         self.spam_until: Dict[Tuple[int, int], float] = {}
-        # Messages per (guild, user, UTC day) that aren't saved yet. upkeep writes them to jar_days every minute, so the listener never waits on the database.
+        # Messages per (guild, user, UTC day) that aren't saved yet. upkeep writes them to jar_days every minute, so counting a message doesn't touch the database.
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
         self.last_daily = 0.0
         # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
@@ -845,7 +844,6 @@ class SwearJar(commands.Cog):
     async def cog_unload(self) -> None:
         self.upkeep.cancel()
         self.bot.tree.remove_command(self.fine_menu.name, type=self.fine_menu.type)
-        # Write out the message counts still held in memory before the cog goes.
         await self._flush_days()
 
     def invalidate(self, guild_id: int) -> None:
@@ -853,7 +851,7 @@ class SwearJar(commands.Cog):
         self.states.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
-        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so nothing is written back afterwards."""
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts aren't saved afterwards."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
@@ -1183,7 +1181,6 @@ class SwearJar(commands.Cog):
             footer=earning_footer(settings),
             color=WARNING_COLOR if balance < 0 else SUCCESS_COLOR,
         )
-        # The card image goes at the top of the same container as the text fields.
         view = discord.ui.LayoutView(timeout=None)
         view.add_item(discord.ui.Container(
             cards.gallery(cards.JAR_FILE, f"{member.display_name}'s swear jar on an archive shelf: {headline}"),

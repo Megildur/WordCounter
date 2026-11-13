@@ -121,7 +121,7 @@ def banned_view(kind: str) -> discord.ui.LayoutView:
 
 
 async def _refuse(interaction: discord.Interaction, kind: str) -> None:
-    """Answers a banned user's interaction with the ban notice, which only they see, or with no choices for autocomplete. Discord errors are only logged."""
+    """Answers an interaction from a banned user, or in a banned server, with the ban notice that only the person who triggered it sees, or with no choices for autocomplete. Discord errors are only logged."""
     try:
         if interaction.type is discord.InteractionType.autocomplete:
             await interaction.response.autocomplete([])

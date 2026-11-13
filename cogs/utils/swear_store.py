@@ -86,7 +86,7 @@ JAR_PLAYER_TABLES = ("jar_members", "jar_days", "jar_fines", "swears_channels", 
 # Every jar table, so that resetting a whole server (GUILD_TABLES in database.py) wipes the jar too.
 JAR_TABLES = ("jar_settings", "jar_words", "jar_channels", "jar_goals", "jar_coverage", *JAR_PLAYER_TABLES)
 
-# Same shape as COUNT_TABLES in database.py, which includes these, so the shared count and leaderboard helpers cover swears too.
+# Same shape as COUNT_TABLES in database.py, which includes these so get_leaderboard can read the swear counts like the others.
 SWEAR_COUNT_TABLES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "swears_channels": (("guild_id", "channel_id", "user_id"), "count"),
     "swears_users": (("guild_id", "user_id"), "count"),
@@ -447,7 +447,7 @@ class SwearJarQueries:
     async def jar_coverage(self, guild_id: int) -> List[Tuple[int, Optional[int]]]:
         """Returns the server's coverage periods as (started, ended) snowflakes that compare with message ids, ended being None while a period is open.
 
-        They mark the messages the swear counts already include: the live jar's open period while it is on, and a period starting at 0 for history added by /analyze_chat. The analysis skips messages inside one.
+        They mark the messages the swear counts already include. A period is open while the jar is on, every earlier on and off stretch leaves a closed one, and a period starting at 0 covers history added by /analyze_chat. The analysis skips messages inside any of them.
         """
         await self.ensure_connected()
         async with self.db_lock:

@@ -1,6 +1,6 @@
 """Finds swears in message text for the swear jar.
 
-A server's word list (the defaults in swear_words.py plus its changes in jar_words) is compiled into a SwearMatcher. Text is cleaned first (lowercase, no accents, lookalike letters and leetspeak mapped, links and mentions dropped), so spellings like sh!t or f.u.c.k are still caught. Nothing here uses Discord or the database: the swear jar cog, /analyze_chat and the settings pages call it.
+A server's word list (the defaults in swear_words.py plus its changes in jar_words) is compiled into a SwearMatcher. Text is cleaned first (lowercase, no accents, lookalike letters and leetspeak mapped, links and mentions dropped), and spaced-out spellings are matched too, so sh!t and f.u.c.k are still caught. Nothing here uses Discord or the database: the swear jar cog, /analyze_chat and the settings pages call it.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ MAX_FINED_PER_MESSAGE = 3
 WORD_LIMIT = 40
 
 LEET = {"@": "a", "4": "a", "$": "s", "5": "s", "1": "i", "!": "i", "|": "i", "3": "e", "0": "o", "7": "t"}
-# Lookalike letters from other alphabets, mapped to Latin ones so a word can't hide behind them.
+# Cyrillic lookalikes and special Latin letters that accent stripping doesn't break down, mapped to plain Latin ones so a word can't hide behind them.
 CONFUSABLES = str.maketrans({
     "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "к": "k", "і": "i", "ј": "j",
     "ѕ": "s", "ԁ": "d", "ł": "l", "ß": "ss", "ø": "o", "æ": "ae", "đ": "d",
@@ -110,7 +110,7 @@ def entry_pattern(entry: Entry) -> str:
 
 
 def _same(part: str, letters: str) -> bool:
-    """Returns True if `part` fits `letters` one for one, with * standing for any letter. The first character and at least two characters must be real, so a token of mostly stars matches nothing."""
+    """Returns True if `part` fits `letters` one for one, with * standing for any letter. The first character must be real, and so must at least two characters in all."""
     return (
         len(part) == len(letters)
         and part[0] != "*"
@@ -130,7 +130,7 @@ def _wild_match(token: str, entry: Entry) -> bool:
 
 
 def _without_overlaps(spans: List[Tuple[int, int, int]]) -> List[int]:
-    """Takes (start, end, tier) matches and returns one tier per group of overlapping matches, the highest in the group, so a word caught by two patterns is counted once."""
+    """Takes (start, end, tier) matches and returns the tiers of the ones kept. A match that overlaps the last kept one doesn't count again and only raises its tier if it is higher, so a word caught by two patterns is counted once."""
     chosen: List[Tuple[int, int, int]] = []
     for start, end, tier in sorted(spans, key=lambda span: (span[0], -span[2])):
         if chosen and start < chosen[-1][1]:

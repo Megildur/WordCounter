@@ -1,6 +1,6 @@
 """Finds, exports and deletes everything WordCounter stores about a Discord user or server, and holds the blacklist queries.
 
-/owner delete_data, export_data and blacklist use it. It reads information_schema and searches every integer column whose name ends in `_id`, so any table with such a column is covered without changes here. That is why Discord ids must be stored in `..._id` integer columns. The blacklist table is never searched or deleted from, and KEPT_POLICY is the text that says why.
+/owner delete_data, export_data and blacklist use it. It reads information_schema and searches every integer column whose name ends in `_id`, so any table with such a column is covered without changes here. That is why Discord ids must be stored in `..._id` integer columns. The id search and the deletion skip the blacklist table, and KEPT_POLICY is the text that says why.
 """
 
 from __future__ import annotations
