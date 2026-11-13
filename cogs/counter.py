@@ -155,24 +155,28 @@ class Counter(commands.Cog):
         )
 
     async def _send_user_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
-        if interaction.guild_id is None or not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+        if interaction.guild_id is None:
             await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
             return
         if user.bot:
             await interaction.response.send_message(view=error_view("Bots don't have stats."))
             return
+        if not await can_attach(interaction, "Can't show the stats card here"):
+            return
 
+        await interaction.response.defer()
+        if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
+            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            return
         overall = await self.bot.db.get_user_full_stats(interaction.guild_id, user.id)
         if not any(overall):
-            await interaction.response.send_message(
+            await interaction.delete_original_response()
+            await interaction.followup.send(
                 view=error_view(f"{'You have' if user.id == interaction.user.id else user.mention + ' has'} no recorded activity in this server yet."),
                 ephemeral=True,
             )
             return
 
-        if not await can_attach(interaction, "Can't show the stats card here"):
-            return
-        await interaction.response.defer()
         months = await self.bot.db.get_user_monthly_breakdown(interaction.guild_id, user.id)
         words, messages, attachments, emojis, _ = overall
         picture = await asyncio.to_thread(

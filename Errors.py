@@ -110,6 +110,10 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
         context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, full_traceback,
     )
 
+    original = getattr(error, "original", error)
+    if isinstance(original, discord.NotFound) and original.code == 10062:
+        return
+
     view = ErrorDisplayView(title, description, full_traceback, interaction.user.id)
     try:
         if interaction.response.is_done():
