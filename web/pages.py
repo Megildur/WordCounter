@@ -292,11 +292,13 @@ async def callback(request: web.Request) -> web.Response:
 @routes.post("/logout")
 async def logout(request: web.Request) -> web.Response:
     # A POST with the CSRF token, so another site can't sign someone out with a link or an image. The cookie is read, not checked against the table: logging out has to work when the session has already ended or the database can't be read.
-    user = auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
+    live = current_user(request)
+    user = live or auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
     form = await post_form(request)
     if user is None or not auth.check_csrf(user, form.get("csrf")):
         return redirect("/")
-    everywhere = form.get("everywhere") == "yes"
+    # Ending every session of a person takes a session that still exists. A cookie from one that has ended can still sign this browser out, but its form token must not reach the person's newer logins.
+    everywhere = form.get("everywhere") == "yes" and live is not None
     db = request.app["bot"].db
     ended = True
     try:

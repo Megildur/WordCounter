@@ -239,6 +239,8 @@ MONTHLY_KEY_COLUMNS = ("guild_id", "user_id", "channel_id", "year", "month")
 ACTIVITY_KEY_NAMES: Dict[str, Tuple[str, ...]] = {**{table: keys for table, (keys, _) in COUNT_TABLES.items()}, MONTHLY_TABLE: MONTHLY_KEY_COLUMNS}
 # The most changes that may wait in memory. Past it new ones are dropped, so a database that stays down can't use up the bot's memory.
 ACTIVITY_LIMIT = 50_000
+# The longest a cancelled flush waits for the commit it had already sent.
+COMMIT_WAIT_SECONDS = 30.0
 # A change that couldn't be saved is logged at most this often.
 ACTIVITY_LOG_SECONDS = 60.0
 
@@ -642,8 +644,25 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         try:
             await asyncio.shield(commit)
         except asyncio.CancelledError:
-            await asyncio.wait({commit})
-            if not commit.cancelled() and commit.exception() is not None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + COMMIT_WAIT_SECONDS
+            while not commit.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    # It is stuck. The connection can't be handed on with a commit still running on it, so it is closed.
+                    commit.cancel()
+                    try:
+                        session.connection.close()
+                    except Exception:
+                        pass
+                    log.error("Waiting counts: the commit didn't finish in %.0f s and the connection was closed", COMMIT_WAIT_SECONDS)
+                    break
+                try:
+                    await asyncio.wait({commit}, timeout=remaining)
+                except asyncio.CancelledError:
+                    # A second cancel doesn't let go of the connection while its commit is still running.
+                    continue
+            if commit.done() and not commit.cancelled() and commit.exception() is not None:
                 log.error("Waiting counts couldn't be saved when the bot was stopping: %s", commit.exception())
             raise
 
@@ -667,6 +686,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
                 if committing:
                     # As in flush_before_block: the rows after this one wait, this one isn't written twice.
                     self._activity.restore(dict(rows[position + 1:]))
+                    if isinstance(error, Exception):
+                        log.error("Waiting counts for one row of %s may not have been saved: the commit failed and its outcome isn't known, so it is not written again: %s", key[0], error)
                     raise
                 if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
                     self._activity.restore(dict(rows[position:]))

@@ -862,7 +862,11 @@ class SwearJar(commands.Cog):
         self.upkeep.start()
 
     async def cog_unload(self) -> None:
+        loop_task = self.upkeep.get_task()
         self.upkeep.cancel()
+        if loop_task is not None:
+            # Waited for: a flush that is cancelled in the middle of its write puts its counts back, and that has to happen before the last flush below takes them.
+            await asyncio.gather(loop_task, return_exceptions=True)
         self.bot.tree.remove_command(self.fine_menu.name, type=self.fine_menu.type)
         await self._flush_days()
 
@@ -1088,7 +1092,7 @@ class SwearJar(commands.Cog):
                 (guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items() if not self._is_forgotten(guild_id, user_id)
             )
         except BaseException:
-            # The counts go back, so a failed write (or a cancel while the bot stops) doesn't lose a minute of messages. They are saved with the next flush.
+            # The counts go back, so a failed write (or a cancel while the bot stops) doesn't lose a minute of messages. They are saved with the next flush. If the connection dies around the commit itself they may be saved twice, and for a day count that only means a day can reach its ACTIVE_DAY_MESSAGES a message early, which is better than losing them.
             for key, n in counts.items():
                 if not self._is_forgotten(key[0], key[1]):
                     self.day_counts[key] += n

@@ -316,9 +316,13 @@ TELL_LIMIT = 3
 
 def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     try:
-        return ipaddress.ip_address((text or "").strip().strip("[]"))
+        address = ipaddress.ip_address((text or "").strip().strip("[]"))
     except ValueError:
         return None
+    # A dual-stack socket or a proxy may write an IPv4 visitor as ::ffff:a.b.c.d. As an IPv6 address they would all share one /64.
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
 
 
 def _grouped(address) -> str:
