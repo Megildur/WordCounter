@@ -11,10 +11,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 import discord
 from aiohttp import web
+from cogs.utils.config import guild_invite_url
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, Banned, RateLimit, Refused, current_user, error_page, post_form, redirect, render, sent_from_other_site
+from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, post_form, redirect, render, sent_from_other_site
 
 routes = web.RouteTableDef()
 
@@ -305,19 +306,35 @@ async def read_form(request: web.Request) -> Tuple[Any, bool]:
 
 @routes.get("/dashboard")
 async def dashboard(request: web.Request) -> web.Response:
+    """The person's servers: the ones they share with the bot, and the ones they manage that the bot isn't in yet, with a link to add it.
+
+    The second list comes from the server list Discord sent at login (kept in memory for an hour, `loaded` is False when there isn't one). It only decides what the page offers. Opening a server and every setting is still checked against the bot's own view of the member in `member_access`.
+    """
     user = require_user(request)
     user_id = int(user["id"])
+    bot = request.app["bot"]
+    managed = bot.db.web_servers(user_id)
+    known = {server["id"] for server in managed or ()}
     servers = []
-    for guild in sorted(request.app["bot"].guilds, key=lambda g: g.name.lower()):
+    for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
+        if guild.id in bot.blacklisted:
+            continue
         member = guild.get_member(user_id)
-        if member is not None and guild.id not in request.app["bot"].blacklisted:
-            servers.append({
-                "id": guild.id,
-                "name": guild.name,
-                "icon_url": icon_url(guild),
-                "manager": manages(member),
-            })
-    return render(request, "dashboard.html", "dashboard", servers=servers)
+        # A member list that isn't fully cached can miss someone who is in the server. Discord's own list, from login, shows they are, and a server it lists is one they managed then. A fully cached list that lacks them wins, as it does in `find_member`.
+        if member is None and (guild.chunked or guild.id not in known):
+            continue
+        servers.append({
+            "id": guild.id,
+            "name": guild.name,
+            "icon_url": icon_url(guild),
+            "manager": manages(member) if member is not None else True,
+        })
+    invitable = [
+        {**server, "invite_url": guild_invite_url(server["id"], client_id(bot))}
+        for server in managed or ()
+        if bot.get_guild(server["id"]) is None and server["id"] not in bot.blacklisted
+    ]
+    return render(request, "dashboard.html", "dashboard", servers=servers, invitable=invitable, loaded=managed is not None)
 
 
 @routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}")

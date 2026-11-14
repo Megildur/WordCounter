@@ -257,7 +257,7 @@ async def callback(request: web.Request) -> web.Response:
         return redirect("/?msg=oauth_failed")
 
     bot = request.app["bot"]
-    user = await auth.fetch_user(code, client_id(bot))
+    user, servers = await auth.fetch_login(code, client_id(bot), bot.blacklisted)
     if user is None:
         return redirect("/?msg=oauth_failed")
     if int(user["id"]) in bot.blacklisted:
@@ -273,6 +273,9 @@ async def callback(request: web.Request) -> web.Response:
     except Exception as error:
         log.warning("Couldn't save a login session: %s", error)
         return redirect("/?msg=oauth_failed")
+    # After the session, which clears whatever list this person had before: a login leaves either a fresh list or none.
+    if servers is not None:
+        bot.db.remember_web_servers(int(user["id"]), servers)
 
     separator = "&" if "?" in next_url else "?"
     response = redirect(f"{next_url}{separator}msg=login_success")
@@ -301,6 +304,9 @@ async def logout(request: web.Request) -> web.Response:
     everywhere = form.get("everywhere") == "yes" and live is not None
     db = request.app["bot"].db
     ended = True
+    # The server list is kept for the person, not for the session, and is dropped first, so it goes even if the database can't be reached below. A cookie from a session that has ended doesn't speak for the person's newer login, so it leaves the list alone.
+    if live is not None:
+        db.forget_web_servers(int(user["id"]))
     try:
         if everywhere:
             await db.revoke_web_sessions(int(user["id"]))

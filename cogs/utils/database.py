@@ -290,6 +290,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         # Website sessions found alive or missing a moment ago (see web_sessions.py).
         self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
         self._web_epoch = 0
+        self._web_servers: Dict[int, Tuple[float, List[Dict[str, Any]]]] = {}
 
     async def connect_pool(self) -> None:
         if self.pool is None:

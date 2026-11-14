@@ -1,6 +1,6 @@
 """Discord login and sessions for the dashboard.
 
-The session is a signed cookie holding the Discord user's id, name and avatar and a random session id, checked with an HMAC keyed by SESSION_SECRET. A hash of the session id is also saved in the `web_sessions` table (cogs/utils/web_sessions.py), and the cookie only counts while that row exists, so a login can be ended from the server. The login is Discord OAuth with the `identify` scope only, so the site learns who someone is and nothing else.
+The session is a signed cookie holding the Discord user's id, name and avatar and a random session id, checked with an HMAC keyed by SESSION_SECRET. A hash of the session id is also saved in the `web_sessions` table (cogs/utils/web_sessions.py), and the cookie only counts while that row exists, so a login can be ended from the server. The login is Discord OAuth with the `identify` and `guilds` scopes, so the site learns who someone is and which servers they are in. The server list is read once at login, cut down to the servers the person owns or manages, and kept only in memory for the dashboard's "Add WordCounter" list (`WebSessionQueries.remember_web_servers`). It never decides who may open or change a server: that is checked live against the bot's own view of the member.
 """
 
 from __future__ import annotations
@@ -10,9 +10,10 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 import aiohttp
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SESSION_SECRET, SITE_URL
@@ -30,6 +31,11 @@ STATE_MAX_AGE = 600
 API = "https://discord.com/api/v10"
 REDIRECT_URI = f"{SITE_URL}/callback"
 CONSENT_ERRORS = ("consent_required", "interaction_required", "login_required")
+# Discord's permission bits for Manage Server and Administrator.
+MANAGE_GUILD = 0x20
+ADMINISTRATOR = 0x8
+# An icon hash is lowercase letters and digits, with an a_ in front when the icon moves. It goes into a URL, so anything else is left out.
+ICON_HASH = re.compile(r"[a-z0-9_]{1,64}")
 
 User = Dict[str, Any]
 
@@ -137,7 +143,7 @@ def login_url(client_id: int, state: str, prompt: str = "none") -> str:
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify",
+        "scope": "identify guilds",
         "prompt": prompt,
         "state": state,
     }
@@ -152,13 +158,36 @@ def avatar_url(raw: Dict[str, Any]) -> str:
     return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 
 
-async def fetch_user(code: str, client_id: int) -> Optional[User]:
-    """Trades the OAuth `code` for a token, reads the Discord user and returns {id, username, name, avatar_url}, or None when anything fails.
+def managed_servers(raw: Any) -> List[Dict[str, Any]]:
+    """Cuts Discord's /users/@me/guilds answer down to the servers the person owns or has Manage Server or Administrator in, as [{id, name, icon_url}] sorted by name. Anything that isn't shaped as expected is skipped, because the answer is only read, never trusted: the id becomes an int, and the icon hash is checked before it goes into a URL."""
+    servers = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            guild_id = int(entry.get("id"))
+            permissions = int(entry.get("permissions") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (entry.get("owner") is True or permissions & (MANAGE_GUILD | ADMINISTRATOR)):
+            continue
+        icon = entry.get("icon")
+        icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{icon}.png?size=96" if isinstance(icon, str) and ICON_HASH.fullmatch(icon) else None
+        name = entry.get("name")
+        servers.append({"id": guild_id, "name": name.strip()[:100] if isinstance(name, str) and name.strip() else "Unnamed server", "icon_url": icon_url})
+    servers.sort(key=lambda server: server["name"].lower())
+    return servers
 
-    The token is used once for /users/@me and then dropped, never stored. The id is kept as a string.
+
+async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -> Tuple[Optional[User], Optional[List[Dict[str, Any]]]]:
+    """Trades the OAuth `code` for a token, reads the Discord user and the servers they manage, and returns (user, servers).
+
+    The user is {id, username, name, avatar_url}, or None when the login failed. The servers are `managed_servers` of the list, or None when Discord didn't give one, which doesn't fail the login: the dashboard just offers to load it again. A person in `banned` gets None for the servers without asking Discord, since nothing is kept for them.
+
+    The token is used for these two requests and then dropped, never stored. The id is kept as a string.
     """
     if not DISCORD_CLIENT_SECRET:
-        return None
+        return None, None
     form = {
         "client_id": str(client_id),
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -167,23 +196,36 @@ async def fetch_user(code: str, client_id: int) -> Optional[User]:
         "redirect_uri": REDIRECT_URI,
     }
     session = get_session()
+    headers: Dict[str, str] = {}
     try:
         async with session.post(f"{API}/oauth2/token", data=form) as resp:
             if resp.status != 200:
                 log.warning("Discord token exchange failed with status %s", resp.status)
-                return None
-            access_token = (await resp.json()).get("access_token")
-        async with session.get(f"{API}/users/@me", headers={"Authorization": f"Bearer {access_token}"}) as resp:
+                return None, None
+            headers = {"Authorization": f"Bearer {(await resp.json()).get('access_token')}"}
+        async with session.get(f"{API}/users/@me", headers=headers) as resp:
             if resp.status != 200:
                 log.warning("Discord /users/@me failed with status %s", resp.status)
-                return None
+                return None, None
             raw = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
         log.warning("Discord login failed: %s", error)
-        return None
-    return {
+        return None, None
+    user = {
         "id": str(raw["id"]),
         "username": raw.get("username") or "",
         "name": raw.get("global_name") or raw.get("username") or "",
         "avatar_url": avatar_url(raw),
     }
+    if int(user["id"]) in banned:
+        return user, None
+    servers: Optional[List[Dict[str, Any]]] = None
+    try:
+        async with session.get(f"{API}/users/@me/guilds", headers=headers) as resp:
+            if resp.status == 200:
+                servers = managed_servers(await resp.json())
+            else:
+                log.warning("Discord /users/@me/guilds failed with status %s", resp.status)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+        log.warning("Discord /users/@me/guilds failed: %s", error)
+    return user, servers

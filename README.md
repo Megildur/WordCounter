@@ -161,7 +161,7 @@ Right-click menus:
    ```text
    https://wordcounter.dev/callback
    ```
-   The website starts with the bot and only asks Discord who you are (the `identify` scope).
+   The website starts with the bot and asks Discord who you are and which servers you are in (the `identify` and `guilds` scopes). The server list is only used to show the servers you manage on the dashboard, and is kept in memory for an hour.
 
 8. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
    ```text

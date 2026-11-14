@@ -65,3 +65,8 @@ def daily_log_handler(filename: str) -> logging.Handler:
 def invite_url(client_id: Optional[int] = None) -> str:
     """The bot's invite link with the permissions it needs. Uses DEFAULT_CLIENT_ID when no ID is passed."""
     return f"https://discord.com/oauth2/authorize?client_id={client_id or DEFAULT_CLIENT_ID}&permissions={INVITE_PERMISSIONS}&scope=bot+applications.commands&integration_type=0"
+
+
+def guild_invite_url(guild_id: int, client_id: Optional[int] = None) -> str:
+    """The invite link with one server already picked and locked. Discord only honours guild_id when the link asks for the bot scope, which is why it is built on `invite_url` and not on a custom link."""
+    return f"{invite_url(client_id)}&guild_id={int(guild_id)}&disable_guild_select=true"
