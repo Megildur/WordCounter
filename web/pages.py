@@ -273,9 +273,16 @@ async def callback(request: web.Request) -> web.Response:
     except Exception as error:
         log.warning("Couldn't save a login session: %s", error)
         return redirect("/?msg=oauth_failed")
-    # After the session, which clears whatever list this person had before: a login leaves either a fresh list or none.
-    if servers is not None:
+    # After the session, which clears whatever list this person had before: a login leaves either a fresh list or none. The ban is looked at again because it may have come while Discord was answering.
+    if servers is not None and int(user["id"]) not in bot.blacklisted:
         bot.db.remember_web_servers(int(user["id"]), servers)
+    # Signing in again from a browser that is already signed in (the dashboard's refresh links) ends the session that browser came with, so refreshing doesn't pile up sessions and push out the person's other browsers.
+    previous = auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
+    if previous is not None and previous["id"] == user["id"]:
+        try:
+            await bot.db.revoke_web_session(auth.session_hash(previous["sid"]))
+        except Exception as error:
+            log.warning("Couldn't end the login session this browser came with: %s", error)
 
     separator = "&" if "?" in next_url else "?"
     response = redirect(f"{next_url}{separator}msg=login_success")
@@ -304,9 +311,8 @@ async def logout(request: web.Request) -> web.Response:
     everywhere = form.get("everywhere") == "yes" and live is not None
     db = request.app["bot"].db
     ended = True
-    # The server list is kept for the person, not for the session, and is dropped first, so it goes even if the database can't be reached below. A cookie from a session that has ended doesn't speak for the person's newer login, so it leaves the list alone.
-    if live is not None:
-        db.forget_web_servers(int(user["id"]))
+    # The server list is kept for the person, not for the session, and is dropped first, so it goes even if the database can't be reached below or the session has already ended. A valid cookie with its form token is enough: the worst a stray logout does is ask the person to load the list again.
+    db.forget_web_servers(int(user["id"]))
     try:
         if everywhere:
             await db.revoke_web_sessions(int(user["id"]))

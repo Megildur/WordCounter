@@ -6,6 +6,7 @@ The list of servers a person owns or manages, which Discord sends at login, is a
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,7 +37,7 @@ SERVERS_LIMIT = 2000
 
 
 class WebSessionQueries:
-    """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers)}."""
+    """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers, the timer that drops them)}."""
 
     async def create_web_session(self, token_hash: str, user_id: int, lifetime: int) -> None:
         """Records a new session that ends `lifetime` seconds from now, and clears out the sessions that have ended. Raises when the session couldn't be saved. Someone's oldest sessions beyond SESSIONS_PER_USER are then dropped, which is only tidying: if it fails the login still stands."""
@@ -96,11 +97,23 @@ class WebSessionQueries:
             del self._web_kept[token_hash]
 
     def remember_web_servers(self, user_id: int, servers: List[Dict[str, Any]]) -> None:
-        """Keeps the servers `user_id` owns or manages (what `auth.managed_servers` returns) for SERVERS_SECONDS. Only the dashboard's "Add WordCounter" list reads it: it decides nothing about who may open or change a server."""
-        self._web_servers.pop(user_id, None)
+        """Keeps the servers `user_id` owns or manages (what `auth.managed_servers` returns) for SERVERS_SECONDS, and drops them when the time is up even if nobody opens the dashboard again, since the Privacy Policy says an hour. Only the dashboard's "Add WordCounter" list reads it: it decides nothing about who may open or change a server."""
+        self.forget_web_servers(user_id)
         while len(self._web_servers) >= SERVERS_LIMIT:
-            del self._web_servers[next(iter(self._web_servers))]
-        self._web_servers[user_id] = (time.monotonic(), servers)
+            self.forget_web_servers(next(iter(self._web_servers)))
+        stamp = time.monotonic()
+        try:
+            timer = asyncio.get_running_loop().call_later(SERVERS_SECONDS, self._expire_web_servers, user_id, stamp)
+        except RuntimeError:
+            # Called with no event loop running, so there is nothing to time it: `web_servers` still refuses it once it is old.
+            timer = None
+        self._web_servers[user_id] = (stamp, servers, timer)
+
+    def _expire_web_servers(self, user_id: int, stamp: float) -> None:
+        # Only the list this timer was set for, never a newer one the same person has loaded since.
+        kept = self._web_servers.get(user_id)
+        if kept is not None and kept[0] == stamp:
+            del self._web_servers[user_id]
 
     def web_servers(self, user_id: int) -> Optional[List[Dict[str, Any]]]:
         """Returns the kept server list, or None when there isn't one (never loaded, expired, logged out or the bot restarted)."""
@@ -108,12 +121,13 @@ class WebSessionQueries:
         if kept is None:
             return None
         if time.monotonic() - kept[0] >= SERVERS_SECONDS:
-            del self._web_servers[user_id]
+            self.forget_web_servers(user_id)
             return None
         return kept[1]
 
     def forget_web_servers(self, user_id: Optional[int] = None) -> None:
-        if user_id is None:
-            self._web_servers.clear()
-        else:
-            self._web_servers.pop(user_id, None)
+        """Drops one person's kept server list, or everyone's, and cancels the timers that would have dropped them."""
+        for key in list(self._web_servers) if user_id is None else [user_id]:
+            kept = self._web_servers.pop(key, None)
+            if kept is not None and kept[2] is not None:
+                kept[2].cancel()

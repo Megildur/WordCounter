@@ -146,16 +146,18 @@ class StoredDataQueries:
         """Deletes every row find_by_id would return and returns {table: rows deleted}. The blacklist table is not touched."""
         await self.ensure_connected()
         removed: Dict[str, int] = {}
-        async with self.db_lock:
-            for name, columns in (await self._id_columns()).items():
-                # The same match as find_by_id, so a deletion removes exactly what an export lists.
-                where = " OR ".join(f"`{column}` = ?" for column in columns)
-                cursor = await self.db.execute(f"DELETE FROM `{name}` WHERE {where}", (target_id,) * len(columns))
-                if cursor.rowcount and cursor.rowcount > 0:
-                    removed[name] = cursor.rowcount
-            await self.db.commit()
-        # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory.
-        self.forget_web_sessions()
+        try:
+            async with self.db_lock:
+                for name, columns in (await self._id_columns()).items():
+                    # The same match as find_by_id, so a deletion removes exactly what an export lists.
+                    where = " OR ".join(f"`{column}` = ?" for column in columns)
+                    cursor = await self.db.execute(f"DELETE FROM `{name}` WHERE {where}", (target_id,) * len(columns))
+                    if cursor.rowcount and cursor.rowcount > 0:
+                        removed[name] = cursor.rowcount
+                await self.db.commit()
+        finally:
+            # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory, and the in-memory server lists go too. This runs even when the deletion fails part-way, because a ban has already been recorded by then and the logins and lists of a banned person must not outlive it.
+            self.forget_web_sessions()
         return removed
 
     async def blacklisted_ids(self) -> Set[int]:
