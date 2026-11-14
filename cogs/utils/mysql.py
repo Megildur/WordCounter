@@ -129,6 +129,8 @@ class SessionLock:
         self.connection: Optional[aiomysql.Connection] = None
         self._held_since = 0.0
         # The connection the last block used, when that block ended, and whether it ended in an error that says the connection broke.
+        # The pool the connection came from, so it goes back there even if `owner.pool` was set to None by `close` while the block ran. aiomysql's `wait_closed` waits for every connection to be given back.
+        self._pool: Optional[aiomysql.Pool] = None
         self._last_connection: Optional[aiomysql.Connection] = None
         self._last_used = float("-inf")
         self._needs_ping = True
@@ -142,7 +144,8 @@ class SessionLock:
                 _warn("Waited %.1f s for the database lock", self._held_since - asked)
             if self.owner.pool is None:
                 await self.owner.connect_pool()
-            self.connection = await self.owner.pool.acquire()
+            self._pool = self.owner.pool
+            self.connection = await self._pool.acquire()
             # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again.
             if self._needs_ping or self.connection is not self._last_connection or self._held_since - self._last_used > PING_IDLE_SECONDS:
                 self._needs_ping = True
@@ -194,8 +197,8 @@ class SessionLock:
         connection, self.connection = self.connection, None
         self.owner.db = None
         try:
-            if connection is not None and self.owner.pool is not None:
-                self.owner.pool.release(connection)
+            if connection is not None and self._pool is not None:
+                self._pool.release(connection)
         finally:
             self.lock.release()
 

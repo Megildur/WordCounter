@@ -291,21 +291,23 @@ async def callback(request: web.Request) -> web.Response:
 
 @routes.post("/logout")
 async def logout(request: web.Request) -> web.Response:
-    # A POST with the CSRF token, so another site can't sign someone out with a link or an image.
-    user = current_user(request)
+    # A POST with the CSRF token, so another site can't sign someone out with a link or an image. The cookie is read, not checked against the table: logging out has to work when the session has already ended or the database can't be read.
+    user = auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
     form = await post_form(request)
     if user is None or not auth.check_csrf(user, form.get("csrf")):
         return redirect("/")
     everywhere = form.get("everywhere") == "yes"
     db = request.app["bot"].db
+    ended = True
     try:
         if everywhere:
             await db.revoke_web_sessions(int(user["id"]))
         else:
             await db.revoke_web_session(auth.session_hash(user["sid"]))
     except Exception as error:
-        # The cookie is deleted below either way, so this browser is signed out. Another session that couldn't be ended here ends by itself when it expires.
+        # The cookie is deleted below either way, so this browser is signed out. Another session that couldn't be ended here ends by itself when it expires, and the message doesn't claim more than was done.
+        ended = False
         log.warning("Couldn't end a login session: %s", error)
-    response = redirect("/?msg=logged_out_everywhere" if everywhere else "/?msg=logged_out")
+    response = redirect("/?msg=logged_out_everywhere" if everywhere and ended else "/?msg=logged_out")
     response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     return response

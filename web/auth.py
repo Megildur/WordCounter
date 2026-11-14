@@ -60,7 +60,7 @@ def sign_session(user: User, session_id: str) -> str:
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie whose signature matches, which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `live_user` also asks whether the session still exists."""
+    """Returns the user from a session cookie whose signature matches, which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `check_session` also asks whether the session still exists."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)

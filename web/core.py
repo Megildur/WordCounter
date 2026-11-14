@@ -108,25 +108,35 @@ class Refused(web.HTTPForbidden):
 
 class RateLimit:
     """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
-    def __init__(self, limit: int, window: float) -> None:
-        self.limit, self.window = limit, window
+    def __init__(self, limit: int, window: float, max_keys: int = 20_000) -> None:
+        self.limit, self.window, self.max_keys = limit, window, max_keys
         self.hits: Dict[Any, Deque[float]] = {}
         self._swept = float("-inf")
 
     def wait(self, key: Any, now: Optional[float] = None) -> float:
         now = time.monotonic() if now is None else now
+        if key not in self.hits and len(self.hits) >= self.max_keys:
+            # The table is full. Quiet keys are cleared out once a window; if that doesn't make room, this new key isn't counted, so the table stays a fixed size however many addresses ask.
+            self._sweep(now)
+            if len(self.hits) >= self.max_keys:
+                return 0.0
         recent = self.hits.setdefault(key, deque())
         while recent and now - recent[0] >= self.window:
             recent.popleft()
         if len(recent) >= self.limit:
             return self.window - (now - recent[0])
         recent.append(now)
-        if len(self.hits) > 5000 and now - self._swept >= self.window:
-            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end. It is looked through once a window, not on every request, so a flood from many addresses can't make each request walk the whole table.
-            self._swept = now
-            for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
-                del self.hits[stale]
+        if len(self.hits) > 5000:
+            self._sweep(now)
         return 0.0
+
+    def _sweep(self, now: float) -> None:
+        """Forgets the keys that have been quiet for a whole window. It looks through the table once a window at most, not on every request, so a flood from many addresses can't make each request walk the whole table."""
+        if now - self._swept < self.window:
+            return
+        self._swept = now
+        for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
+            del self.hits[stale]
 
 
 def _asset_version() -> str:
@@ -311,15 +321,23 @@ def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6A
         return None
 
 
+def _grouped(address) -> str:
+    """The key a visitor is counted under. An IPv6 visitor usually controls a whole /64, so counting by the single address would let one person rotate through billions of them, and so the /64 is the key."""
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
 def client_address(request: web.Request) -> Optional[str]:
     """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's."""
     if not CLIENT_IP_HEADER:
         return None
     if CLIENT_IP_HEADER.lower() == "peer":
         peer = _ip(request.remote)
-        return str(peer) if peer is not None and peer.is_global else None
-    forwarded = _ip(request.headers.get(CLIENT_IP_HEADER, "").split(",")[-1])
-    return str(forwarded) if forwarded is not None else None
+        return _grouped(peer) if peer is not None and peer.is_global else None
+    # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
+    forwarded = _ip(",".join(request.headers.getall(CLIENT_IP_HEADER, [])).split(",")[-1])
+    return _grouped(forwarded) if forwarded is not None else None
 
 
 def _tell_about_proxy(request: web.Request) -> None:
@@ -424,11 +442,13 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
         # Only a file that was found is kept for a week. A missing one is asked for again next time, so adding it later shows up at once.
-        if response.status in (200, 206, 304):
+        # A FileResponse only works out its status (200, 206, 304, 416) when it is sent, after this, but the file is known to exist because static_file raised a 404 otherwise.
+        if isinstance(response, web.FileResponse) or response.status in (200, 206, 304):
             response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
         else:
             response.headers.setdefault("Cache-Control", "no-cache")
-        if request.path.endswith(".css") and response.status == 200:
+        # A part of a file (Range) is sent as it is: compressing it would make its Content-Range wrong.
+        if request.path.endswith(".css") and "Range" not in request.headers and (isinstance(response, web.FileResponse) or response.status == 200):
             response.enable_compression()
     elif isinstance(response, web.Response) and response.content_type in ("text/html", "text/plain", "application/xml"):
         response.headers.setdefault("Cache-Control", "private, no-cache")

@@ -306,6 +306,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         flusher, self._flusher = self._flusher, None
         if flusher is not None:
             flusher.cancel()
+            # Waited for, because a flusher that is in the middle of a write would otherwise put its batch back in memory after the pool is gone.
+            await asyncio.gather(flusher, return_exceptions=True)
         try:
             # Before the pool closes, or the counts that were still waiting would be lost.
             await self.flush_activity()
@@ -614,17 +616,36 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         if not self._activity:
             return
         taken = self._activity.take()
+        committing = False
         try:
             await self._write_activity(session, taken)
-            await session.commit()
+            committing = True
+            await self._commit_batch(session)
         except BaseException as error:
             await self._rollback(session)
+            if committing:
+                # Whether the server had already committed when this failed can't be known, and putting the batch back could count it twice. Writing each message on its own never wrote one twice either, so it is dropped and said so.
+                if isinstance(error, Exception):
+                    log.error("Waiting counts may not have been saved: the commit failed and its outcome isn't known, so they are not written again: %s", error)
+                raise
             if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
                 # A lost connection, or a task that was cancelled: nothing is wrong with the counts, so they all wait for the next try.
                 self._activity.restore(taken)
                 raise
             # The database refused something in the batch (a value out of range, or a mistake in the code). Holding the whole batch back would make every database block fail until the bot restarts, so the rows are written one at a time and only the one that is refused is dropped.
             await self._write_activity_by_row(session, taken)
+
+    @staticmethod
+    async def _commit_batch(session) -> None:
+        """Commits, and lets a commit that has begun finish even when the task is cancelled, so a cancellation can't leave a half-sent commit whose outcome nobody knows."""
+        commit = asyncio.ensure_future(session.commit())
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            await asyncio.wait({commit})
+            if not commit.cancelled() and commit.exception() is not None:
+                log.error("Waiting counts couldn't be saved when the bot was stopping: %s", commit.exception())
+            raise
 
     @staticmethod
     async def _rollback(session) -> None:
@@ -636,11 +657,17 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
     async def _write_activity_by_row(self, session, taken: Taken) -> None:
         rows = list(taken.items())
         for position, (key, changes) in enumerate(rows):
+            committing = False
             try:
                 await self._write_activity(session, {key: changes})
-                await session.commit()
+                committing = True
+                await self._commit_batch(session)
             except BaseException as error:
                 await self._rollback(session)
+                if committing:
+                    # As in flush_before_block: the rows after this one wait, this one isn't written twice.
+                    self._activity.restore(dict(rows[position + 1:]))
+                    raise
                 if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
                     self._activity.restore(dict(rows[position:]))
                     raise
