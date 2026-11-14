@@ -8,6 +8,7 @@ The connection and `?` placeholder handling live in mysql.py, and the one-time c
 from __future__ import annotations
 import asyncio
 import os
+import re
 import time
 from collections import defaultdict
 from functools import lru_cache
@@ -230,6 +231,8 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
 
 
 # The db_meta row that records the SQLite copy as done.
+# The table a CREATE TABLE IF NOT EXISTS statement makes. A statement that doesn't match is always run.
+CREATED_TABLE = re.compile(r"^\s*CREATE TABLE IF NOT EXISTS\s+`?(\w+)`?", re.IGNORECASE)
 SQLITE_IMPORT = "sqlite_import"
 # How long the tracking settings and keywords of a server stay in memory, and how long the totals do.
 KEPT_SECONDS = 60.0
@@ -294,8 +297,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
 
     async def create_tables(self) -> None:
         async with self.db_lock:
+            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
+            cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
+            existing = {name.lower() for name, in await cursor.fetchall()}
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA):
-                await self.db.execute(statement)
+                named = CREATED_TABLE.match(statement)
+                if named is None or named.group(1).lower() not in existing:
+                    await self.db.execute(statement)
             # MySQL has no ADD COLUMN IF NOT EXISTS, so look at information_schema before altering.
             cursor = await self.db.execute(
                 "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
