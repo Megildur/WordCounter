@@ -7,6 +7,7 @@ from __future__ import annotations
 import calendar
 import hashlib
 import ipaddress
+import logging
 import time
 from collections import deque
 from pathlib import Path
@@ -16,9 +17,11 @@ import jinja2
 from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
-from cogs.utils.config import BOTZILLA_URL, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
 from web import auth
+
+log = logging.getLogger("web")
 
 ROOT = Path(__file__).parent
 STATIC_MAX_AGE = 60 * 60 * 24 * 7
@@ -108,6 +111,7 @@ class RateLimit:
     def __init__(self, limit: int, window: float) -> None:
         self.limit, self.window = limit, window
         self.hits: Dict[Any, Deque[float]] = {}
+        self._swept = float("-inf")
 
     def wait(self, key: Any, now: Optional[float] = None) -> float:
         now = time.monotonic() if now is None else now
@@ -117,8 +121,9 @@ class RateLimit:
         if len(recent) >= self.limit:
             return self.window - (now - recent[0])
         recent.append(now)
-        if len(self.hits) > 5000:
-            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end.
+        if len(self.hits) > 5000 and now - self._swept >= self.window:
+            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end. It is looked through once a window, not on every request, so a flood from many addresses can't make each request walk the whole table.
+            self._swept = now
             for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
                 del self.hits[stale]
         return 0.0
@@ -289,6 +294,62 @@ def _other_domain(host: str) -> bool:
     return False
 
 
+# Requests are limited by the visitor's address. The login pages are limited harder than the rest because each one costs a round trip to Discord or a database write, and 30 in 5 minutes is far more than a person needs. Static files aren't counted, and the dashboard has its own limit for each signed-in person on top of this.
+AUTH_PATHS = ("/login", "/callback", "/logout")
+AUTH_LIMIT = RateLimit(30, 300.0)
+PAGE_LIMIT = RateLimit(240, 60.0)
+# Request headers that a proxy may use to pass on the visitor's address. Only their names are ever logged, never what they hold.
+PROXY_HEADERS = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For", "Forwarded", "X-Forwarded-Proto", "Via")
+_told = 0
+TELL_LIMIT = 3
+
+
+def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    try:
+        return ipaddress.ip_address((text or "").strip().strip("[]"))
+    except ValueError:
+        return None
+
+
+def client_address(request: web.Request) -> Optional[str]:
+    """The visitor's address, or None when it can't be trusted. With CLIENT_IP_HEADER set, that header's value is used: for a list such as X-Forwarded-For it is the last entry, which is the one our own proxy added, since the rest is whatever the visitor sent. Otherwise the address that connected is used, but only when it is a public one. Behind a proxy it is the proxy's own private address, shared by every visitor, so counting by it would limit everyone together."""
+    if CLIENT_IP_HEADER:
+        forwarded = _ip(request.headers.get(CLIENT_IP_HEADER, "").split(",")[-1])
+        if forwarded is not None:
+            return str(forwarded)
+    peer = _ip(request.remote)
+    return str(peer) if peer is not None and peer.is_global else None
+
+
+def _tell_about_proxy(request: web.Request) -> None:
+    """Says in the log, a few times, why requests aren't limited by address, with what is needed to decide how to fix it: whether the address that connected is private, whether CLIENT_IP_HEADER is set and present, and the names of the headers that could carry the visitor's address. No address is ever logged."""
+    global _told
+    if _told >= TELL_LIMIT:
+        return
+    _told += 1
+    peer = _ip(request.remote)
+    present = [name for name in PROXY_HEADERS if name in request.headers]
+    log.info(
+        "Requests can't be limited by visitor address: the connecting address is %s, CLIENT_IP_HEADER is %s, and the request has these headers that may carry the visitor's address: %s",
+        "unknown" if peer is None else ("public" if peer.is_global else "private"),
+        f"{CLIENT_IP_HEADER} ({'present' if CLIENT_IP_HEADER in request.headers else 'missing from this request'})" if CLIENT_IP_HEADER else "not set",
+        ", ".join(present) or "none",
+    )
+
+
+def limit_by_address(request: web.Request) -> None:
+    """Raises HTTPTooManyRequests when this visitor has asked for too many pages lately. Does nothing for static files, and for a visitor whose address can't be trusted."""
+    if request.path.startswith("/static/"):
+        return
+    address = client_address(request)
+    if address is None:
+        _tell_about_proxy(request)
+        return
+    wait = (AUTH_LIMIT if request.path in AUTH_PATHS else PAGE_LIMIT).wait(address)
+    if wait:
+        raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(wait) + 1))})
+
+
 def _old_address(request: web.Request) -> bool:
     """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL."""
     return _other_domain(request.url.host or "")
@@ -319,6 +380,15 @@ async def post_form(request: web.Request) -> MultiDictProxy:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
+    try:
+        limit_by_address(request)
+    except web.HTTPTooManyRequests as slow:
+        response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
+        response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
+        response.headers["Cache-Control"] = "no-store"
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
     if request.path.startswith(PRIVATE_PATHS):
         # These pages act for the signed-in person, so their session has to still exist (it is ended by logging out, by "sign out everywhere", by a data deletion and by a ban). It is kept in memory for a little while, so this isn't a database read on every click.
         request["user"], request["session_ended"] = await auth.check_session(request.app["bot"].db, request.cookies.get(auth.SESSION_COOKIE))

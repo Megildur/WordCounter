@@ -25,6 +25,8 @@ ALLOWED_GUILD_IDS: List[int] = [
 ]
 
 SITE_URL = _env("BASE_URL", "https://wordcounter.dev").rstrip("/")
+# The request header the website's proxy fills in with the visitor's address, such as CF-Connecting-IP. Without it the website limits requests by address only when the address that connects is a public one, which isn't the case behind a proxy. Set it only if the website can't be reached except through that proxy, because anyone who can reach it directly can write any value in the header.
+CLIENT_IP_HEADER = _env("CLIENT_IP_HEADER")
 WEB_HOST = _env("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))
 MYSQL_HOST = _env("MYSQL_HOST")

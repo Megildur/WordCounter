@@ -135,6 +135,7 @@ Right-click menus:
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
+   - `CLIENT_IP_HEADER`: optional. The request header your proxy fills in with the visitor's address, such as `CF-Connecting-IP`, so the website can limit requests for each visitor. Set it only if the website can't be reached except through that proxy. Without it, requests are limited by address only when the connecting address is a public one, so behind a proxy they aren't, and the log says why (headers' names only, never an address).
    - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
 5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
