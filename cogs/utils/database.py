@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from cogs.utils import config
 from cogs.utils.activity_buffer import ActivityBuffer, Taken
-from cogs.utils.mysql import TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
+from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
@@ -617,13 +617,35 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         try:
             await self._write_activity(session, taken)
             await session.commit()
-        except BaseException:
+        except BaseException as error:
+            await self._rollback(session)
+            if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
+                # A lost connection, or a task that was cancelled: nothing is wrong with the counts, so they all wait for the next try.
+                self._activity.restore(taken)
+                raise
+            # The database refused something in the batch (a value out of range, or a mistake in the code). Holding the whole batch back would make every database block fail until the bot restarts, so the rows are written one at a time and only the one that is refused is dropped.
+            await self._write_activity_by_row(session, taken)
+
+    @staticmethod
+    async def _rollback(session) -> None:
+        try:
+            await session.connection.rollback()
+        except Exception:
+            pass
+
+    async def _write_activity_by_row(self, session, taken: Taken) -> None:
+        rows = list(taken.items())
+        for position, (key, changes) in enumerate(rows):
             try:
-                await session.connection.rollback()
-            except Exception:
-                pass
-            self._activity.restore(taken)
-            raise
+                await self._write_activity(session, {key: changes})
+                await session.commit()
+            except BaseException as error:
+                await self._rollback(session)
+                if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
+                    self._activity.restore(dict(rows[position:]))
+                    raise
+                # Only the table is logged, never the IDs in the row.
+                log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], error)
 
     async def _write_activity(self, session, taken: Taken) -> None:
         """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk. Any other row gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""

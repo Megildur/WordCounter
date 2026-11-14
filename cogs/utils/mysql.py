@@ -35,7 +35,7 @@ _WRITES = re.compile(r"^\s*(?:INSERT|REPLACE|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\
 _KEPT_TABLE = re.compile(r"\b(?:INTO|UPDATE|FROM|JOIN|TABLE)\s+`?(?:channels|ignore|keyword)`?(?!\w)", re.IGNORECASE)
 
 # What a statement raises when the connection to the server is gone or was cut, as opposed to a mistake in the statement.
-_BROKEN_CONNECTION = (pymysql.err.OperationalError, pymysql.err.InterfaceError, ConnectionError, TimeoutError, EOFError)
+BROKEN_CONNECTION = (pymysql.err.OperationalError, pymysql.err.InterfaceError, ConnectionError, TimeoutError, EOFError)
 
 warnings.filterwarnings("ignore", module="aiomysql")
 
@@ -167,7 +167,7 @@ class SessionLock:
             if held > LOCK_SLOW_SECONDS:
                 began = getattr(self.owner.db, "first_sql", None)
                 _warn("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
-            if kind is not None and issubclass(kind, _BROKEN_CONNECTION):
+            if kind is not None and issubclass(kind, BROKEN_CONNECTION):
                 # The next block checks the connection before trusting it.
                 self._needs_ping = True
             if self.connection is not None and not self.connection.closed:

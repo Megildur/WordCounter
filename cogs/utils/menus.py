@@ -23,7 +23,7 @@ class SectionMenu(AuthorOnlyView):
     closed_hint = ""
 
     def __init__(self, bot: commands.Bot, guild: discord.Guild, author_id: int, *, denied_message: str) -> None:
-        super().__init__(author_id=author_id, denied_message=denied_message, timeout=300.0)
+        super().__init__(author_id=author_id, denied_message=denied_message, timeout=300.0, needs_manager=True)
         self.bot = bot
         self.guild = guild
         self.active_tab = self.sections[0][0]

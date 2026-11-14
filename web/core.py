@@ -312,13 +312,14 @@ def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6A
 
 
 def client_address(request: web.Request) -> Optional[str]:
-    """The visitor's address, or None when it can't be trusted. With CLIENT_IP_HEADER set, that header's value is used: for a list such as X-Forwarded-For it is the last entry, which is the one our own proxy added, since the rest is whatever the visitor sent. Otherwise the address that connected is used, but only when it is a public one. Behind a proxy it is the proxy's own private address, shared by every visitor, so counting by it would limit everyone together."""
-    if CLIENT_IP_HEADER:
-        forwarded = _ip(request.headers.get(CLIENT_IP_HEADER, "").split(",")[-1])
-        if forwarded is not None:
-            return str(forwarded)
-    peer = _ip(request.remote)
-    return str(peer) if peer is not None and peer.is_global else None
+    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's."""
+    if not CLIENT_IP_HEADER:
+        return None
+    if CLIENT_IP_HEADER.lower() == "peer":
+        peer = _ip(request.remote)
+        return str(peer) if peer is not None and peer.is_global else None
+    forwarded = _ip(request.headers.get(CLIENT_IP_HEADER, "").split(",")[-1])
+    return str(forwarded) if forwarded is not None else None
 
 
 def _tell_about_proxy(request: web.Request) -> None:
@@ -330,9 +331,9 @@ def _tell_about_proxy(request: web.Request) -> None:
     peer = _ip(request.remote)
     present = [name for name in PROXY_HEADERS if name in request.headers]
     log.info(
-        "Requests can't be limited by visitor address: the connecting address is %s, CLIENT_IP_HEADER is %s, and the request has these headers that may carry the visitor's address: %s",
+        "Requests aren't limited by visitor address, because limiting by address is off until CLIENT_IP_HEADER says where to find it: the connecting address is %s, CLIENT_IP_HEADER is %s, and the request has these headers that may carry the visitor's address: %s",
         "unknown" if peer is None else ("public" if peer.is_global else "private"),
-        f"{CLIENT_IP_HEADER} ({'present' if CLIENT_IP_HEADER in request.headers else 'missing from this request'})" if CLIENT_IP_HEADER else "not set",
+        ("peer" if CLIENT_IP_HEADER.lower() == "peer" else f"{CLIENT_IP_HEADER} ({'present' if CLIENT_IP_HEADER in request.headers else 'missing from this request'})") if CLIENT_IP_HEADER else "not set",
         ", ".join(present) or "none",
     )
 

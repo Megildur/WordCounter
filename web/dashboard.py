@@ -105,8 +105,8 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
 
 
 def manages(member: discord.Member) -> bool:
-    """Whether a member may use the manager pages: they have Manage Server and aren't timed out. Discord takes a timed-out member's permissions away until the timeout ends, and the owner and administrators can't be timed out, so the site does the same."""
-    return member.guild_permissions.manage_guild and not member.is_timed_out()
+    """Whether a member may use the manager pages. discord.py already leaves a timed-out member's permissions out of `guild_permissions` (Discord takes them away until the timeout ends, and the owner and administrators can't be timed out), so this is only the Manage Server check."""
+    return member.guild_permissions.manage_guild
 
 
 async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:
@@ -127,8 +127,10 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     member = await find_member(guild, int(user["id"]))
     if member is None:
         raise web.HTTPNotFound()
-    request["timed_out"] = member.guild_permissions.manage_guild and member.is_timed_out()
-    request["access"] = guild, member, manages(member)
+    manager = manages(member)
+    # Only for the words on the "managers only" page: someone with a role that gives Manage Server who is timed out is told why they are shut out.
+    request["timed_out"] = not manager and member.is_timed_out() and any(role.permissions.manage_guild for role in member.roles)
+    request["access"] = guild, member, manager
     return request["access"]
 
 
@@ -149,6 +151,9 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
     if pattern != "/dashboard" and not pattern.startswith("/dashboard/"):
         return await handler(request)
     user = require_user(request)
+    if pattern != "/dashboard" and "guild_id" not in request.match_info:
+        # A page under /dashboard with no server in its address is one the guard doesn't know how to protect, so it is closed to everyone until the guard is taught about it.
+        raise web.HTTPNotFound()
     posting = request.method == "POST"
     if posting and sent_from_other_site(request):
         raise Refused(text="That form was sent from another site, so it was refused.")

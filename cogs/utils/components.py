@@ -248,23 +248,30 @@ def error_view(description: str, title: str = "Something went wrong", footer: Op
 
 
 class AuthorOnlyView(discord.ui.LayoutView):
-    """A LayoutView that only `author_id` can press, or anyone when it is None. Anyone else gets `denied_message` as a private reply."""
+    """A LayoutView that only `author_id` can press, or anyone when it is None. Anyone else gets `denied_message` as a private reply. With `needs_manager` the author must also still have Manage Server on every press, so someone who loses it while the menu is open can't go on using it."""
     def __init__(
         self,
         *,
         author_id: Optional[int],
         denied_message: str = "Only the person who opened this can use it.",
         timeout: Optional[float] = 180.0,
+        needs_manager: bool = False,
     ) -> None:
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.denied_message = denied_message
+        self.needs_manager = needs_manager
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if self.author_id is None or interaction.user.id == self.author_id:
-            return True
-        await interaction.response.send_message(view=error_view(self.denied_message), ephemeral=True)
-        return False
+        if self.author_id is not None and interaction.user.id != self.author_id:
+            await interaction.response.send_message(view=error_view(self.denied_message), ephemeral=True)
+            return False
+        if self.needs_manager:
+            reason = manager_check_error(interaction)
+            if reason:
+                await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+                return False
+        return True
 
 
 def tab_rows(tabs: Dict[str, str], current: str, switch_to: Callable[[str], Callback]) -> List[discord.ui.ActionRow]:

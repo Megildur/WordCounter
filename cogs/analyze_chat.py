@@ -424,6 +424,7 @@ class AnalyzeConfirmView(AuthorOnlyView):
             author_id=author_id,
             denied_message="Only the person who ran this command can use these buttons.",
             timeout=120.0,
+            needs_manager=True,
         )
         self.cog = cog
         self.target = target
