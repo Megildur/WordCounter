@@ -92,6 +92,8 @@ SPAM_EMOJI = "🚫"
 NOTICE_SECONDS = 5
 # Seconds a server's cached JarState is reused before it is rebuilt from the database.
 STATE_TTL = 15.0
+# How long an ID that the owner commands deleted stays refused for day counts, so a write that was already waiting for the database lock can't put its rows back after the delete.
+FORGET_SECONDS = 60.0
 # Seconds between daily credit checks. The upkeep loop itself runs every minute.
 DAILY_INTERVAL = 600.0
 WORDS_PER_PAGE = 60
@@ -182,6 +184,11 @@ class FormModal(discord.ui.Modal):
         self.handler = handler
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Every form here belongs to the settings menu, and a modal stays open for a while after the button that opened it, so Manage Server is checked again when it is sent.
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return
         # Defer first: a modal submit must be answered within 3 seconds, and the handler goes on to the database.
         await interaction.response.defer()
         await self.handler(interaction, [item.value.strip() for item in self.inputs])
@@ -227,8 +234,18 @@ class JarTopPaginator(ButtonPaginator):
     def extra_rows(self) -> List[discord.ui.ActionRow]:
         return tab_rows(TOP_TABS, self.kind, self._switch_to)
 
+    async def update_page(self, interaction: discord.Interaction) -> None:
+        # Reading the ranking and the names can take longer than the 3 seconds Discord gives a press, so it is answered first and the message is edited afterwards.
+        if self.message is None:
+            self.message = interaction.message
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
+        await interaction.edit_original_response(**kwargs)
+
     def _switch_to(self, kind: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
             await self.load(kind)
             await self.update_page(interaction)
 
@@ -828,6 +845,8 @@ class SwearJar(commands.Cog):
         self.spam_until: Dict[Tuple[int, int], float] = {}
         # Messages per (guild, user, UTC day) that aren't saved yet. upkeep writes them to jar_days every minute, so counting a message doesn't touch the database.
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
+        # IDs whose data was just deleted by the owner commands, with the monotonic time their refusal ends.
+        self._forgotten: Dict[int, float] = {}
         self.last_daily = 0.0
         # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
         self.fine_menu = app_commands.ContextMenu(
@@ -843,7 +862,11 @@ class SwearJar(commands.Cog):
         self.upkeep.start()
 
     async def cog_unload(self) -> None:
+        loop_task = self.upkeep.get_task()
         self.upkeep.cancel()
+        if loop_task is not None:
+            # Waited for: a flush that is cancelled in the middle of its write puts its counts back, and that has to happen before the last flush below takes them.
+            await asyncio.gather(loop_task, return_exceptions=True)
         self.bot.tree.remove_command(self.fine_menu.name, type=self.fine_menu.type)
         await self._flush_days()
 
@@ -857,6 +880,16 @@ class SwearJar(commands.Cog):
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
                 del store[key]
+        # For the next FORGET_SECONDS this ID's day counts are refused, including a flush that has taken its counts and is waiting for the database lock, which checks again when it gets it.
+        self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
+
+    def _is_forgotten(self, guild_id: int, user_id: int) -> bool:
+        if not self._forgotten:
+            return False
+        now = time.monotonic()
+        for target_id in [target_id for target_id, until in self._forgotten.items() if until <= now]:
+            del self._forgotten[target_id]
+        return guild_id in self._forgotten or user_id in self._forgotten
 
     async def state(self, guild_id: int) -> JarState:
         """Returns the server's JarState, reused for STATE_TTL seconds. With the jar off the state has no matcher, which tells the listeners to stop early."""
@@ -899,7 +932,8 @@ class SwearJar(commands.Cog):
         if not allowed or await self._banned(message, state):
             return
         # Every message that gets this far counts toward the member's active day, whether or not it is fined.
-        self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
+        if not self._is_forgotten(message.guild.id, message.author.id):
+            self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
         tiers = state.matcher.find(message.content)
         if tiers:
             await self._fine(message, channel_id, state, tiers, None)
@@ -1052,7 +1086,17 @@ class SwearJar(commands.Cog):
             return
         # Swap in a new dict before the write, so messages that arrive during it are counted in the new one.
         counts, self.day_counts = self.day_counts, defaultdict(int)
-        await self.bot.db.jar_add_day_messages((guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items())
+        try:
+            # The rows are read when the write has the database lock, so an ID forgotten while it waited is left out.
+            await self.bot.db.jar_add_day_messages(
+                (guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items() if not self._is_forgotten(guild_id, user_id)
+            )
+        except BaseException:
+            # The counts go back, so a failed write (or a cancel while the bot stops) doesn't lose a minute of messages. They are saved with the next flush. If the connection dies around the commit itself they may be saved twice, and for a day count that only means a day can reach its ACTIVE_DAY_MESSAGES a message early, which is better than losing them.
+            for key, n in counts.items():
+                if not self._is_forgotten(key[0], key[1]):
+                    self.day_counts[key] += n
+            raise
 
     def _forget_old_spam(self, now: float) -> None:
         """Drops spam tracking that has expired, so the dicts don't grow without limit."""

@@ -9,6 +9,7 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import groupby
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, SAFE_WORDS
 
@@ -90,7 +91,13 @@ def parse_entry(raw: str, tier: int) -> Entry:
 
 
 def _core(letters: str) -> str:
-    return "".join(r"\s+" if char == " " else re.escape(char) + "+" for char in letters)
+    """The pattern for a word's letters, each one allowed to repeat ("fuuuck"). A run of the same letter, like the two o's in "poop", is one `o{2,}` and not `o+o+`: both match the same text, but `o+o+o+o+o+` can take forever on a long run of o's, which would freeze the bot, and a word a server's managers add can have any run in it."""
+    parts = []
+    for char, run in groupby(letters):
+        size = len(list(run))
+        unit = r"\s" if char == " " else re.escape(char)
+        parts.append(f"{unit}+" if size == 1 else f"{unit}{{{size},}}")
+    return "".join(parts)
 
 
 def entry_pattern(entry: Entry) -> str:

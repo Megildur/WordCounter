@@ -424,6 +424,7 @@ class AnalyzeConfirmView(AuthorOnlyView):
             author_id=author_id,
             denied_message="Only the person who ran this command can use these buttons.",
             timeout=120.0,
+            needs_manager=True,
         )
         self.cog = cog
         self.target = target
@@ -1167,6 +1168,10 @@ class AnalyzeChat(commands.Cog):
         saved = False
         self.running_guilds.add(guild.id)
         try:
+            if target.id in self.bot.blacklisted:
+                # Banned after the command was run: nothing is read or saved for them.
+                await status.show(error_view(f"{target.mention} is banned from using WordCounter, so their messages aren't counted."))
+                return
             if await self.bot.db.is_user_analyzed(guild.id, target.id):
                 await status.show(error_view(f"{target.mention} has already been analyzed in this server."))
                 return
@@ -1174,7 +1179,7 @@ class AnalyzeChat(commands.Cog):
             scope, keywords = await self._load_scope(guild)
             coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
             tally, progress = Tally(), Progress()
-            log.info("Searching past messages of %s in guild %s", target.id, guild.id)
+            log.info("Searching past messages of a member in guild %s", guild.id)
 
             def render() -> discord.ui.LayoutView:
                 return self._progress_view(guild, "member", members, tally, int(bool(tally.messages)), progress)

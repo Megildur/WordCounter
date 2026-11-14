@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
 from cogs.utils.config import SITE_URL, WEB_HOST, WEB_PORT
 from web import dashboard, pages, swearjar
-from web.core import ROOT, load_templates, site_middleware
+from web.core import load_templates, site_middleware, static_file
 
 log = logging.getLogger("web")
 
@@ -23,16 +23,21 @@ class ErrorAccessLogger(AbstractAccessLogger):
 
 
 class ProbeFilter(logging.Filter):
-    """Drops the "Pause on PRI/Upgrade" error from the server log, so scanner requests that trigger it aren't logged as errors."""
+    """Cleans up aiohttp's own server log. It drops the "Pause on PRI/Upgrade" error, so scanner requests that trigger it aren't logged as errors, and it takes the visitor's address out of lines like "Error handling request from <address>", because the Privacy Policy says the log doesn't record who visited."""
     def filter(self, record: logging.LogRecord) -> bool:
         error = record.exc_info[1] if record.exc_info else None
-        return "Pause on PRI/Upgrade" not in str(error)
+        if "Pause on PRI/Upgrade" in str(error):
+            return False
+        if isinstance(record.msg, str) and record.msg.endswith(" from %s") and len(record.args or ()) == 1:
+            record.msg, record.args = record.msg[: -len(" from %s")], ()
+        return True
 
 
 def create_app(bot) -> web.Application:
-    app = web.Application(middlewares=[site_middleware])
+    # site_middleware is outermost, so the errors the guard raises become themed pages with the security headers.
+    app = web.Application(middlewares=[site_middleware, dashboard.dashboard_guard])
     app["bot"] = bot
-    app.router.add_static("/static", str(ROOT / "static"), name="static")
+    app.router.add_get(r"/static/{filename:.+}", static_file, name="static")
     app.router.add_routes(pages.routes)
     app.router.add_routes(dashboard.routes)
     app.router.add_routes(swearjar.routes)

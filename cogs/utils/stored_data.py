@@ -154,6 +154,8 @@ class StoredDataQueries:
                 if cursor.rowcount and cursor.rowcount > 0:
                     removed[name] = cursor.rowcount
             await self.db.commit()
+        # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory.
+        self.forget_web_sessions()
         return removed
 
     async def blacklisted_ids(self) -> Set[int]:

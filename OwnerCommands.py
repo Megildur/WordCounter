@@ -151,12 +151,17 @@ class DataConfirmView(AuthorOnlyView):
             # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so the live counter stops saving anything new for it. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
             self.bot.blacklisted.add(self.target.id)
-        removed = await self.bot.db.delete_by_id(self.target.id)
-        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID.
+        # Counts that are only in memory, waiting for the next batch, can't be reached by the database delete, so they are dropped first.
+        self.bot.db.forget_activity(self.target.id)
+        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID, before the delete and again after it: a day-count write that was already waiting for the database lock then finds the ID refused whenever it runs.
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
-        log.info("%s %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.plain, removed)
+        removed = await self.bot.db.delete_by_id(self.target.id)
+        if jar is not None:
+            jar.forget(self.target.id)
+        # No ID in the log: a deletion that left the ID in a log file for 90 days would not be a deletion, and the Privacy Policy lists what the log can hold.
+        log.info("%s a %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, removed)
         if self.ban:
             who = f"{self.target.label[0].upper()}{self.target.label[1:]}"
             view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(removed)}", color=SUCCESS_COLOR)
@@ -425,7 +430,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             accent_colour=BRAND_COLOR,
         ))
         await interaction.followup.send(view=view, file=discord.File(io.BytesIO(data), filename=filename), allowed_mentions=NO_PINGS)
-        log.info("Exported the data of %s: %s", target.plain, summary)
+        log.info("Exported the data of a %s: %s", target.what, summary)
 
     @app_commands.command(name="kept_data", description="Post what WordCounter keeps after a deletion, quoting the Privacy Policy and the GDPR")
     @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
@@ -520,7 +525,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await self.bot.db.remove_from_blacklist(target_id)
         # `bot.blacklisted` is what screens events while the bot runs, so it changes together with the table.
         self.bot.blacklisted.discard(target_id)
-        log.info("Lifted the blacklist on %s %s", entry.kind, target_id)
+        # The ban record is deleted when a ban is lifted, so its ID isn't kept in the log either.
+        log.info("Lifted the blacklist on a %s", entry.kind)
         view = create_v2_view(
             "Ban lifted",
             f"The {entry.kind} `{target_id}` can use WordCounter again. The data deleted with the ban doesn't come back.",

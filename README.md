@@ -43,7 +43,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
   - `whole_server` reads every tracked channel, voice chat and thread (active and archived) once, 100 messages per request, and credits each message to its author. Channels the bot can't read are listed at the end so you know what was left out.
   - Channel reads save a checkpoint every minute. If the bot restarts mid-run, it picks up where it stopped on its own.
   - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
-- **Website** ([wordcounter.dev](https://wordcounter.dev)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the same settings and resets as `/settings`, and the swear jar's settings.
+- **Website** ([wordcounter.dev](https://wordcounter.dev)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the same settings and resets as `/settings`, and the swear jar's settings. The dashboard also lists the servers you manage that don't have WordCounter yet, each with a button to add it.
 - **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
 - **A hello when it joins.** WordCounter posts a short welcome with its banner in the server's system channel (or the first channel where it can attach a picture): how to turn counting on, `/help`, and Botzilla and its game from the same lab. Nobody is pinged.
 - **Swear jar** (`/swearjar`). Off until an admin turns it on in `/swearjar settings`. Every swear costs, and debt is only paid back by not swearing:
@@ -135,6 +135,8 @@ Right-click menus:
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
+   - `ACTIVITY_FLUSH_SECONDS`: how long the counts from new messages wait in memory so they are written to the database together, `2` if it isn't set. `0` writes every message at once. A crash or a kill can lose the counts from the last few seconds.
+   - `CLIENT_IP_HEADER`: optional, and it turns on limiting requests for each visitor's address. Give it the name of the request header your proxy fills in with the visitor's address, such as `CF-Connecting-IP`, and set it only if the website can't be reached except through that proxy. Give it `peer` instead if nothing stands in front of the website. Without it nothing is limited by address, and the log says why and which headers a request carries (their names only, never an address).
    - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
 5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
@@ -159,7 +161,7 @@ Right-click menus:
    ```text
    https://wordcounter.dev/callback
    ```
-   The website starts with the bot and only asks Discord who you are (the `identify` scope).
+   The website starts with the bot and asks Discord who you are and which servers you are in (the `identify` and `guilds` scopes). The server list is only used to show the servers you manage on the dashboard, and is kept in memory for an hour.
 
 8. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
    ```text

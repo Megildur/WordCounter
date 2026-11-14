@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui with context %}
 {% block title %}Dashboard, WordCounter{% endblock %}
-{% block meta_description %}Your WordCounter stats in every server you share with the bot, and settings for servers you manage.{% endblock %}
+{% block meta_description %}Your WordCounter stats in every server you share with the bot, settings for servers you manage, and a button to add WordCounter to the ones that don't have it yet.{% endblock %}
 {% block og_title %}WordCounter dashboard{% endblock %}
 {% block og_image %}{{ site_url }}/static/img/social/dashboard.png?v={{ social_version }}{% endblock %}
 {% block og_image_alt %}WordCounter, an orange pixel-art flip counter, floating above Earth beside its name and the words Your stats in every server{% endblock %}
@@ -18,6 +18,11 @@
       </div>
       <form method="post" action="/logout" class="inline-form">
         {{ ui.csrf_field() }}
+        <input type="hidden" name="everywhere" value="yes">
+        <button type="submit" class="btn btn--sm btn--ghost" title="Ends your login on every browser and device you used, not just this one.">Log out everywhere</button>
+      </form>
+      <form method="post" action="/logout" class="inline-form">
+        {{ ui.csrf_field() }}
         <button type="submit" class="btn btn--sm btn--danger">Log out</button>
       </form>
     </section>
@@ -26,30 +31,62 @@
       <p class="eyebrow">Dashboard</p>
       <h1 class="page-title display">Your servers</h1>
       <p class="page-lede">
-        Servers you share with WordCounter. Open one to see your own counts. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the settings and the swear jar.
+        Servers you share with WordCounter. Open one to see your own counts. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the settings and the swear jar. Servers you manage that don't have WordCounter yet are listed below, so you can add it.
       </p>
     </header>
 
     {% if servers %}
-      <ul class="servers">
-        {% for g in servers %}
-          <li class="server">
-            {{ ui.server_icon(g) }}
-            <span class="server__name"><a href="/dashboard/{{ g.id }}">{{ g.name }}</a></span>
-            {% if g.manager %}<span class="tag tag--accent">You manage this</span>{% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
+      <section aria-labelledby="have-title">
+        <h2 id="have-title" class="subhead display">WordCounter is here</h2>
+        <ul class="servers">
+          {% for g in servers %}
+            <li class="server">
+              {{ ui.server_icon(g) }}
+              <span class="server__name"><a href="/dashboard/{{ g.id }}">{{ g.name }}</a></span>
+              {% if g.manager %}<span class="tag tag--accent">You manage this</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if invitable %}
+      <section class="{{ 'section-gap' if servers }}" aria-labelledby="add-title">
+        <h2 id="add-title" class="subhead display">Add WordCounter</h2>
+        <ul class="servers">
+          {% for g in invitable %}
+            <li class="server">
+              {{ ui.server_icon(g) }}
+              <span class="server__name">{{ g.name }}</span>
+              <a href="{{ g.invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--sm btn--primary">Add to server</a>
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if not servers and not invitable %}
       <div class="callout" role="status">
         <div>
-          <h2 class="display">No shared servers yet</h2>
-          <p>WordCounter isn't in any server you're in. Add it to a server you manage, then come back here.</p>
+          {% if loaded %}
+            <h2 class="display">No servers to show</h2>
+            <p>WordCounter isn't in any server you're in, and you don't have Manage Server in any server. Ask a server's managers to add it, or add it to a server you manage.</p>
+          {% else %}
+            <h2 class="display">No shared servers yet</h2>
+            <p>WordCounter isn't in any server you're in. Add it to a server you manage, then come back here. Load your servers to see the ones you manage, with a button to add WordCounter to each.</p>
+          {% endif %}
         </div>
         <div class="callout__actions">
-          <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn btn--primary">Add WordCounter</a>
+          {% if not loaded %}<a href="/login?next=/dashboard&amp;force=1" class="btn btn--primary">Load my servers</a>{% endif %}
+          <a href="{{ invite_url }}" target="_blank" rel="noopener noreferrer" class="btn {{ 'btn--primary' if loaded else 'btn--ghost' }}">Add WordCounter</a>
         </div>
       </div>
+    {% endif %}
+
+    {% if loaded %}
+      <p class="servers__note">Added WordCounter somewhere just now? <a href="/login?next=/dashboard&amp;force=1">Refresh the list</a>. Discord's server list is read when you sign in and kept in memory for an hour.</p>
+    {% elif servers %}
+      <p class="servers__note">The servers you manage that don't have WordCounter yet aren't shown. <a href="/login?next=/dashboard&amp;force=1">Load my servers</a>.</p>
     {% endif %}
   </div>
 </div>

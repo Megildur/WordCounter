@@ -4,6 +4,7 @@ The home page, command reference, terms, privacy policy, invite and support redi
 """
 
 from __future__ import annotations
+import logging
 from typing import Any, Dict, List
 from aiohttp import web
 from discord import AppCommandOptionType, AppCommandType, app_commands
@@ -12,6 +13,8 @@ from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
 from web.core import SECURE_COOKIES, client_id, current_user, post_form, redirect, render
 from web.developer import developer_profile
+
+log = logging.getLogger("web.pages")
 
 routes = web.RouteTableDef()
 
@@ -253,32 +256,66 @@ async def callback(request: web.Request) -> web.Response:
     if error or not code:
         return redirect("/?msg=oauth_failed")
 
-    user = await auth.fetch_user(code, client_id(request.app["bot"]))
+    bot = request.app["bot"]
+    user, servers = await auth.fetch_login(code, client_id(bot), bot.blacklisted)
     if user is None:
         return redirect("/?msg=oauth_failed")
+    if int(user["id"]) in bot.blacklisted:
+        # Nothing is saved for a banned person, not even a login session. The login's own cookie is dropped too.
+        response = redirect("/?msg=login_banned")
+        response.del_cookie(auth.STATE_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
+        return response
+
+    # A new session id for every login, so an old cookie can't carry over. Its hash is saved first: a cookie is only given out once the session exists.
+    session_id = auth.new_session_id()
+    try:
+        await bot.db.create_web_session(auth.session_hash(session_id), int(user["id"]), auth.SESSION_MAX_AGE)
+    except Exception as error:
+        log.warning("Couldn't save a login session: %s", error)
+        return redirect("/?msg=oauth_failed")
+    # After the session, which clears whatever list this person had before: a login leaves either a fresh list or none.
+    if servers is not None:
+        bot.db.remember_web_servers(int(user["id"]), servers)
 
     separator = "&" if "?" in next_url else "?"
     response = redirect(f"{next_url}{separator}msg=login_success")
     response.set_cookie(
         auth.SESSION_COOKIE,
-        auth.sign_session(user),
+        auth.sign_session(user, session_id),
         max_age=auth.SESSION_MAX_AGE,
         httponly=True,
         samesite="Lax",
         secure=SECURE_COOKIES,
         path="/",
     )
-    response.del_cookie(auth.STATE_COOKIE, path="/")
+    response.del_cookie(auth.STATE_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     return response
 
 
 @routes.post("/logout")
 async def logout(request: web.Request) -> web.Response:
-    # A POST with the CSRF token, so another site can't sign someone out with a link or an image.
-    user = current_user(request)
+    # A POST with the CSRF token, so another site can't sign someone out with a link or an image. The cookie is read, not checked against the table: logging out has to work when the session has already ended or the database can't be read.
+    live = current_user(request)
+    user = live or auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
     form = await post_form(request)
     if user is None or not auth.check_csrf(user, form.get("csrf")):
         return redirect("/")
-    response = redirect("/?msg=logged_out")
-    response.del_cookie(auth.SESSION_COOKIE, path="/")
+    # Ending every session of a person takes a session that still exists. A cookie from one that has ended can still sign this browser out, but its form token must not reach the person's newer logins.
+    everywhere = form.get("everywhere") == "yes" and live is not None
+    db = request.app["bot"].db
+    ended = True
+    # The server list is kept for the person, not for the session, and is dropped first, so it goes even if the database can't be reached below. A cookie from a session that has ended doesn't speak for the person's newer login, so it leaves the list alone.
+    if live is not None:
+        db.forget_web_servers(int(user["id"]))
+    try:
+        if everywhere:
+            await db.revoke_web_sessions(int(user["id"]))
+        else:
+            await db.revoke_web_session(auth.session_hash(user["sid"]))
+    except Exception as error:
+        # The cookie is deleted below either way, so this browser is signed out. Another session that couldn't be ended here ends by itself when it expires, and the message doesn't claim more than was done.
+        ended = False
+        log.warning("Couldn't end a login session: %s", error)
+    response = redirect("/?msg=logged_out_everywhere" if everywhere and ended else "/?msg=logged_out")
+    response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     return response

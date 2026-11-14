@@ -1,6 +1,6 @@
 """The live counter and /stats.
 
-Counts each message's words, attachments, emojis and keywords as it is sent, edited or deleted, and writes the change straight to MySQL through `bot.db.apply_activity` (the all-time count tables and `monthly_user_stats`). Also holds /stats user and its User Stats menu, which read the same tables back, and the Message Word Count menu, which counts the words of one message directly.
+Counts each message's words, attachments, emojis and keywords as it is sent, edited or deleted, and hands the change to `bot.db.queue_activity`, which writes it to MySQL with the next batch a moment later (the all-time count tables and `monthly_user_stats`). Also holds /stats user and its User Stats menu, which read the same tables back, and the Message Word Count menu, which counts the words of one message directly.
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ class Counter(commands.Cog):
 
     async def _apply(self, message: discord.Message, channel_id: int, **changes: Any) -> None:
         # The month is the one the message was created in, so an edit or delete later adjusts the month it was first counted in.
-        await self.bot.db.apply_activity(
+        await self.bot.db.queue_activity(
             message.guild.id,
             message.author.id,
             channel_id,

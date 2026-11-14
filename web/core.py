@@ -7,6 +7,7 @@ from __future__ import annotations
 import calendar
 import hashlib
 import ipaddress
+import logging
 import time
 from collections import deque
 from pathlib import Path
@@ -16,9 +17,11 @@ import jinja2
 from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
-from cogs.utils.config import BOTZILLA_URL, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
 from web import auth
+
+log = logging.getLogger("web")
 
 ROOT = Path(__file__).parent
 STATIC_MAX_AGE = 60 * 60 * 24 * 7
@@ -54,6 +57,8 @@ MESSAGES = {
     "oauth_failed": ("error", "Discord login didn't go through. Please try again."),
     "oauth_cancelled": ("error", "Login cancelled. Nothing was shared with WordCounter."),
     "oauth_expired": ("error", "That login link expired. Press Log in to try again."),
+    "login_banned": ("error", "You've been banned from using WordCounter, so the dashboard is closed to you."),
+    "logged_out_everywhere": ("success", "You're signed out on every device."),
     "mode_saved": ("success", "Tracking mode saved."),
     "tracking_off": ("success", "Tracking is off. Existing stats stay."),
     "channels_saved": ("success", "Channel list saved."),
@@ -93,14 +98,28 @@ MESSAGES = {
 }
 
 
+class Banned(web.HTTPForbidden):
+    """Raised for a banned person or server. It is the only 403 whose page says "Banned from WordCounter"."""
+
+
+class Refused(web.HTTPForbidden):
+    """Raised for a 403 that has nothing to do with a ban, such as a form sent from another site. Its text is shown to the person."""
+
+
 class RateLimit:
     """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
-    def __init__(self, limit: int, window: float) -> None:
-        self.limit, self.window = limit, window
+    def __init__(self, limit: int, window: float, max_keys: int = 20_000) -> None:
+        self.limit, self.window, self.max_keys = limit, window, max_keys
         self.hits: Dict[Any, Deque[float]] = {}
+        self._swept = float("-inf")
 
     def wait(self, key: Any, now: Optional[float] = None) -> float:
         now = time.monotonic() if now is None else now
+        if key not in self.hits and len(self.hits) >= self.max_keys:
+            # The table is full. Quiet keys are cleared out once a window; if that doesn't make room, this new key isn't counted, so the table stays a fixed size however many addresses ask.
+            self._sweep(now)
+            if len(self.hits) >= self.max_keys:
+                return 0.0
         recent = self.hits.setdefault(key, deque())
         while recent and now - recent[0] >= self.window:
             recent.popleft()
@@ -108,10 +127,16 @@ class RateLimit:
             return self.window - (now - recent[0])
         recent.append(now)
         if len(self.hits) > 5000:
-            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end.
-            for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
-                del self.hits[stale]
+            self._sweep(now)
         return 0.0
+
+    def _sweep(self, now: float) -> None:
+        """Forgets the keys that have been quiet for a whole window. It looks through the table once a window at most, not on every request, so a flood from many addresses can't make each request walk the whole table."""
+        if now - self._swept < self.window:
+            return
+        self._swept = now
+        for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
+            del self.hits[stale]
 
 
 def _asset_version() -> str:
@@ -217,6 +242,9 @@ def client_id(bot) -> int:
 
 
 def current_user(request: web.Request) -> Optional[auth.User]:
+    """The signed-in person. On the pages that act for someone (PRIVATE_PATHS) `site_middleware` has already checked that their session still exists. On a public page only the cookie is read, which is enough to show their name in the header, since nothing there changes anything."""
+    if "user" in request:
+        return request["user"]
     return auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
 
 
@@ -253,9 +281,20 @@ def error_page(request: web.Request, status: int, title: str, message: str) -> w
     return render(request, "error.html", status=status, code=status, title=title, message=message)
 
 
-def _old_address(request: web.Request) -> bool:
-    """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL. localhost and raw IP addresses are left alone so the site can still be reached directly."""
-    host = (request.url.host or "").lower().rstrip(".")
+STATIC_DIR = (ROOT / "static").resolve()
+
+
+async def static_file(request: web.Request) -> web.StreamResponse:
+    """Serves a file from web/static, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
+    target = (STATIC_DIR / request.match_info["filename"]).resolve()
+    if not target.is_relative_to(STATIC_DIR) or not target.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(target)
+
+
+def _other_domain(host: str) -> bool:
+    """Whether a host name is a domain other than SITE_URL's. localhost and raw IP addresses don't count, so the site can still be reached directly."""
+    host = host.lower().rstrip(".")
     if not host or host in (SITE_HOST, "localhost"):
         return False
     try:
@@ -263,6 +302,92 @@ def _old_address(request: web.Request) -> bool:
     except ValueError:
         return True
     return False
+
+
+# Requests are limited by the visitor's address. The login pages are limited harder than the rest because each one costs a round trip to Discord or a database write, and 30 in 5 minutes is far more than a person needs. Static files aren't counted, and the dashboard has its own limit for each signed-in person on top of this.
+AUTH_PATHS = ("/login", "/callback", "/logout")
+AUTH_LIMIT = RateLimit(30, 300.0)
+PAGE_LIMIT = RateLimit(240, 60.0)
+# Request headers that a proxy may use to pass on the visitor's address. Only their names are ever logged, never what they hold.
+PROXY_HEADERS = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For", "Forwarded", "X-Forwarded-Proto", "Via")
+_told = 0
+TELL_LIMIT = 3
+
+
+def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    try:
+        address = ipaddress.ip_address((text or "").strip().strip("[]"))
+    except ValueError:
+        return None
+    # A dual-stack socket or a proxy may write an IPv4 visitor as ::ffff:a.b.c.d. As an IPv6 address they would all share one /64.
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def _grouped(address) -> str:
+    """The key a visitor is counted under. An IPv6 visitor usually controls a whole /64, so counting by the single address would let one person rotate through billions of them, and so the /64 is the key."""
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
+def client_address(request: web.Request) -> Optional[str]:
+    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's."""
+    if not CLIENT_IP_HEADER:
+        return None
+    if CLIENT_IP_HEADER.lower() == "peer":
+        peer = _ip(request.remote)
+        return _grouped(peer) if peer is not None and peer.is_global else None
+    # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
+    forwarded = _ip(",".join(request.headers.getall(CLIENT_IP_HEADER, [])).split(",")[-1])
+    return _grouped(forwarded) if forwarded is not None else None
+
+
+def _tell_about_proxy(request: web.Request) -> None:
+    """Says in the log, a few times, why requests aren't limited by address, with what is needed to decide how to fix it: whether the address that connected is private, whether CLIENT_IP_HEADER is set and present, and the names of the headers that could carry the visitor's address. No address is ever logged."""
+    global _told
+    if _told >= TELL_LIMIT:
+        return
+    _told += 1
+    peer = _ip(request.remote)
+    present = [name for name in PROXY_HEADERS if name in request.headers]
+    log.info(
+        "Requests aren't limited by visitor address, because limiting by address is off until CLIENT_IP_HEADER says where to find it: the connecting address is %s, CLIENT_IP_HEADER is %s, and the request has these headers that may carry the visitor's address: %s",
+        "unknown" if peer is None else ("public" if peer.is_global else "private"),
+        ("peer" if CLIENT_IP_HEADER.lower() == "peer" else f"{CLIENT_IP_HEADER} ({'present' if CLIENT_IP_HEADER in request.headers else 'missing from this request'})") if CLIENT_IP_HEADER else "not set",
+        ", ".join(present) or "none",
+    )
+
+
+def limit_by_address(request: web.Request) -> None:
+    """Raises HTTPTooManyRequests when this visitor has asked for too many pages lately. Does nothing for static files, and for a visitor whose address can't be trusted."""
+    if request.path.startswith("/static/"):
+        return
+    address = client_address(request)
+    if address is None:
+        _tell_about_proxy(request)
+        return
+    wait = (AUTH_LIMIT if request.path in AUTH_PATHS else PAGE_LIMIT).wait(address)
+    if wait:
+        raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(wait) + 1))})
+
+
+def _old_address(request: web.Request) -> bool:
+    """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL."""
+    return _other_domain(request.url.host or "")
+
+
+def sent_from_other_site(request: web.Request) -> bool:
+    """Whether the browser says another site started this request. `Sec-Fetch-Site` is set by the browser and a page can't change it, and `Origin` is the older signal. A request with neither, such as one from an old browser, isn't refused here: the CSRF token still has to match."""
+    if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+        return True
+    origin = request.headers.get("Origin")
+    # "null" is what a browser sends after some redirects and from some privacy settings, so it says nothing about the site.
+    if not origin or origin == "null":
+        return False
+    host = urlsplit(origin).hostname
+    return host is None or _other_domain(host)
 
 
 async def post_form(request: web.Request) -> MultiDictProxy:
@@ -278,13 +403,30 @@ async def post_form(request: web.Request) -> MultiDictProxy:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
+    try:
+        limit_by_address(request)
+    except web.HTTPTooManyRequests as slow:
+        response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
+        response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
+        response.headers["Cache-Control"] = "no-store"
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+    if request.path.startswith(PRIVATE_PATHS):
+        # These pages act for the signed-in person, so their session has to still exist (it is ended by logging out, by "sign out everywhere", by a data deletion and by a ban). It is kept in memory for a little while, so this isn't a database read on every click.
+        request["user"], request["session_ended"] = await auth.check_session(request.app["bot"].db, request.cookies.get(auth.SESSION_COOKIE))
     # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect becomes a plain redirect response, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, and a 405 keeps its Allow header.
     try:
         response = await handler(request)
     except web.HTTPNotFound:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
-    except web.HTTPForbidden as forbidden:
-        response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
+    except Banned as banned:
+        response = error_page(request, 403, "Banned from WordCounter", banned.text or "You can't use WordCounter.")
+    except Refused as refused:
+        response = error_page(request, 403, "Not allowed", refused.text or "You can't do that.")
+    except web.HTTPForbidden:
+        # Raised by aiohttp itself, for example for a folder under /static/. Its text is the framework's, so it isn't shown.
+        response = error_page(request, 403, "Not allowed", "You can't open that page.")
     except web.HTTPTooManyRequests as slow:
         response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
         response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
@@ -295,13 +437,22 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
         if "Allow" in problem.headers:
             response.headers["Allow"] = problem.headers["Allow"]
+    # A cookie for a session that has ended is dropped, so the header doesn't keep showing someone as logged in. A login that just set a new cookie keeps it.
+    if request.get("session_ended") and auth.SESSION_COOKIE not in response.cookies:
+        response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
     if request.path.startswith(PRIVATE_PATHS):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
-        response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
-        if request.path.endswith(".css"):
+        # Only a file that was found is kept for a week. A missing one is asked for again next time, so adding it later shows up at once.
+        # A FileResponse only works out its status (200, 206, 304, 416) when it is sent, after this, but the file is known to exist because static_file raised a 404 otherwise.
+        if isinstance(response, web.FileResponse) or response.status in (200, 206, 304):
+            response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
+        else:
+            response.headers.setdefault("Cache-Control", "no-cache")
+        # A part of a file (Range) is sent as it is: compressing it would make its Content-Range wrong.
+        if request.path.endswith(".css") and "Range" not in request.headers and (isinstance(response, web.FileResponse) or response.status == 200):
             response.enable_compression()
     elif isinstance(response, web.Response) and response.content_type in ("text/html", "text/plain", "application/xml"):
         response.headers.setdefault("Cache-Control", "private, no-cache")

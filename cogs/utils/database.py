@@ -8,6 +8,7 @@ The connection and `?` placeholder handling live in mysql.py, and the one-time c
 from __future__ import annotations
 import asyncio
 import os
+import re
 import time
 from collections import defaultdict
 from functools import lru_cache
@@ -15,10 +16,12 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 import logging
 from pathlib import Path
 from cogs.utils import config
-from cogs.utils.mysql import TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
+from cogs.utils.activity_buffer import ActivityBuffer, Taken
+from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
+from cogs.utils.web_sessions import WEB_SESSION_SCHEMA, WebSessionQueries
 
 log = logging.getLogger(__name__)
 
@@ -229,7 +232,21 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
     return tuple(values[key] for key in COUNT_TABLES[table][0])
 
 
+# The key columns of the monthly table, in the order MONTHLY_UPSERT and the other monthly statements take them.
+MONTHLY_TABLE = "monthly_user_stats"
+MONTHLY_KEY_COLUMNS = ("guild_id", "user_id", "channel_id", "year", "month")
+# Every table `queue_activity` writes to and the names of its key columns, for the buffer's `forget`.
+ACTIVITY_KEY_NAMES: Dict[str, Tuple[str, ...]] = {**{table: keys for table, (keys, _) in COUNT_TABLES.items()}, MONTHLY_TABLE: MONTHLY_KEY_COLUMNS}
+# The most changes that may wait in memory. Past it new ones are dropped, so a database that stays down can't use up the bot's memory.
+ACTIVITY_LIMIT = 50_000
+# The longest a cancelled flush waits for the commit it had already sent.
+COMMIT_WAIT_SECONDS = 30.0
+# A change that couldn't be saved is logged at most this often.
+ACTIVITY_LOG_SECONDS = 60.0
+
 # The db_meta row that records the SQLite copy as done.
+# The table a CREATE TABLE IF NOT EXISTS statement makes. A statement that doesn't match is always run.
+CREATED_TABLE = re.compile(r"^\s*CREATE TABLE IF NOT EXISTS\s+`?(\w+)`?", re.IGNORECASE)
 SQLITE_IMPORT = "sqlite_import"
 # How long the tracking settings and keywords of a server stay in memory, and how long the totals do.
 KEPT_SECONDS = 60.0
@@ -247,7 +264,7 @@ class NotMigrated(RuntimeError):
     pass
 
 
-class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
+class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries):
     """The bot's database, available as `bot.db`.
 
     `self.db` is the open `Session` and exists only inside `async with self.db_lock:`, which commits when the block ends. Public methods that read or write open their own block, so they can't be called from inside one: the lock is not re-entrant and the task would wait on itself.
@@ -266,6 +283,14 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         # The totals every status line and home page view asks for, which sum whole tables, and the lock that makes callers share one read.
         self._totals_kept: Optional[Tuple[float, Tuple[int, int]]] = None
         self._totals_lock = asyncio.Lock()
+        # Counts waiting to be written (see activity_buffer.py), the task that writes them every few seconds, and when a loss was last logged.
+        self._activity = ActivityBuffer(ACTIVITY_KEY_NAMES)
+        self._flusher: Optional[asyncio.Task] = None
+        self._activity_logged = float("-inf")
+        # Website sessions found alive or missing a moment ago (see web_sessions.py).
+        self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
+        self._web_epoch = 0
+        self._web_servers: Dict[int, Tuple[float, List[Dict[str, Any]]]] = {}
 
     async def connect_pool(self) -> None:
         if self.pool is None:
@@ -281,6 +306,16 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             await self.connect()
 
     async def close(self) -> None:
+        flusher, self._flusher = self._flusher, None
+        if flusher is not None:
+            flusher.cancel()
+            # Waited for, because a flusher that is in the middle of a write would otherwise put its batch back in memory after the pool is gone.
+            await asyncio.gather(flusher, return_exceptions=True)
+        try:
+            # Before the pool closes, or the counts that were still waiting would be lost.
+            await self.flush_activity()
+        except Exception as error:
+            log.error("Counts that were still waiting couldn't be saved at shutdown and are lost: %s", error)
         pool, self.pool = self.pool, None
         if pool is not None:
             pool.close()
@@ -294,8 +329,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
 
     async def create_tables(self) -> None:
         async with self.db_lock:
-            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA):
-                await self.db.execute(statement)
+            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
+            cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
+            existing = {name.lower() for name, in await cursor.fetchall()}
+            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA):
+                named = CREATED_TABLE.match(statement)
+                if named is None or named.group(1).lower() not in existing:
+                    await self.db.execute(statement)
             # MySQL has no ADD COLUMN IF NOT EXISTS, so look at information_schema before altering.
             cursor = await self.db.execute(
                 "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
@@ -452,6 +492,41 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
     async def clear_ignored_channels(self, guild_id: int) -> None:
         await self._write([("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)])])
 
+    @staticmethod
+    def _plan_activity(
+        guild_id: int, user_id: int, channel_id: int, year: int, month: int,
+        words: int, messages: int, attachments: int, emojis: int, keywords: Optional[Mapping[str, int]],
+    ) -> Tuple[List[Tuple[str, Tuple[Any, ...], int]], Tuple[int, ...], Tuple[int, int, int, int]]:
+        """Returns one message's effect as ([(counter table, its key values, change)], the monthly table's key, the monthly changes). Each value is a change, so a deleted message passes negatives and an edit passes the difference. `keywords` maps keyword to its change. Zero changes are left out."""
+        ids: Dict[str, Any] = {"guild_id": guild_id, "user_id": user_id, "channel_id": channel_id, "year": year, "month": month}
+        changes: List[Tuple[str, Tuple[Any, ...], int]] = []
+        for metric, delta in (("words", words), ("messages", messages), ("attachments", attachments), ("emojis", emojis)):
+            if delta:
+                channel_table, user_table = METRIC_TABLES[metric]
+                changes += [(channel_table, _key_values(channel_table, ids), delta), (user_table, _key_values(user_table, ids), delta)]
+        for keyword, delta in (keywords or {}).items():
+            if delta:
+                keyword_ids = {**ids, "keyword": keyword}
+                changes += [(table, _key_values(table, keyword_ids), delta) for table in ("keyword_channel", "keyword_user", "monthly_user_keywords")]
+        return changes, (guild_id, user_id, channel_id, year, month), (words, messages, attachments, emojis)
+
+    @staticmethod
+    async def _apply_change(session, table: str, key: Tuple[Any, ...], delta: Any) -> None:
+        """Writes one change to one row: for the monthly table `delta` is its four numbers, for the others one number. A positive change upserts. A negative one subtracts without going below zero and deletes the row once it reaches zero."""
+        if table == MONTHLY_TABLE:
+            # Any positive change takes the upsert, which applies the negative ones too. Only an all-negative change needs the update and prune.
+            if any(value > 0 for value in delta):
+                await session.execute(MONTHLY_UPSERT, (*key, *(max(0, value) for value in delta), *delta))
+            else:
+                await session.execute(MONTHLY_DECREMENT, (*delta, *key))
+                await session.execute(MONTHLY_PRUNE, key)
+        elif delta > 0:
+            await session.execute(_increment_sql(table), (*key, delta))
+        else:
+            decrement, prune = _decrement_sql(table)
+            await session.execute(decrement, (-delta, *key))
+            await session.execute(prune, key)
+
     async def apply_activity(
         self,
         guild_id: int,
@@ -466,46 +541,187 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         emojis: int = 0,
         keywords: Optional[Mapping[str, int]] = None,
     ) -> None:
-        """Applies one message's effect to every counter table in a single transaction. Each value is a change, so a deleted message passes negatives and an edit passes the difference. `keywords` maps keyword to its change."""
-        ids: Dict[str, Any] = {"guild_id": guild_id, "user_id": user_id, "channel_id": channel_id, "year": year, "month": month}
-        changes: List[Tuple[str, Mapping[str, Any], int]] = []
-        for metric, delta in (("words", words), ("messages", messages), ("attachments", attachments), ("emojis", emojis)):
-            if delta:
-                channel_table, user_table = METRIC_TABLES[metric]
-                changes += [(channel_table, ids, delta), (user_table, ids, delta)]
-        for keyword, delta in (keywords or {}).items():
-            if delta:
-                keyword_ids = {**ids, "keyword": keyword}
-                changes += [
-                    ("keyword_channel", keyword_ids, delta),
-                    ("keyword_user", keyword_ids, delta),
-                    ("monthly_user_keywords", keyword_ids, delta),
-                ]
-        monthly = (words, messages, attachments, emojis)
+        """Applies one message's effect to every counter table in a single transaction, now. `queue_activity` takes the same values and writes them a moment later together with other messages'."""
+        changes, month_key, monthly = self._plan_activity(guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis, keywords)
         if not changes and not any(monthly):
             return
-
         await self.ensure_connected()
         async with self.db_lock:
-            for table, values, delta in changes:
-                key_values = _key_values(table, values)
-                # A positive change upserts. A negative one subtracts without going below zero and deletes the row once it reaches zero.
-                if delta > 0:
-                    await self.db.execute(_increment_sql(table), (*key_values, delta))
-                else:
-                    decrement, prune = _decrement_sql(table)
-                    await self.db.execute(decrement, (-delta, *key_values))
-                    await self.db.execute(prune, key_values)
-
+            for table, key, delta in changes:
+                await self._apply_change(self.db, table, key, delta)
             if any(monthly):
-                month_key = (guild_id, user_id, channel_id, year, month)
-                # Any positive change takes the upsert, which applies the negative ones too. Only an all-negative change needs the update and prune.
-                if any(delta > 0 for delta in monthly):
-                    await self.db.execute(MONTHLY_UPSERT, (*month_key, *(max(0, d) for d in monthly), *monthly))
-                else:
-                    await self.db.execute(MONTHLY_DECREMENT, (*monthly, *month_key))
-                    await self.db.execute(MONTHLY_PRUNE, month_key)
+                await self._apply_change(self.db, MONTHLY_TABLE, month_key, monthly)
             await self.db.commit()
+
+    async def queue_activity(
+        self,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        year: int,
+        month: int,
+        *,
+        words: int = 0,
+        messages: int = 0,
+        attachments: int = 0,
+        emojis: int = 0,
+        keywords: Optional[Mapping[str, int]] = None,
+    ) -> None:
+        """Like `apply_activity`, but the changes wait in memory and are written with the next batch (see activity_buffer.py), so the message handler doesn't wait for the database. With ACTIVITY_FLUSH_SECONDS set to 0 it writes straight away as before."""
+        if config.ACTIVITY_FLUSH_SECONDS <= 0:
+            await self.apply_activity(guild_id, user_id, channel_id, year, month, words=words, messages=messages, attachments=attachments, emojis=emojis, keywords=keywords)
+            return
+        changes, month_key, monthly = self._plan_activity(guild_id, user_id, channel_id, year, month, words, messages, attachments, emojis, keywords)
+        if not changes and not any(monthly):
+            return
+        if self._activity.count >= ACTIVITY_LIMIT:
+            now = time.monotonic()
+            if now - self._activity_logged >= ACTIVITY_LOG_SECONDS:
+                self._activity_logged = now
+                log.error("%s counts are waiting to be saved and the database isn't taking them, so new ones are being dropped", f"{self._activity.count:,}")
+            return
+        for table, key, delta in changes:
+            self._activity.add((table, key), delta)
+        if any(monthly):
+            self._activity.add((MONTHLY_TABLE, month_key), monthly)
+        if self._flusher is None or self._flusher.done():
+            self._flusher = asyncio.get_running_loop().create_task(self._flush_regularly())
+
+    async def _flush_regularly(self) -> None:
+        """Writes what is waiting every ACTIVITY_FLUSH_SECONDS for as long as anything is, then ends. The next queued change starts it again."""
+        try:
+            while self._activity:
+                await asyncio.sleep(config.ACTIVITY_FLUSH_SECONDS)
+                try:
+                    await self.flush_activity()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # The changes are kept, and the next round tries again.
+                    now = time.monotonic()
+                    if now - self._activity_logged >= ACTIVITY_LOG_SECONDS:
+                        self._activity_logged = now
+                        log.warning("Couldn't save %s waiting counts, will try again: %s", f"{self._activity.count:,}", error)
+        finally:
+            if self._flusher is asyncio.current_task():
+                self._flusher = None
+
+    async def flush_activity(self) -> None:
+        """Writes the waiting counts now. Taking `db_lock` is enough: every block writes them first (see `flush_before_block`)."""
+        if not self._activity:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            pass
+
+    async def flush_before_block(self, session) -> None:
+        """Called by `SessionLock` with the new session before any block runs, so counts that were waiting are in the database before something reads, resets or deletes. They are committed on their own, so a block that fails afterwards can't roll them back. If they can't be written the block doesn't run, because running it first would put it ahead of changes that happened before it."""
+        if not self._activity:
+            return
+        taken = self._activity.take()
+        committing = False
+        try:
+            await self._write_activity(session, taken)
+            committing = True
+            await self._commit_batch(session)
+        except BaseException as error:
+            await self._rollback(session)
+            if committing:
+                # Whether the server had already committed when this failed can't be known, and putting the batch back could count it twice. Writing each message on its own never wrote one twice either, so it is dropped and said so.
+                if isinstance(error, Exception):
+                    log.error("Waiting counts may not have been saved: the commit failed and its outcome isn't known, so they are not written again: %s", error)
+                raise
+            if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
+                # A lost connection, or a task that was cancelled: nothing is wrong with the counts, so they all wait for the next try.
+                self._activity.restore(taken)
+                raise
+            # The database refused something in the batch (a value out of range, or a mistake in the code). Holding the whole batch back would make every database block fail until the bot restarts, so the rows are written one at a time and only the one that is refused is dropped.
+            await self._write_activity_by_row(session, taken)
+
+    @staticmethod
+    async def _commit_batch(session) -> None:
+        """Commits, and lets a commit that has begun finish even when the task is cancelled, so a cancellation can't leave a half-sent commit whose outcome nobody knows."""
+        commit = asyncio.ensure_future(session.commit())
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + COMMIT_WAIT_SECONDS
+            while not commit.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    # It is stuck. The connection can't be handed on with a commit still running on it, so it is closed.
+                    commit.cancel()
+                    try:
+                        session.connection.close()
+                    except Exception:
+                        pass
+                    log.error("Waiting counts: the commit didn't finish in %.0f s and the connection was closed", COMMIT_WAIT_SECONDS)
+                    break
+                try:
+                    await asyncio.wait({commit}, timeout=remaining)
+                except asyncio.CancelledError:
+                    # A second cancel doesn't let go of the connection while its commit is still running.
+                    continue
+            if commit.done() and not commit.cancelled() and commit.exception() is not None:
+                log.error("Waiting counts couldn't be saved when the bot was stopping: %s", commit.exception())
+            raise
+
+    @staticmethod
+    async def _rollback(session) -> None:
+        try:
+            await session.connection.rollback()
+        except Exception:
+            pass
+
+    async def _write_activity_by_row(self, session, taken: Taken) -> None:
+        rows = list(taken.items())
+        for position, (key, changes) in enumerate(rows):
+            committing = False
+            try:
+                await self._write_activity(session, {key: changes})
+                committing = True
+                await self._commit_batch(session)
+            except BaseException as error:
+                await self._rollback(session)
+                if committing:
+                    # As in flush_before_block: the rows after this one wait, this one isn't written twice.
+                    self._activity.restore(dict(rows[position + 1:]))
+                    if isinstance(error, Exception):
+                        log.error("Waiting counts for one row of %s may not have been saved: the commit failed and its outcome isn't known, so it is not written again: %s", key[0], error)
+                    raise
+                if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
+                    self._activity.restore(dict(rows[position:]))
+                    raise
+                # Only the table is logged, never the IDs in the row.
+                log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], error)
+
+    async def _write_activity(self, session, taken: Taken) -> None:
+        """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk. Any other row gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        increments: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
+        monthly_rows: List[Tuple[Any, ...]] = []
+        in_order: List[Tuple[str, Tuple[Any, ...], List[Any]]] = []
+        for (table, key), changes in taken.items():
+            if table == MONTHLY_TABLE:
+                if all(min(change) >= 0 for change in changes):
+                    monthly_rows.append((*key, *(sum(column) for column in zip(*changes))))
+                    continue
+            elif all(change > 0 for change in changes):
+                increments[table].append((*key, sum(changes)))
+                continue
+            in_order.append((table, key, changes))
+        # executemany only fills the VALUES list, which is why both of these add with VALUES(col) in their UPDATE part.
+        for table, rows in increments.items():
+            await session.executemany(_increment_sql(table), rows)
+        if monthly_rows:
+            await session.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
+        for table, key, changes in in_order:
+            for change in changes:
+                await self._apply_change(session, table, key, change)
+
+    def forget_activity(self, target_id: int) -> int:
+        """Drops the waiting counts of a user, a server or a channel, for `/owner delete_data` and `/owner blacklist`: what is only in memory can't be reached by the database delete. Returns how many were dropped."""
+        return self._activity.forget(target_id)
 
     async def _write_results(self, guild_id: int, results: Mapping[int, UserActivity]) -> None:
         """Adds analysis results, a `UserActivity` per user, to the counter tables. It adds to what is already stored instead of replacing it, so a checkpoint's partial results can be saved one after another. The caller holds `db_lock` and commits."""

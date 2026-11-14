@@ -968,6 +968,8 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 .server__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
 .server__name a { text-decoration: none; }
 .server__name a::after { content: ""; position: absolute; inset: 0; }
+.server .btn, .server .tag { flex: none; }
+.servers__note { margin-top: var(--s-5); color: var(--text-3); font-size: 0.875rem; }
 
 .guild-head {
   display: flex;
