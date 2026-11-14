@@ -322,6 +322,10 @@ TELL_LIMIT = 3
 ORIGIN_HEADER = "X-Origin-Secret"
 _origin_told = 0
 _origin_confirmed = False
+# In enforce mode the log can't carry a line for every refusal, or a flood from the server's address would flood the log. After the first few, a count of what was refused goes in at most this often (and the first after this long, counted from the start).
+ORIGIN_NOTE_SECONDS = 600
+_origin_refused = 0
+_origin_noted = time.monotonic()
 
 
 def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -442,10 +446,10 @@ def origin_status() -> str:
 
 
 def origin_allowed(request: web.Request) -> bool:
-    """Whether the request may go on, by the secret Cloudflare adds in `X-Origin-Secret`. With ORIGIN_SECRET empty everything may. With it set, a request that carries the right value always may; one that doesn't may only in `log` mode, which says so in the log (a few times, without any address) so the Cloudflare rule can be checked before `enforce` is switched on. The value is compared in constant time."""
+    """Whether the request may go on, by the secret Cloudflare adds in `X-Origin-Secret`. With ORIGIN_SECRET empty everything may. With it set, a request that carries the right value always may; one that doesn't may only in `log` mode, which says so in the log (a few times, without any address) so the Cloudflare rule can be checked before `enforce` is switched on. In `enforce` mode the first few refusals are logged the same way, and after that a count of the refusals goes in the log at most every ORIGIN_NOTE_SECONDS. The value is compared in constant time."""
     if not ORIGIN_SECRET:
         return True
-    global _origin_told, _origin_confirmed
+    global _origin_told, _origin_confirmed, _origin_refused, _origin_noted
     given = request.headers.get(ORIGIN_HEADER)
     if given is not None and auth._same(given, ORIGIN_SECRET):
         if not _origin_confirmed:
@@ -461,6 +465,12 @@ def origin_allowed(request: web.Request) -> bool:
             "missing" if given is None else "wrong",
             "It didn't come through the owner's Cloudflare rule." if ORIGIN_SECRET_MODE == "enforce" else "ORIGIN_SECRET_MODE is log, so nothing is refused yet.",
         )
+    elif ORIGIN_SECRET_MODE == "enforce":
+        _origin_refused += 1
+        now = time.monotonic()
+        if now - _origin_noted >= ORIGIN_NOTE_SECONDS:
+            log.info("Requests refused for lacking the right %s since the last note: %d.", ORIGIN_HEADER, _origin_refused)
+            _origin_refused, _origin_noted = 0, now
     return ORIGIN_SECRET_MODE != "enforce"
 
 
