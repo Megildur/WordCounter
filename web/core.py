@@ -17,7 +17,7 @@ import jinja2
 from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
-from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
 from web import auth
 
@@ -293,7 +293,7 @@ async def static_file(request: web.Request) -> web.StreamResponse:
 
 
 def _other_domain(host: str) -> bool:
-    """Whether a host name is a domain other than SITE_URL's. localhost and raw IP addresses don't count, so the site can still be reached directly."""
+    """Whether a host name is a domain other than SITE_URL's. localhost and raw IP addresses don't count, so a request made by the server's address isn't redirected. With ORIGIN_SECRET enforced, one that lacks the secret is refused before this runs."""
     host = host.lower().rstrip(".")
     if not host or host in (SITE_HOST, "localhost"):
         return False
@@ -319,6 +319,9 @@ CLOUDFLARE_RANGES = tuple(ipaddress.ip_network(text) for text in (
 _told = 0
 _confirmed = False
 TELL_LIMIT = 3
+ORIGIN_HEADER = "X-Origin-Secret"
+_origin_told = 0
+_origin_confirmed = False
 
 
 def _ip(text: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -429,8 +432,33 @@ async def post_form(request: web.Request) -> MultiDictProxy:
     return MultiDictProxy(MultiDict((key, value) for key, value in form.items() if isinstance(value, str)))
 
 
+def origin_allowed(request: web.Request) -> bool:
+    """Whether the request may go on, by the secret Cloudflare adds in `X-Origin-Secret`. With ORIGIN_SECRET empty everything may. With it set, a request that carries the right value always may; one that doesn't may only in `log` mode, which says so in the log (a few times, without any address) so the Cloudflare rule can be checked before `enforce` is switched on. The value is compared in constant time."""
+    if not ORIGIN_SECRET:
+        return True
+    global _origin_told, _origin_confirmed
+    given = request.headers.get(ORIGIN_HEADER)
+    if given is not None and auth._same(given, ORIGIN_SECRET):
+        if not _origin_confirmed:
+            _origin_confirmed = True
+            log.info("A request with the right %s arrived, so the Cloudflare rule that adds it works.", ORIGIN_HEADER)
+        return True
+    if _origin_told < TELL_LIMIT:
+        _origin_told += 1
+        log.info(
+            "A request without the right %s %s (the header is %s). %s",
+            ORIGIN_HEADER,
+            "was refused" if ORIGIN_SECRET_MODE == "enforce" else "was let through",
+            "missing" if given is None else "wrong",
+            "It didn't come through the owner's Cloudflare rule." if ORIGIN_SECRET_MODE == "enforce" else "ORIGIN_SECRET_MODE is log, so nothing is refused yet.",
+        )
+    return ORIGIN_SECRET_MODE != "enforce"
+
+
 @web.middleware
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
+    if not origin_allowed(request):
+        return web.Response(status=403, text="Forbidden", headers={"Cache-Control": "no-store", **SECURITY_HEADERS})
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
     try:

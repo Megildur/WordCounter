@@ -42,6 +42,9 @@ try:
     ACTIVITY_FLUSH_SECONDS = max(0.0, float(_env("ACTIVITY_FLUSH_SECONDS", "2")))
 except ValueError:
     ACTIVITY_FLUSH_SECONDS = 2.0
+# A secret that a Cloudflare request-header rule adds to every request as `X-Origin-Secret`, so the website can tell the requests that came through the owner's Cloudflare from anyone who reaches the server's address directly. Empty turns the check off. ORIGIN_SECRET_MODE is `log` (the default: the check only counts and logs the requests that lack the secret, so it can be tried without risk) or `enforce` (those requests are answered with a bare 403).
+ORIGIN_SECRET = _env("ORIGIN_SECRET")
+ORIGIN_SECRET_MODE = "enforce" if _env("ORIGIN_SECRET_MODE").lower() == "enforce" else "log"
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
 # Signs the website's login cookies. Without SESSION_SECRET it is derived from the bot token, so it stays the same across restarts.
 SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()
