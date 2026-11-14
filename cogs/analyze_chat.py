@@ -1179,7 +1179,7 @@ class AnalyzeChat(commands.Cog):
             scope, keywords = await self._load_scope(guild)
             coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
             tally, progress = Tally(), Progress()
-            log.info("Searching past messages of %s in guild %s", target.id, guild.id)
+            log.info("Searching past messages of a member in guild %s", guild.id)
 
             def render() -> discord.ui.LayoutView:
                 return self._progress_view(guild, "member", members, tally, int(bool(tally.messages)), progress)

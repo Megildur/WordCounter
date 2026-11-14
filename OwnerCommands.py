@@ -160,7 +160,8 @@ class DataConfirmView(AuthorOnlyView):
         removed = await self.bot.db.delete_by_id(self.target.id)
         if jar is not None:
             jar.forget(self.target.id)
-        log.info("%s %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.plain, removed)
+        # No ID in the log: a deletion that left the ID in a log file for 90 days would not be a deletion, and the Privacy Policy lists what the log can hold.
+        log.info("%s a %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, removed)
         if self.ban:
             who = f"{self.target.label[0].upper()}{self.target.label[1:]}"
             view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(removed)}", color=SUCCESS_COLOR)
@@ -429,7 +430,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             accent_colour=BRAND_COLOR,
         ))
         await interaction.followup.send(view=view, file=discord.File(io.BytesIO(data), filename=filename), allowed_mentions=NO_PINGS)
-        log.info("Exported the data of %s: %s", target.plain, summary)
+        log.info("Exported the data of a %s: %s", target.what, summary)
 
     @app_commands.command(name="kept_data", description="Post what WordCounter keeps after a deletion, quoting the Privacy Policy and the GDPR")
     @app_commands.describe(kind="Whether the ID is a user's or a server's", target_id="The user's or server's ID")
@@ -524,7 +525,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await self.bot.db.remove_from_blacklist(target_id)
         # `bot.blacklisted` is what screens events while the bot runs, so it changes together with the table.
         self.bot.blacklisted.discard(target_id)
-        log.info("Lifted the blacklist on %s %s", entry.kind, target_id)
+        # The ban record is deleted when a ban is lifted, so its ID isn't kept in the log either.
+        log.info("Lifted the blacklist on a %s", entry.kind)
         view = create_v2_view(
             "Ban lifted",
             f"The {entry.kind} `{target_id}` can use WordCounter again. The data deleted with the ban doesn't come back.",
