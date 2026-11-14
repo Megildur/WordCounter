@@ -1,6 +1,6 @@
 """The signed-in dashboard at /dashboard.
 
-Everyone sees their own stats in the servers they share with the bot. People with Manage Server also get that server's leaderboard, members, per-member resets and settings, which do the same things as /settings in Discord. Pages are Jinja templates, and every change is a plain HTML form POST that redirects back with a `?msg=` code, since the site has no JavaScript.
+Everyone sees their own stats in the servers they share with the bot, and the servers they manage that don't have the bot yet, each with a link to add it (from the server list Discord sends at login, which only decides what the page offers). People with Manage Server also get that server's leaderboard, members, per-member resets and settings, which do the same things as /settings in Discord. Pages are Jinja templates, and every change is a plain HTML form POST that redirects back with a `?msg=` code, since the site has no JavaScript.
 """
 
 from __future__ import annotations
