@@ -1,6 +1,6 @@
 """Discord login and sessions for the dashboard.
 
-There is no session table: the session is a signed cookie holding the Discord user's id, name and avatar, checked with an HMAC keyed by SESSION_SECRET. The login is Discord OAuth with the `identify` scope only, so the site learns who someone is and nothing else.
+The session is a signed cookie holding the Discord user's id, name and avatar and a random session id, checked with an HMAC keyed by SESSION_SECRET. A hash of the session id is also saved in the `web_sessions` table (cogs/utils/web_sessions.py), and the cookie only counts while that row exists, so a login can be ended from the server. The login is Discord OAuth with the `identify` scope only, so the site learns who someone is and nothing else.
 """
 
 from __future__ import annotations
@@ -20,8 +20,11 @@ from cogs.utils.http import get_session
 
 log = logging.getLogger("web.auth")
 
-SESSION_COOKIE = "wordcounter_session"
-STATE_COOKIE = "wordcounter_login"
+# On https the cookies carry the __Host- prefix, which makes the browser refuse to take them from, or give them to, anything but this exact host: no other subdomain can plant or overwrite them. The prefix needs the Secure flag, so a local http copy keeps the plain names.
+SECURE = SITE_URL.startswith("https://")
+_PREFIX = "__Host-" if SECURE else ""
+SESSION_COOKIE = f"{_PREFIX}wordcounter_session"
+STATE_COOKIE = f"{_PREFIX}wordcounter_login"
 SESSION_MAX_AGE = 86400 * 30
 STATE_MAX_AGE = 600
 API = "https://discord.com/api/v10"
@@ -41,14 +44,23 @@ def _sign(value: str) -> str:
     return hmac.new(SESSION_SECRET.encode(), value.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()
 
 
-def sign_session(user: User) -> str:
-    """Returns the cookie value "payload.signature": the user plus a timestamp as base64 JSON, signed with HMAC-SHA256. It is signed, not encrypted, so the browser can read the contents but can't change them."""
-    payload = base64.urlsafe_b64encode(json.dumps({**user, "ts": int(time.time())}).encode()).decode()
+def new_session_id() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def session_hash(session_id: str) -> str:
+    """What the table stores instead of the session id, so a copy of the table can't be used to sign in."""
+    return hashlib.sha256(session_id.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def sign_session(user: User, session_id: str) -> str:
+    """Returns the cookie value "payload.signature": the user, the session id and a timestamp as base64 JSON, signed with HMAC-SHA256. It is signed, not encrypted, so the browser can read the contents but can't change them."""
+    payload = base64.urlsafe_b64encode(json.dumps({**user, "sid": session_id, "ts": int(time.time())}).encode()).decode()
     return f"{payload}.{_sign(payload)}"
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie whose signature matches and which is under SESSION_MAX_AGE (30 days) old. A missing cookie, a wrong signature, bad contents or an old one gives None."""
+    """Returns the user from a session cookie whose signature matches, which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `live_user` also asks whether the session still exists."""
     if not token or "." not in token:
         return None
     payload, signature = token.rsplit(".", 1)
@@ -61,14 +73,33 @@ def read_session(token: Optional[str]) -> Optional[User]:
         return None
     if not isinstance(data, dict) or not str(data.get("id", "")).isdigit():
         return None
-    if time.time() - data.get("ts", 0) > SESSION_MAX_AGE:
+    session_id = data.get("sid")
+    if not isinstance(session_id, str) or not 16 <= len(session_id) <= 64:
+        return None
+    ts = data.get("ts", 0)
+    if not isinstance(ts, (int, float)) or time.time() - ts > SESSION_MAX_AGE:
         return None
     return data
 
 
+async def check_session(db: Any, token: Optional[str]) -> Tuple[Optional[User], bool]:
+    """Returns (the user, whether the session is known to be over). The user is the one in a session cookie that is valid and whose session still exists, or None. A session that has ended gives (None, True), so the browser's cookie can be cleared. A database that can't be read gives (None, False): nobody is let in on a guess, and nobody's cookie is thrown away over a blip."""
+    user = read_session(token)
+    if user is None:
+        return None, False
+    try:
+        owner = await db.web_session_user(session_hash(user["sid"]))
+    except Exception as error:
+        log.warning("Couldn't check a login session: %s", error)
+        return None, False
+    if owner == int(user["id"]):
+        return user, False
+    return None, True
+
+
 def csrf_token(user: User) -> str:
-    """The form token for a signed-in user: an HMAC of their id and their session's timestamp, so each login has its own and nothing is stored. Forms send it as `csrf` and `check_csrf` compares it."""
-    return _sign(f"csrf:{user['id']}:{user['ts']}")
+    """The form token for a signed-in user: an HMAC of their id and their session id, so each login has its own and nothing is stored. Forms send it as `csrf` and `check_csrf` compares it."""
+    return _sign(f"csrf:{user['id']}:{user['sid']}")
 
 
 def check_csrf(user: User, token: Optional[str]) -> bool:

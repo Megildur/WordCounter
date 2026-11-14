@@ -54,6 +54,8 @@ MESSAGES = {
     "oauth_failed": ("error", "Discord login didn't go through. Please try again."),
     "oauth_cancelled": ("error", "Login cancelled. Nothing was shared with WordCounter."),
     "oauth_expired": ("error", "That login link expired. Press Log in to try again."),
+    "login_banned": ("error", "You've been banned from using WordCounter, so the dashboard is closed to you."),
+    "logged_out_everywhere": ("success", "You're signed out on every device."),
     "mode_saved": ("success", "Tracking mode saved."),
     "tracking_off": ("success", "Tracking is off. Existing stats stay."),
     "channels_saved": ("success", "Channel list saved."),
@@ -225,6 +227,9 @@ def client_id(bot) -> int:
 
 
 def current_user(request: web.Request) -> Optional[auth.User]:
+    """The signed-in person. On the pages that act for someone (PRIVATE_PATHS) `site_middleware` has already checked that their session still exists. On a public page only the cookie is read, which is enough to show their name in the header, since nothing there changes anything."""
+    if "user" in request:
+        return request["user"]
     return auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
 
 
@@ -314,6 +319,9 @@ async def post_form(request: web.Request) -> MultiDictProxy:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
+    if request.path.startswith(PRIVATE_PATHS):
+        # These pages act for the signed-in person, so their session has to still exist (it is ended by logging out, by "sign out everywhere", by a data deletion and by a ban). It is kept in memory for a little while, so this isn't a database read on every click.
+        request["user"], request["session_ended"] = await auth.check_session(request.app["bot"].db, request.cookies.get(auth.SESSION_COOKIE))
     # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect becomes a plain redirect response, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, and a 405 keeps its Allow header.
     try:
         response = await handler(request)
@@ -336,6 +344,9 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
         if "Allow" in problem.headers:
             response.headers["Allow"] = problem.headers["Allow"]
+    # A cookie for a session that has ended is dropped, so the header doesn't keep showing someone as logged in. A login that just set a new cookie keeps it.
+    if request.get("session_ended") and auth.SESSION_COOKIE not in response.cookies:
+        response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
     if request.path.startswith(PRIVATE_PATHS):
         response.headers["Cache-Control"] = "no-store"

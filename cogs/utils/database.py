@@ -20,6 +20,7 @@ from cogs.utils.mysql import TABLE_OPTIONS, DatabaseError, SessionLock, create_p
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
+from cogs.utils.web_sessions import WEB_SESSION_SCHEMA, WebSessionQueries
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ class NotMigrated(RuntimeError):
     pass
 
 
-class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
+class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries):
     """The bot's database, available as `bot.db`.
 
     `self.db` is the open `Session` and exists only inside `async with self.db_lock:`, which commits when the block ends. Public methods that read or write open their own block, so they can't be called from inside one: the lock is not re-entrant and the task would wait on itself.
@@ -269,6 +270,9 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         # The totals every status line and home page view asks for, which sum whole tables, and the lock that makes callers share one read.
         self._totals_kept: Optional[Tuple[float, Tuple[int, int]]] = None
         self._totals_lock = asyncio.Lock()
+        # Website sessions found alive or missing a moment ago (see web_sessions.py).
+        self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
+        self._web_epoch = 0
 
     async def connect_pool(self) -> None:
         if self.pool is None:
@@ -300,7 +304,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
             # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
             cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
             existing = {name.lower() for name, in await cursor.fetchall()}
-            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA):
+            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA):
                 named = CREATED_TABLE.match(statement)
                 if named is None or named.group(1).lower() not in existing:
                     await self.db.execute(statement)

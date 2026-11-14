@@ -18,6 +18,11 @@
       </div>
       <form method="post" action="/logout" class="inline-form">
         {{ ui.csrf_field() }}
+        <input type="hidden" name="everywhere" value="yes">
+        <button type="submit" class="btn btn--sm btn--ghost" title="Ends your login on every browser and device you used, not just this one.">Log out everywhere</button>
+      </form>
+      <form method="post" action="/logout" class="inline-form">
+        {{ ui.csrf_field() }}
         <button type="submit" class="btn btn--sm btn--danger">Log out</button>
       </form>
     </section>

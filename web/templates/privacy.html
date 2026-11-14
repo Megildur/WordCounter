@@ -13,7 +13,7 @@
 {{ ui.pixel_banner("legal.png") }}
       <p class="eyebrow">Legal</p>
       <h1 class="page-title display">Privacy Policy</h1>
-      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised November 8, 2026</p>
+      <p class="legal__dates">Effective October 5, 2026 &middot; Last revised November 13, 2026</p>
     </header>
 
     <div class="legal">
@@ -84,6 +84,10 @@
                 <dd>When tracking was turned on or off and when counts were reset, so past messages are never counted twice. While <code>/analyze_chat</code> is running, the ID of the last message read in each channel, so it can pick up where it left off after a restart. These checkpoints are deleted when the analysis finishes.</dd>
               </div>
               <div>
+                <dt>Website login sessions</dt>
+                <dd>If you log in on this website, we keep one record for each browser you logged in on: your Discord user ID, when the login started, when it ends (30 days later), and a one-way fingerprint (a hash) of its session code, which can't be turned back into the code. It lets us end a login from our side. It is deleted when you log out, when it ends, if you choose Log out everywhere, and when you ask us to delete your data. We keep at most 10 for one person. Your name and avatar are not in this record, only in your browser's cookie (section 07).</dd>
+              </div>
+              <div>
                 <dt>Logs</dt>
                 <dd>When WordCounter joins a server, we log the server's name and ID and the owner's username and ID. When it leaves, we log the server's name and ID. When something fails, the error log can record the command or page, your username and ID, and the server and channel where it happened. Log files are kept on the bot's host, used only to fix problems, and deleted automatically after 90 days.</dd>
               </div>
@@ -147,13 +151,13 @@
           <section id="website">
             <h2><span class="num">07</span>This website</h2>
             <p>
-              <strong>Logging in.</strong> If you log in here with Discord, Discord tells us your user ID, username, display name and avatar. We keep those in a signed cookie called <code>wordcounter_session</code> in your browser so you stay logged in for up to 30 days. The cookie is not copied into our database, and logging out deletes it.
+              <strong>Logging in.</strong> If you log in here with Discord, Discord tells us your user ID, username, display name and avatar. We keep those in a signed cookie called <code>__Host-wordcounter_session</code> in your browser, with a random session code, so you stay logged in for up to 30 days. The name starts with <code>__Host-</code> so your browser only accepts it from this exact site. Only your user ID and a hash of the session code are copied into our database (section 03), so a login can be ended from our side: logging out deletes the cookie and the record, <strong>Log out everywhere</strong> on the dashboard ends every browser you're logged in on, and a deleted or banned account's logins end at once. Your name and avatar are not copied into our database.
             </p>
             <p>
               <strong>Your servers.</strong> WordCounter asks Discord for your basic profile only, not your server list. It finds the servers you share with it from its own member lists, and checks your membership and permissions with Discord's live data every time you open a page or change a setting.
             </p>
             <p>
-              <strong>Other cookies.</strong> While you log in, a cookie called <code>wordcounter_login</code> holds a random value for up to 10 minutes so the login can't be started by another site. We don't use advertising or analytics cookies.
+              <strong>Other cookies.</strong> While you log in, a cookie called <code>__Host-wordcounter_login</code> holds a random value for up to 10 minutes so the login can't be started by another site. We don't use advertising or analytics cookies.
             </p>
             <p>
               <strong>Outside requests from your browser.</strong> Pages that show avatars or server icons load those images directly from Discord (<code>cdn.discordapp.com</code>). Like any site you visit, they can see your IP address. Fonts and other files are served from this site.
@@ -177,7 +181,7 @@
               <li><strong>Server admins:</strong> reset a member's counts, a channel's counts, or everything for the server in <code>/settings</code> &gt; Data &amp; Reset Tools, or on this website.</li>
               <li><strong>Re-analysis:</strong> <strong>Allow re-analysis</strong> clears one member's counts so their history can be rebuilt.</li>
               <li><strong>Swear jar:</strong> server admins can reset one member's swear jar or the whole jar in <code>/swearjar settings</code> or on this website.</li>
-              <li><strong>Website:</strong> log out at any time and your session cookie is deleted.</li>
+              <li><strong>Website:</strong> log out at any time and your session cookie and its record are deleted. <strong>Log out everywhere</strong> on the dashboard does it for every browser you used.</li>
               <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request. A ban from using WordCounter is kept, as described just below. You can ask there for a copy of everything stored under your ID too, and we'll send it to you as a text file.</li>
             </ul>
 
