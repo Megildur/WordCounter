@@ -23,6 +23,8 @@ DatabaseError = pymysql.err.MySQLError
 # Added to every CREATE TABLE. utf8mb4_bin makes text comparisons case-sensitive.
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 RECYCLE_SECONDS = 120
+# The connection is checked with a ping (one round trip to the server) only when it has sat unused for this long, or after an error that means the connection broke. Pinging before every block cost a round trip each, and the server doesn't close a connection that was used a moment ago.
+PING_IDLE_SECONDS = 15.0
 # A database block that waited for the lock, or held it, longer than this is logged, because every other answer that needs the database waits behind it.
 LOCK_SLOW_SECONDS = 1.0
 
@@ -31,6 +33,9 @@ log = logging.getLogger(__name__)
 # The database layer keeps the rows of channels, ignore and keyword in memory, because every message reads them. A statement that changes one of those tables is spotted here, whoever wrote it, and the layer is told to forget what it kept when the block ends, however it ends. The table's name has to follow INTO, UPDATE, FROM, JOIN or TABLE, so keyword_channel, a column called keyword and INSERT IGNORE don't count.
 _WRITES = re.compile(r"^\s*(?:INSERT|REPLACE|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b", re.IGNORECASE)
 _KEPT_TABLE = re.compile(r"\b(?:INTO|UPDATE|FROM|JOIN|TABLE)\s+`?(?:channels|ignore|keyword)`?(?!\w)", re.IGNORECASE)
+
+# What a statement raises when the connection to the server is gone or was cut, as opposed to a mistake in the statement.
+_BROKEN_CONNECTION = (pymysql.err.OperationalError, pymysql.err.InterfaceError, ConnectionError, TimeoutError, EOFError)
 
 warnings.filterwarnings("ignore", module="aiomysql")
 
@@ -123,6 +128,10 @@ class SessionLock:
         self.lock = asyncio.Lock()
         self.connection: Optional[aiomysql.Connection] = None
         self._held_since = 0.0
+        # The connection the last block used, when that block ended, and whether it ended in an error that says the connection broke.
+        self._last_connection: Optional[aiomysql.Connection] = None
+        self._last_used = float("-inf")
+        self._needs_ping = True
 
     async def __aenter__(self) -> Session:
         asked = time.monotonic()
@@ -134,8 +143,11 @@ class SessionLock:
             if self.owner.pool is None:
                 await self.owner.connect_pool()
             self.connection = await self.owner.pool.acquire()
-            # Reopens the connection if the server closed it while it sat idle.
-            await self.connection.ping(reconnect=True)
+            # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again.
+            if self._needs_ping or self.connection is not self._last_connection or self._held_since - self._last_used > PING_IDLE_SECONDS:
+                self._needs_ping = True
+                await self.connection.ping(reconnect=True)
+                self._needs_ping = False
         except BaseException:
             # Also covers a cancelled task. Give the lock back or every later caller waits forever.
             await self._release()
@@ -150,11 +162,19 @@ class SessionLock:
             if held > LOCK_SLOW_SECONDS:
                 began = getattr(self.owner.db, "first_sql", None)
                 _warn("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
+            if kind is not None and issubclass(kind, _BROKEN_CONNECTION):
+                # The next block checks the connection before trusting it.
+                self._needs_ping = True
             if self.connection is not None and not self.connection.closed:
                 if kind is None:
                     await self.connection.commit()
                 else:
                     await self.connection.rollback()
+            self._last_connection, self._last_used = self.connection, time.monotonic()
+        except BaseException:
+            # A commit or rollback that failed leaves the connection in an unknown state.
+            self._needs_ping = True
+            raise
         finally:
             try:
                 # Right after the commit or rollback and before the lock is given back, so nobody reads the old rows from memory any longer than that took. A block that wrote to a kept table makes the layer forget however it ended, because a commit inside the block may already have saved part of it.
