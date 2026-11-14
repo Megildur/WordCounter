@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from cogs.utils.components import BRAND_COLOR, can_attach, create_v2_container, make_button
-from cogs.utils.config import BOTZILLA_URL, PRIVACY_URL, SITE_URL, SUPPORT_URL, TERMS_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, PRIVACY_URL, SITE_URL, SUPPORT_EMAIL, SUPPORT_URL, TERMS_URL, invite_url
 from cogs.utils.jar import SPAM_NOTE
 from cogs.utils.swear_filter import MAX_FINED_PER_MESSAGE
 from paginator import ButtonPaginator
@@ -233,7 +233,7 @@ def welcome_view(bot: commands.Bot) -> discord.ui.LayoutView:
         discord.ui.Section(discord.ui.TextDisplay(BOTZILLA_TEXT), accessory=make_button("Meet Botzilla", url=BOTZILLA_URL)),
         discord.ui.Section(discord.ui.TextDisplay(GAME_TEXT), accessory=make_button("Play the game", url=GAME_URL)),
         discord.ui.Separator(),
-        discord.ui.TextDisplay("-# Questions? The support server is one button away."),
+        discord.ui.TextDisplay(f"-# Questions? The support server is one button away, or email {SUPPORT_EMAIL}."),
         discord.ui.ActionRow(*link_buttons(bot)),
         accent_colour=BRAND_COLOR,
     ))

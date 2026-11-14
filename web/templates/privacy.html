@@ -56,7 +56,7 @@
               <li><strong>The text of your messages.</strong> WordCounter reads each message in a tracked channel so it can count it, then discards the text. The same applies when <code>/analyze_chat</code> reads past messages. Only the resulting numbers are kept.</li>
               <li><strong>Attachments.</strong> Files, images and stickers are counted, never saved.</li>
               <li><strong>Direct messages.</strong> WordCounter doesn't read or count DMs.</li>
-              <li><strong>Personal details.</strong> We don't ask for or store your real name, email address, home address, phone number or passwords.</li>
+              <li><strong>Personal details.</strong> We don't ask for or store your real name, email address, home address, phone number or passwords through WordCounter or this website. If you choose to email our support address, the message and the address you wrote from are handled as described in section 03.</li>
               <li><strong>Your Discord password.</strong> Logging in on this website goes through Discord, so we never see your password.</li>
               <li><strong>Browsing data.</strong> This website has no analytics, ads or tracking cookies, and doesn't log page visits. Only server errors are logged, with the page address and not who visited.</li>
               <li><strong>Payment details.</strong> WordCounter is free and never handles card or bank details.</li>
@@ -82,6 +82,10 @@
               <div>
                 <dt>Records that keep counts accurate</dt>
                 <dd>When tracking was turned on or off and when counts were reset, so past messages are never counted twice. While <code>/analyze_chat</code> is running, the ID of the last message read in each channel, so it can pick up where it left off after a restart. These checkpoints are deleted when the analysis finishes.</dd>
+              </div>
+              <div>
+                <dt>Support emails</dt>
+                <dd>If you email {{ support_email }}, we receive the address you wrote from, your message and anything you attach. It arrives in a Gmail mailbox that only the developer reads, and stays there only as long as it takes to answer you and sort out the problem. We delete it if you ask. Replies are sent from the same address. We don't add it to any list or use it for anything else.</dd>
               </div>
               <div>
                 <dt>Website login sessions</dt>
@@ -134,7 +138,7 @@
 
           <section id="third-party">
             <h2><span class="num">05</span>Third-party services</h2>
-            <p>WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are and which servers you manage when you log in. It doesn't send your data to any other service. The website is served through Cloudflare, which is described in section 07.</p>
+            <p>WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are and which servers you manage when you log in. It doesn't send your data to any other service, except what you choose to email to our support address. Mail to {{ support_email }} goes through Cloudflare's Email Routing, which passes it on to a Gmail mailbox (Google), and replies are sent from that mailbox. Cloudflare and Google handle the messages under their own privacy policies. The website is served through Cloudflare, which is described in section 07.</p>
             <p>Apart from these services, our host (see section 08) and the join and leave notices in section 03, we don't share data with anyone. We never sell it or use it for ads.</p>
           </section>
 
@@ -188,7 +192,7 @@
               <li><strong>Re-analysis:</strong> <strong>Allow re-analysis</strong> clears one member's counts so their history can be rebuilt.</li>
               <li><strong>Swear jar:</strong> server admins can reset one member's swear jar or the whole jar in <code>/swearjar settings</code> or on this website.</li>
               <li><strong>Website:</strong> log out at any time and your session cookie and its record are deleted. <strong>Log out everywhere</strong> on the dashboard does it for every browser you used.</li>
-              <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a>. We'll finish within 30 days of the request. A ban from using WordCounter is kept, as described just below. You can ask there for a copy of everything stored in our database under your ID too, and we'll send it to you as a text file. The short-lived server list in the website's memory (section 07) isn't in that file, since it is never saved and is gone within the hour.</li>
+              <li><strong>Everything else:</strong> anyone can ask us to delete the data tied to their Discord user ID, and server owners can ask us to delete all of a server's data, in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">support server</a> or by email to <a href="mailto:{{ support_email }}">{{ support_email }}</a>. We'll finish within 30 days of the request. A ban from using WordCounter is kept, as described just below. You can ask for a copy of everything stored in our database under your ID too, and we'll send it to you as a text file. The short-lived server list in the website's memory (section 07) isn't in that file, since it is never saved and is gone within the hour.</li>
             </ul>
 
             <h3 id="kept">What we keep after a deletion request</h3>
@@ -214,7 +218,7 @@
           <section id="contact">
             <h2><span class="num">12</span>Contact us</h2>
             <p>
-              For privacy questions or deletion requests, ask in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Discord support server</a>. It's the only way to contact us.
+              For privacy questions or deletion requests, ask in our <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Discord support server</a> or email <a href="mailto:{{ support_email }}">{{ support_email }}</a>. Those are the two ways to contact us.
             </p>
           </section>
         </div>

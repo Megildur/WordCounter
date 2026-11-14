@@ -27,6 +27,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
 | Website and dashboard | [wordcounter.dev](https://wordcounter.dev) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
+| Support email | [support@wordcounter.dev](mailto:support@wordcounter.dev) |
 | Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
 | Privacy Policy | [wordcounter.dev/privacy](https://wordcounter.dev/privacy) |
 | Terms of Service | [wordcounter.dev/terms](https://wordcounter.dev/terms) |
@@ -129,6 +130,7 @@ Right-click menus:
    ```
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
+   - `SUPPORT_EMAIL`: optional, the support address shown next to it on the website, in help and in error messages. It is `support@wordcounter.dev` if it isn't set.
    - `BOT_WEBHOOK_URL`: optional webhook that gets a message when the bot joins or leaves a server.
    - `ALLOWED_GUILDS`: servers where the `/owner` commands (administrators only) are available.
    - `BASE_URL`: the public address of the website, without a trailing slash.
@@ -172,4 +174,4 @@ Right-click menus:
 
 ## Support
 
-Questions, bug reports and ideas go in the [support server](https://discord.gg/prUsgFHvRS).
+Questions, bug reports and ideas go in the [support server](https://discord.gg/prUsgFHvRS), or by email to [support@wordcounter.dev](mailto:support@wordcounter.dev).

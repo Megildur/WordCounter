@@ -17,7 +17,7 @@ import jinja2
 from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
-from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_EMAIL, SUPPORT_URL, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
 from web import auth
 
@@ -220,6 +220,7 @@ ENV.filters["num"] = _number
 ENV.globals.update(
     site_url=SITE_URL,
     support_url=SUPPORT_URL,
+    support_email=SUPPORT_EMAIL,
     source_url=SOURCE_URL,
     botzilla_url=BOTZILLA_URL,
     asset_version=_asset_version(),
