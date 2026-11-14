@@ -368,11 +368,14 @@ def _tell_about_proxy(request: web.Request) -> None:
     peer = _ip(request.remote)
     kind = "unknown" if peer is None else ("public" if peer.is_global else "private")
     if CLIENT_IP_HEADER.lower() == "cloudflare":
-        log.info(
-            "A request isn't limited by visitor address, because CLIENT_IP_HEADER is cloudflare and the connection didn't come from one of Cloudflare's address ranges (the connecting address is %s, CF-Connecting-IP is %s). Visitors that reach the website through Cloudflare are limited as usual.",
-            kind,
-            "present" if "CF-Connecting-IP" in request.headers else "missing",
-        )
+        if _from_cloudflare(peer):
+            log.info("A request from Cloudflare isn't limited by visitor address, because it has no usable CF-Connecting-IP (the header is %s).", "present but isn't an address" if "CF-Connecting-IP" in request.headers else "missing")
+        else:
+            log.info(
+                "A request isn't limited by visitor address, because CLIENT_IP_HEADER is cloudflare and the connection didn't come from one of Cloudflare's address ranges (the connecting address is %s, CF-Connecting-IP is %s). Visitors that reach the website through Cloudflare are limited as usual.",
+                kind,
+                "present" if "CF-Connecting-IP" in request.headers else "missing",
+            )
         return
     present = [name for name in PROXY_HEADERS if name in request.headers]
     log.info(

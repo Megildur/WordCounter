@@ -144,9 +144,9 @@ class StoredDataQueries:
 
     async def delete_by_id(self, target_id: int) -> Dict[str, int]:
         """Deletes every row find_by_id would return and returns {table: rows deleted}. The blacklist table is not touched."""
-        await self.ensure_connected()
         removed: Dict[str, int] = {}
         try:
+            await self.ensure_connected()
             async with self.db_lock:
                 for name, columns in (await self._id_columns()).items():
                     # The same match as find_by_id, so a deletion removes exactly what an export lists.
