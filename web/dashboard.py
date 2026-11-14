@@ -314,21 +314,16 @@ async def dashboard(request: web.Request) -> web.Response:
     user_id = int(user["id"])
     bot = request.app["bot"]
     managed = bot.db.web_servers(user_id)
-    known = {server["id"] for server in managed or ()}
     servers = []
     for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
-        if guild.id in bot.blacklisted:
-            continue
         member = guild.get_member(user_id)
-        # A member list that isn't fully cached can miss someone who is in the server. Discord's own list, from login, shows they are, and a server it lists is one they managed then. A fully cached list that lacks them wins, as it does in `find_member`.
-        if member is None and (guild.chunked or guild.id not in known):
-            continue
-        servers.append({
-            "id": guild.id,
-            "name": guild.name,
-            "icon_url": icon_url(guild),
-            "manager": manages(member) if member is not None else True,
-        })
+        if member is not None and guild.id not in bot.blacklisted:
+            servers.append({
+                "id": guild.id,
+                "name": guild.name,
+                "icon_url": icon_url(guild),
+                "manager": manages(member),
+            })
     invitable = [
         {**server, "invite_url": guild_invite_url(server["id"], client_id(bot))}
         for server in managed or ()

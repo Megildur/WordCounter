@@ -158,16 +158,31 @@ def avatar_url(raw: Dict[str, Any]) -> str:
     return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 
 
-def managed_servers(raw: Any) -> List[Dict[str, Any]]:
-    """Cuts Discord's /users/@me/guilds answer down to the servers the person owns or has Manage Server or Administrator in, as [{id, name, icon_url}] sorted by name. Anything that isn't shaped as expected is skipped, because the answer is only read, never trusted: the id becomes an int, and the icon hash is checked before it goes into a URL."""
+def _whole(value: Any, limit: int) -> Optional[int]:
+    """Returns `value` as an int from 0 up to `limit` - 1, when it is an int or a string of ASCII digits, otherwise None. A bool, a float (which can be infinity or not a number), a minus sign or digits like the Arabic ones are all refused, because Discord sends none of them and int() on some of them raises."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not (value.isascii() and value.isdigit()) or len(value) > 20:
+            return None
+        value = int(value)
+    if not isinstance(value, int) or not 0 <= value < limit:
+        return None
+    return value
+
+
+def managed_servers(raw: Any) -> Optional[List[Dict[str, Any]]]:
+    """Cuts Discord's /users/@me/guilds answer down to the servers the person owns or has Manage Server or Administrator in, as [{id, name, icon_url}] sorted by name, or None when the answer isn't a list at all (which means "not loaded", not "manages nothing"). An entry that isn't shaped as expected is skipped, because the answer is only read, never trusted: the id has to be a positive 63-bit number as the database needs, the permissions a non-negative 64-bit one, and the icon hash is checked before it goes into a URL."""
+    if not isinstance(raw, list):
+        return None
     servers = []
-    for entry in raw if isinstance(raw, list) else []:
+    for entry in raw:
         if not isinstance(entry, dict):
             continue
-        try:
-            guild_id = int(entry.get("id"))
-            permissions = int(entry.get("permissions") or 0)
-        except (TypeError, ValueError):
+        guild_id = _whole(entry.get("id"), 2 ** 63)
+        # Discord sends permissions as a string of digits. A missing value counts as none, and a value that is there but isn't a whole number skips the entry.
+        permissions = 0 if entry.get("permissions") in (None, "") else _whole(entry.get("permissions"), 2 ** 64)
+        if not guild_id or permissions is None:
             continue
         if not (entry.get("owner") is True or permissions & (MANAGE_GUILD | ADMINISTRATOR)):
             continue
@@ -182,7 +197,7 @@ def managed_servers(raw: Any) -> List[Dict[str, Any]]:
 async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -> Tuple[Optional[User], Optional[List[Dict[str, Any]]]]:
     """Trades the OAuth `code` for a token, reads the Discord user and the servers they manage, and returns (user, servers).
 
-    The user is {id, username, name, avatar_url}, or None when the login failed. The servers are `managed_servers` of the list, or None when Discord didn't give one, which doesn't fail the login: the dashboard just offers to load it again. A person in `banned` gets None for the servers without asking Discord, since nothing is kept for them.
+    The user is {id, username, name, avatar_url}, or None when the login failed. The servers are `managed_servers` of the list, or None when Discord didn't give a list (an error, a timeout or an answer that isn't a list), which doesn't fail the login: the dashboard just offers to load it again. A person in `banned` gets None for the servers without asking Discord, since nothing is kept for them.
 
     The token is used for these two requests and then dropped, never stored. The id is kept as a string.
     """

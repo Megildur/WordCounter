@@ -25,7 +25,7 @@ ALLOWED_GUILD_IDS: List[int] = [
 ]
 
 SITE_URL = _env("BASE_URL", "https://wordcounter.dev").rstrip("/")
-# Turns on limiting the website's requests by visitor address, and says where the address is: the name of the request header the website's proxy fills in with it, such as CF-Connecting-IP, or `peer` when nothing stands in front of the website. Unset, nothing is limited by address, because a proxy connects from a public address too and every visitor would count as one. With a header name, set it only if the website can't be reached except through that proxy, because anyone who can reach it directly can write any value in the header.
+# Turns on limiting the website's requests by visitor address, and says where the address is: the name of the request header the website's proxy fills in with it, such as CF-Connecting-IP, or `peer` when nothing stands in front of the website. Unset, nothing is limited by address, because a proxy connects from a public address too and every visitor would count as one. With a header name, set it only if the website can't be reached except through that proxy, because anyone who can reach it directly can write any value in the header. The word `cloudflare` is for a website behind Cloudflare: it reads CF-Connecting-IP and only believes it on a connection from Cloudflare's own address ranges, so reaching the website directly gives no way to be counted as someone else.
 CLIENT_IP_HEADER = _env("CLIENT_IP_HEADER")
 WEB_HOST = _env("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))

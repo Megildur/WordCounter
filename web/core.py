@@ -310,7 +310,14 @@ AUTH_LIMIT = RateLimit(30, 300.0)
 PAGE_LIMIT = RateLimit(240, 60.0)
 # Request headers that a proxy may use to pass on the visitor's address. Only their names are ever logged, never what they hold.
 PROXY_HEADERS = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For", "Forwarded", "X-Forwarded-Proto", "Via")
+# Cloudflare's published address ranges (cloudflare.com/ips-v4 and ips-v6). They change rarely, and a range missing from here only means visitors that come through it aren't limited by address, which the log says, never that they are turned away.
+CLOUDFLARE_RANGES = tuple(ipaddress.ip_network(text) for text in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20",
+    "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+))
 _told = 0
+_confirmed = False
 TELL_LIMIT = 3
 
 
@@ -332,29 +339,48 @@ def _grouped(address) -> str:
     return str(address)
 
 
+def _from_cloudflare(peer) -> bool:
+    return peer is not None and any(peer.version == network.version and peer in network for network in CLOUDFLARE_RANGES)
+
+
 def client_address(request: web.Request) -> Optional[str]:
-    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's."""
+    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's. The word `cloudflare` reads CF-Connecting-IP, but only on a connection that comes from one of Cloudflare's address ranges, so someone who reaches the website without Cloudflare can't write a header to be counted as another visitor: that request has no trusted address and isn't limited."""
     if not CLIENT_IP_HEADER:
         return None
-    if CLIENT_IP_HEADER.lower() == "peer":
+    mode = CLIENT_IP_HEADER.lower()
+    if mode == "peer":
         peer = _ip(request.remote)
         return _grouped(peer) if peer is not None and peer.is_global else None
+    header = "CF-Connecting-IP" if mode == "cloudflare" else CLIENT_IP_HEADER
+    if mode == "cloudflare" and not _from_cloudflare(_ip(request.remote)):
+        return None
     # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
-    forwarded = _ip(",".join(request.headers.getall(CLIENT_IP_HEADER, [])).split(",")[-1])
+    forwarded = _ip(",".join(request.headers.getall(header, [])).split(",")[-1])
     return _grouped(forwarded) if forwarded is not None else None
 
 
 def _tell_about_proxy(request: web.Request) -> None:
-    """Says in the log, a few times, why requests aren't limited by address, with what is needed to decide how to fix it: whether the address that connected is private, whether CLIENT_IP_HEADER is set and present, and the names of the headers that could carry the visitor's address. No address is ever logged."""
+    """Says in the log, a few times, why a request isn't limited by address, with what is needed to decide how to fix it: whether the address that connected is private (or, with `cloudflare`, inside Cloudflare's ranges), whether CLIENT_IP_HEADER is set and present, and the names of the headers that could carry the visitor's address. No address is ever logged."""
     global _told
     if _told >= TELL_LIMIT:
         return
     _told += 1
     peer = _ip(request.remote)
+    kind = "unknown" if peer is None else ("public" if peer.is_global else "private")
+    if CLIENT_IP_HEADER.lower() == "cloudflare":
+        if _from_cloudflare(peer):
+            log.info("A request from Cloudflare isn't limited by visitor address, because it has no usable CF-Connecting-IP (the header is %s).", "present but isn't an address" if "CF-Connecting-IP" in request.headers else "missing")
+        else:
+            log.info(
+                "A request isn't limited by visitor address, because CLIENT_IP_HEADER is cloudflare and the connection didn't come from one of Cloudflare's address ranges (the connecting address is %s, CF-Connecting-IP is %s). Visitors that reach the website through Cloudflare are limited as usual.",
+                kind,
+                "present" if "CF-Connecting-IP" in request.headers else "missing",
+            )
+        return
     present = [name for name in PROXY_HEADERS if name in request.headers]
     log.info(
         "Requests aren't limited by visitor address, because limiting by address is off until CLIENT_IP_HEADER says where to find it: the connecting address is %s, CLIENT_IP_HEADER is %s, and the request has these headers that may carry the visitor's address: %s",
-        "unknown" if peer is None else ("public" if peer.is_global else "private"),
+        kind,
         ("peer" if CLIENT_IP_HEADER.lower() == "peer" else f"{CLIENT_IP_HEADER} ({'present' if CLIENT_IP_HEADER in request.headers else 'missing from this request'})") if CLIENT_IP_HEADER else "not set",
         ", ".join(present) or "none",
     )
@@ -368,6 +394,10 @@ def limit_by_address(request: web.Request) -> None:
     if address is None:
         _tell_about_proxy(request)
         return
+    global _confirmed
+    if not _confirmed:
+        _confirmed = True
+        log.info("Requests are limited by visitor address (CLIENT_IP_HEADER is %s).", CLIENT_IP_HEADER)
     wait = (AUTH_LIMIT if request.path in AUTH_PATHS else PAGE_LIMIT).wait(address)
     if wait:
         raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(wait) + 1))})
