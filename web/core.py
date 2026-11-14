@@ -93,6 +93,14 @@ MESSAGES = {
 }
 
 
+class Banned(web.HTTPForbidden):
+    """Raised for a banned person or server. It is the only 403 whose page says "Banned from WordCounter"."""
+
+
+class Refused(web.HTTPForbidden):
+    """Raised for a 403 that has nothing to do with a ban, such as a form sent from another site. Its text is shown to the person."""
+
+
 class RateLimit:
     """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
     def __init__(self, limit: int, window: float) -> None:
@@ -253,9 +261,20 @@ def error_page(request: web.Request, status: int, title: str, message: str) -> w
     return render(request, "error.html", status=status, code=status, title=title, message=message)
 
 
-def _old_address(request: web.Request) -> bool:
-    """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL. localhost and raw IP addresses are left alone so the site can still be reached directly."""
-    host = (request.url.host or "").lower().rstrip(".")
+STATIC_DIR = (ROOT / "static").resolve()
+
+
+async def static_file(request: web.Request) -> web.StreamResponse:
+    """Serves a file from web/static, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
+    target = (STATIC_DIR / request.match_info["filename"]).resolve()
+    if not target.is_relative_to(STATIC_DIR) or not target.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(target)
+
+
+def _other_domain(host: str) -> bool:
+    """Whether a host name is a domain other than SITE_URL's. localhost and raw IP addresses don't count, so the site can still be reached directly."""
+    host = host.lower().rstrip(".")
     if not host or host in (SITE_HOST, "localhost"):
         return False
     try:
@@ -263,6 +282,23 @@ def _old_address(request: web.Request) -> bool:
     except ValueError:
         return True
     return False
+
+
+def _old_address(request: web.Request) -> bool:
+    """Returns True for a request to a domain name other than SITE_URL's, which `site_middleware` redirects to SITE_URL."""
+    return _other_domain(request.url.host or "")
+
+
+def sent_from_other_site(request: web.Request) -> bool:
+    """Whether the browser says another site started this request. `Sec-Fetch-Site` is set by the browser and a page can't change it, and `Origin` is the older signal. A request with neither, such as one from an old browser, isn't refused here: the CSRF token still has to match."""
+    if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+        return True
+    origin = request.headers.get("Origin")
+    # "null" is what a browser sends after some redirects and from some privacy settings, so it says nothing about the site.
+    if not origin or origin == "null":
+        return False
+    host = urlsplit(origin).hostname
+    return host is None or _other_domain(host)
 
 
 async def post_form(request: web.Request) -> MultiDictProxy:
@@ -283,8 +319,13 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response = await handler(request)
     except web.HTTPNotFound:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
-    except web.HTTPForbidden as forbidden:
-        response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
+    except Banned as banned:
+        response = error_page(request, 403, "Banned from WordCounter", banned.text or "You can't use WordCounter.")
+    except Refused as refused:
+        response = error_page(request, 403, "Not allowed", refused.text or "You can't do that.")
+    except web.HTTPForbidden:
+        # Raised by aiohttp itself, for example for a folder under /static/. Its text is the framework's, so it isn't shown.
+        response = error_page(request, 403, "Not allowed", "You can't open that page.")
     except web.HTTPTooManyRequests as slow:
         response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
         response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
@@ -300,8 +341,12 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
-        response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
-        if request.path.endswith(".css"):
+        # Only a file that was found is kept for a week. A missing one is asked for again next time, so adding it later shows up at once.
+        if response.status in (200, 206, 304):
+            response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
+        else:
+            response.headers.setdefault("Cache-Control", "no-cache")
+        if request.path.endswith(".css") and response.status == 200:
             response.enable_compression()
     elif isinstance(response, web.Response) and response.content_type in ("text/html", "text/plain", "application/xml"):
         response.headers.setdefault("Cache-Control", "private, no-cache")

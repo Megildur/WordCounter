@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
 from cogs.utils.config import SITE_URL, WEB_HOST, WEB_PORT
 from web import dashboard, pages, swearjar
-from web.core import ROOT, load_templates, site_middleware
+from web.core import load_templates, site_middleware, static_file
 
 log = logging.getLogger("web")
 
@@ -30,9 +30,10 @@ class ProbeFilter(logging.Filter):
 
 
 def create_app(bot) -> web.Application:
-    app = web.Application(middlewares=[site_middleware])
+    # site_middleware is outermost, so the errors the guard raises become themed pages with the security headers.
+    app = web.Application(middlewares=[site_middleware, dashboard.dashboard_guard])
     app["bot"] = bot
-    app.router.add_static("/static", str(ROOT / "static"), name="static")
+    app.router.add_get(r"/static/{filename:.+}", static_file, name="static")
     app.router.add_routes(pages.routes)
     app.router.add_routes(dashboard.routes)
     app.router.add_routes(swearjar.routes)

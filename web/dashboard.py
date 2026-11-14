@@ -14,9 +14,12 @@ from aiohttp import web
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, RateLimit, current_user, error_page, post_form, redirect, render
+from web.core import ENV, Banned, RateLimit, Refused, current_user, error_page, post_form, redirect, render, sent_from_other_site
 
 routes = web.RouteTableDef()
+
+# The only page under /dashboard/{guild_id} that a member without Manage Server may open: their own stats. `dashboard_guard` closes every other page under a server to non-managers, so a page added later is for managers until it is listed here.
+MEMBER_PAGES = {"/dashboard/{guild_id}"}
 
 PAGE_SIZE = 25
 KEYWORD_TOP = 10
@@ -62,7 +65,7 @@ def require_user(request: web.Request) -> auth.User:
     if user is None:
         raise web.HTTPFound(f"/login?next={quote(request.path_qs, safe='/?=&')}")
     if int(user["id"]) in request.app["bot"].blacklisted:
-        raise web.HTTPForbidden(text="You've been banned from using WordCounter, so its dashboard is closed to you.")
+        raise Banned(text="You've been banned from using WordCounter, so its dashboard is closed to you.")
     # A handler that checks again, such as read_form after member_access, doesn't count the request twice.
     if not request.get("rate_checked"):
         request["rate_checked"] = True
@@ -101,11 +104,18 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
     return member
 
 
-async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:
-    """Checks the signed-in person may see this server's dashboard, and returns (guild, their member, whether they have Manage Server).
+def manages(member: discord.Member) -> bool:
+    """Whether a member may use the manager pages: they have Manage Server and aren't timed out. Discord takes a timed-out member's permissions away until the timeout ends, and the owner and administrators can't be timed out, so the site does the same."""
+    return member.guild_permissions.manage_guild and not member.is_timed_out()
 
-    The bot not being in the server, or the person not being in it, gives the same 404 as any missing page. A banned server gives a 403. Every `/dashboard/{guild_id}` handler calls this, and the manager-only pages then check the flag.
+
+async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:
+    """Checks the signed-in person may see this server's dashboard, and returns (guild, their member, whether they may use the manager pages).
+
+    The bot not being in the server, or the person not being in it, gives the same 404 as any missing page. A banned server gives a 403. `dashboard_guard` runs this before every `/dashboard/{guild_id}` handler and keeps the answer on the request, so a handler that calls it again gets the same answer without another look-up, and the manager-only pages then check the flag themselves too.
     """
+    if "access" in request:
+        return request["access"]
     user = require_user(request)
     # The route only matches 1 to 19 ASCII digits, and this keeps a number that big from being turned into an ID that doesn't exist.
     guild_id = whole_number(request.match_info["guild_id"])
@@ -113,15 +123,42 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     if guild is None:
         raise web.HTTPNotFound()
     if guild.id in request.app["bot"].blacklisted:
-        raise web.HTTPForbidden(text="This server has been banned from using WordCounter, so its dashboard is closed.")
+        raise Banned(text="This server has been banned from using WordCounter, so its dashboard is closed.")
     member = await find_member(guild, int(user["id"]))
     if member is None:
         raise web.HTTPNotFound()
-    return guild, member, member.guild_permissions.manage_guild
+    request["timed_out"] = member.guild_permissions.manage_guild and member.is_timed_out()
+    request["access"] = guild, member, manages(member)
+    return request["access"]
 
 
 def manager_only(request: web.Request) -> web.Response:
+    if request.get("timed_out"):
+        return error_page(request, 403, "Timed out", "Discord takes a member's permissions away while they're timed out, so the manager pages open again when your timeout ends.")
     return error_page(request, 403, "Managers only", "You need the Manage Server permission in this server to see this.")
+
+
+@web.middleware
+async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
+    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a form posted from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a POST carries their CSRF token. A form with a bad token is sent back to its page with the "form expired" message and changes nothing.
+
+    It goes by the route's pattern, not by each handler, so a new page is covered the moment it is added.
+    """
+    resource = request.match_info.route.resource
+    pattern = resource.canonical if resource is not None else ""
+    if pattern != "/dashboard" and not pattern.startswith("/dashboard/"):
+        return await handler(request)
+    user = require_user(request)
+    posting = request.method == "POST"
+    if posting and sent_from_other_site(request):
+        raise Refused(text="That form was sent from another site, so it was refused.")
+    if "guild_id" in request.match_info:
+        _, _, manager = await member_access(request)
+        if not manager and pattern not in MEMBER_PAGES:
+            return manager_only(request)
+    if posting and not auth.check_csrf(user, (await post_form(request)).get("csrf")):
+        raise web.HTTPFound(f"{request.path}?msg=expired_form")
+    return await handler(request)
 
 
 def person(guild: discord.Guild, user_id: int) -> Dict[str, Any]:
@@ -273,7 +310,7 @@ async def dashboard(request: web.Request) -> web.Response:
                 "id": guild.id,
                 "name": guild.name,
                 "icon_url": icon_url(guild),
-                "manager": member.guild_permissions.manage_guild,
+                "manager": manages(member),
             })
     return render(request, "dashboard.html", "dashboard", servers=servers)
 
