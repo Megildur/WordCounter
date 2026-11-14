@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from typing import Any, Set
 import aiohttp
 import discord
@@ -35,6 +36,11 @@ for handler in (file_handler, console_handler):
 
 log = logging.getLogger("main")
 
+# When this process began, so the start-up lines can say how long each phase took and how long the bot took to be ready.
+LAUNCHED = time.monotonic()
+# An extension that loads faster than this isn't logged on its own line.
+SLOW_EXTENSION_SECONDS = 0.5
+
 # How long discord.py's HTTP session remembers the address it looked up for discord.com. Its default is 10 seconds, so a press after a quiet minute waited for a new lookup before its first answer could leave, and lookups on this host fail or take seconds now and then.
 DNS_CACHE_SECONDS = 300.0
 
@@ -52,6 +58,7 @@ class MyBot(commands.Bot):
         self.db = WordCounterDatabase(self)
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
+        self._told_ready = False
 
     def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
         """Drops an event that involves a banned user or server before any cog sees it. Cogs with `acts_on_blacklisted` still get a banned user's events, see `blacklist.screen`."""
@@ -64,8 +71,27 @@ class MyBot(commands.Bot):
         self.http.connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=DNS_CACHE_SECONDS)
         await super().login(token)
 
+    async def _load(self, extension: str) -> float:
+        """Loads one extension and returns how long it took, logging the ones that took a while."""
+        began = time.monotonic()
+        await self.load_extension(extension)
+        took = time.monotonic() - began
+        if took >= SLOW_EXTENSION_SECONDS:
+            log.info("Start-up: loading %s took %.1f s", extension, took)
+        return took
+
+    async def on_ready(self) -> None:
+        # Fires again after a reconnect that starts a new session, so only the first one is a start-up.
+        if self._told_ready:
+            return
+        self._told_ready = True
+        log.info("Start-up: ready %.1f s after launch, with %d servers and %s members in memory", time.monotonic() - LAUNCHED, len(self.guilds), f"{sum(len(guild.members) for guild in self.guilds):,}")
+
     async def setup_hook(self) -> None:
+        began = time.monotonic()
         await self.db.connect()
+        connected = time.monotonic()
+        log.info("Start-up: the database connected and its tables were checked in %.1f s", connected - began)
         self.blacklisted.update(await self.db.blacklisted_ids())
         # Each install wraps the interaction parser, so startup, installed last, runs first: nobody gets through before the bot is ready, then banned users are turned away, then a press on a menu nobody listens for any more is answered as expired.
         expired.install(self)
@@ -83,12 +109,14 @@ class MyBot(commands.Bot):
         # The default for every command is server installs and server use only. A command can override it, like /help does.
         self.tree.allowed_installs = discord.app_commands.AppInstallationType(guild=True, user=False)
         self.tree.allowed_contexts = discord.app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False)
+        loading = time.monotonic()
         for extension in CORE_EXTENSIONS:
-            await self.load_extension(extension)
+            await self._load(extension)
         # Every .py file in cogs/ is loaded as a cog, so a new cog only needs a `setup` function. Folders such as utils/ are skipped because only names ending in .py are loaded.
         for filename in sorted(os.listdir("cogs")):
             if filename.endswith(".py"):
-                await self.load_extension(f"cogs.{filename[:-3]}")
+                await self._load(f"cogs.{filename[:-3]}")
+        log.info("Start-up: setup finished %.1f s after launch (the database %.1f s, the extensions %.1f s)", time.monotonic() - LAUNCHED, connected - began, time.monotonic() - loading)
 
     async def close(self) -> None:
         # The cogs unload inside super().close(), so the HTTP session and the database stay open until they have finished.
