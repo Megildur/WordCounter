@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 import logging
 from pathlib import Path
 from cogs.utils import config
-from cogs.utils.mysql import TABLE_OPTIONS, SessionLock, create_pool
+from cogs.utils.mysql import TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
@@ -231,6 +231,9 @@ def _key_values(table: str, values: Mapping[str, Any]) -> Tuple[Any, ...]:
 
 # The db_meta row that records the SQLite copy as done.
 SQLITE_IMPORT = "sqlite_import"
+# How long the tracking settings and keywords of a server stay in memory, and how long the totals do.
+KEPT_SECONDS = 60.0
+TOTALS_SECONDS = 120.0
 # Columns added after their table first shipped, as (table, column, definition). They are in CREATE TABLE too, and `create_tables` adds them to databases made before them.
 ADDED_COLUMNS = (
     ("monthly_user_stats", "emojis", "BIGINT NOT NULL DEFAULT 0"),
@@ -256,6 +259,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         self.db = None
         self.db_lock = SessionLock(self)
         self.bot = bot
+        # What every message needs and almost never changes, per server: (time read, watched IDs, ignored IDs) and (time read, keywords). They last KEPT_SECONDS at most, so a change made some way `forget_kept` didn't see still shows up soon.
+        self._config_kept: Dict[int, Tuple[float, Set[int], Set[int]]] = {}
+        self._keywords_kept: Dict[int, Tuple[float, List[str]]] = {}
+        self._kept_epoch = 0
+        # The totals every status line and home page view asks for, which sum whole tables, and the lock that makes callers share one read.
+        self._totals_kept: Optional[Tuple[float, Tuple[int, int]]] = None
+        self._totals_lock = asyncio.Lock()
 
     async def connect_pool(self) -> None:
         if self.pool is None:
@@ -275,6 +285,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         if pool is not None:
             pool.close()
             await pool.wait_closed()
+
+    def forget_kept(self) -> None:
+        """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
+        self._kept_epoch += 1
+        self._config_kept.clear()
+        self._keywords_kept.clear()
 
     async def create_tables(self) -> None:
         async with self.db_lock:
@@ -365,20 +381,25 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         return periods, resets
 
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
-        """Returns (watched IDs, ignored IDs). Either set can hold categories as well as channels, and 1 in the watched set means the entire server."""
+        """Returns (watched IDs, ignored IDs), as copies. Either set can hold categories as well as channels, and 1 in the watched set means the entire server. Every message asks, so the answer is kept for KEPT_SECONDS and dropped when a change to the tables is committed."""
+        kept = self._config_kept.get(guild_id)
+        if kept is not None and time.monotonic() - kept[0] < KEPT_SECONDS:
+            return set(kept[1]), set(kept[2])
+        epoch = self._kept_epoch
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,))
             watched_ids = {row[0] for row in await cursor.fetchall()}
             cursor = await self.db.execute("SELECT channel_id FROM `ignore` WHERE guild_id = ?", (guild_id,))
             ignored_ids = {row[0] for row in await cursor.fetchall()}
-            return watched_ids, ignored_ids
+        # Only kept when nothing was committed to these tables since the read began.
+        if epoch == self._kept_epoch:
+            self._config_kept[guild_id] = (time.monotonic(), set(watched_ids), set(ignored_ids))
+        return watched_ids, ignored_ids
 
     async def has_tracking_enabled(self, guild_id: int) -> bool:
-        await self.ensure_connected()
-        async with self.db_lock:
-            cursor = await self.db.execute("SELECT 1 FROM channels WHERE guild_id = ? LIMIT 1", (guild_id,))
-            return await cursor.fetchone() is not None
+        watched, _ = await self.get_guild_tracking_config(guild_id)
+        return bool(watched)
 
     async def enable_whole_server(self, guild_id: int) -> None:
         await self._write(
@@ -719,18 +740,40 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries):
         ]
 
     async def get_global_totals(self) -> Tuple[int, int]:
-        """Returns (messages, words) counted across every server, in that order. The status line uses it."""
-        await self.ensure_connected()
-        async with self.db_lock:
-            messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
-            words = await self._fetch_value("SELECT SUM(count) FROM server", ())
-        return messages, words
+        """Returns (messages, words) counted across every server, in that order. The status line and the home page use it. Both sums read a whole table while the lock is held, so the answer is kept for TOTALS_SECONDS and callers that arrive during a read share it. When the database fails, the last answer is returned if there is one."""
+        kept = self._totals_kept
+        if kept is not None and time.monotonic() - kept[0] < TOTALS_SECONDS:
+            return kept[1]
+        async with self._totals_lock:
+            kept = self._totals_kept
+            if kept is not None and time.monotonic() - kept[0] < TOTALS_SECONDS:
+                return kept[1]
+            try:
+                await self.ensure_connected()
+                async with self.db_lock:
+                    messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
+                    words = await self._fetch_value("SELECT SUM(count) FROM server", ())
+            except (DatabaseError, OSError):
+                if kept is None:
+                    raise
+                log.warning("Could not read the totals, so the last ones are shown", exc_info=True)
+                return kept[1]
+            self._totals_kept = (time.monotonic(), (messages, words))
+            return messages, words
 
     async def get_keywords(self, guild_id: int) -> List[str]:
+        """Returns the server's keywords, sorted, as a copy. Every message asks, so they are kept like the tracking settings are."""
+        kept = self._keywords_kept.get(guild_id)
+        if kept is not None and time.monotonic() - kept[0] < KEPT_SECONDS:
+            return list(kept[1])
+        epoch = self._kept_epoch
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT keyword FROM keyword WHERE guild_id = ? ORDER BY keyword ASC", (guild_id,))
-            return [row[0] for row in await cursor.fetchall()]
+            keywords = [row[0] for row in await cursor.fetchall()]
+        if epoch == self._kept_epoch:
+            self._keywords_kept[guild_id] = (time.monotonic(), list(keywords))
+        return keywords
 
     async def add_keywords(self, guild_id: int, keywords: Sequence[str]) -> Tuple[List[str], List[str]]:
         """Returns (added, skipped). Keywords are lowercased. A keyword is skipped when the server already has it or it is longer than KEYWORD_LIMIT."""

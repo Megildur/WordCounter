@@ -7,8 +7,10 @@ from __future__ import annotations
 import calendar
 import hashlib
 import ipaddress
+import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 import jinja2
 from aiohttp import web
@@ -35,7 +37,15 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "DENY",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    # The site has no popups, so nothing else needs a window handle to it.
+    "Cross-Origin-Opener-Policy": "same-origin",
 }
+# Browsers are told to use https for a year, but only when the site runs on https, so a local http copy still works.
+if SECURE_COOKIES:
+    SECURITY_HEADERS["Strict-Transport-Security"] = "max-age=31536000"
+
+# Pages that belong to a signed-in person, or start the login. They are never stored (so Back after signing out doesn't show them) and never indexed.
+PRIVATE_PATHS = ("/dashboard", "/login", "/callback", "/logout")
 
 # Flash messages. After a form POST the site redirects to a page with `?msg=<code>`, and `render` shows the matching (kind, text). An unknown code shows nothing.
 MESSAGES = {
@@ -81,6 +91,27 @@ MESSAGES = {
     "goal_ended": ("success", "Goal ended."),
     "jar_reset": ("success", "Swear jar reset."),
 }
+
+
+class RateLimit:
+    """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
+    def __init__(self, limit: int, window: float) -> None:
+        self.limit, self.window = limit, window
+        self.hits: Dict[Any, Deque[float]] = {}
+
+    def wait(self, key: Any, now: Optional[float] = None) -> float:
+        now = time.monotonic() if now is None else now
+        recent = self.hits.setdefault(key, deque())
+        while recent and now - recent[0] >= self.window:
+            recent.popleft()
+        if len(recent) >= self.limit:
+            return self.window - (now - recent[0])
+        recent.append(now)
+        if len(self.hits) > 5000:
+            # Keys that have been quiet for a whole window are forgotten, so the table can't grow without end.
+            for stale in [other for other, hits in self.hits.items() if not hits or now - hits[-1] >= self.window]:
+                del self.hits[stale]
+        return 0.0
 
 
 def _asset_version() -> str:
@@ -247,14 +278,27 @@ async def post_form(request: web.Request) -> MultiDictProxy:
 async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if _old_address(request):
         return web.Response(status=301, headers={"Location": f"{SITE_URL}{request.path_qs}", **SECURITY_HEADERS})
-    # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here.
+    # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect becomes a plain redirect response, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, and a 405 keeps its Allow header.
     try:
         response = await handler(request)
     except web.HTTPNotFound:
         response = error_page(request, 404, "Page not found", "That page doesn't exist, or you don't have access to it.")
     except web.HTTPForbidden as forbidden:
         response = error_page(request, 403, "Banned from WordCounter", forbidden.text or "You can't use WordCounter.")
-    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a signed-in page is never kept by a shared cache and is checked again each time.
+    except web.HTTPTooManyRequests as slow:
+        response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
+        response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
+    except web.HTTPRedirection as moved:
+        # Built again instead of returning the exception, which aiohttp has deprecated. It keeps the headers the exception carries (Location on a redirect), but not its text body.
+        response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() not in ("content-type", "content-length")})
+    except web.HTTPException as problem:
+        response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
+        if "Allow" in problem.headers:
+            response.headers["Allow"] = problem.headers["Allow"]
+    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
+    if request.path.startswith(PRIVATE_PATHS):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", f"public, max-age={STATIC_MAX_AGE}")
         if request.path.endswith(".css"):

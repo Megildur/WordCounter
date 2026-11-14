@@ -1,11 +1,12 @@
 """Error handling for slash commands, context menus, buttons, selects and modals.
 
-`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, and the person gets an `ErrorDisplayView` with a button for the full traceback (not for an expired interaction). It is private, except as the first follow-up after a public defer.
+`ErrorHandler.cog_load` replaces the command tree's `on_error` and discord.py's view and modal `on_error` hooks, so every failure is logged with who ran what and where, under a short reference, and the person gets an `ErrorDisplayView` (not for an expired interaction). It is private, also after a public defer, where the "thinking" message is removed first, as long as Discord and the network allow checking it. Only an administrator of one of the owner's servers sees the exception text and a button for the full traceback, because those can name file paths, the database host and library versions. Everyone else gets a plain message and the reference.
 """
 
 from __future__ import annotations
 import io
 import logging
+import secrets
 import traceback
 from typing import Optional, Tuple
 import discord
@@ -14,7 +15,7 @@ from discord.ext import commands
 from discord.ui import ActionRow, Container, LayoutView, Modal, Separator, TextDisplay
 from discord.ui.view import BaseView
 from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, make_button
-from cogs.utils.config import SUPPORT_URL
+from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_URL
 
 log = logging.getLogger("Errors")
 
@@ -37,7 +38,7 @@ class TracebackView(LayoutView):
 
 class ErrorDisplayView(AuthorOnlyView):
     """The error message shown to the user, with a link to the support server and, when there is a traceback, a button that sends it privately. Only the person who hit the error can press it."""
-    def __init__(self, title: str, description: str, traceback_str: str = "", author_id: Optional[int] = None) -> None:
+    def __init__(self, title: str, description: str, traceback_str: str = "", author_id: Optional[int] = None, reference: str = "") -> None:
         super().__init__(
             author_id=author_id,
             denied_message="Only the person who hit this error can see the traceback.",
@@ -48,9 +49,8 @@ class ErrorDisplayView(AuthorOnlyView):
         container = Container(accent_colour=ERROR_COLOR)
         container.add_item(TextDisplay(f"### {title}\n{description}"))
         container.add_item(Separator(spacing=discord.SeparatorSpacing.large))
-        container.add_item(
-            TextDisplay(f"If this keeps happening, let the developer, Brandon, know in the [support server]({SUPPORT_URL}).")
-        )
+        support = f"If this keeps happening, let the developer, Brandon, know in the [support server]({SUPPORT_URL})."
+        container.add_item(TextDisplay(f"{support}\n-# Reference: {reference}" if reference else support))
         if traceback_str:
             container.add_item(Separator())
             container.add_item(ActionRow(make_button("Show traceback", callback=self._on_show_traceback)))
@@ -65,10 +65,15 @@ class ErrorDisplayView(AuthorOnlyView):
         await interaction.response.send_message(view=TracebackView(self.traceback_str, file), file=file, ephemeral=True)
 
 
-def format_error_details(error: BaseException) -> Tuple[str, str, str]:
+def can_see_details(interaction: discord.Interaction) -> bool:
+    """Whether the person may see an error's exception text and traceback: an administrator in one of the servers the owner commands exist in."""
+    return interaction.guild_id in ALLOWED_GUILD_IDS and interaction.permissions.administrator
+
+
+def format_error_details(error: BaseException, detailed: bool = False) -> Tuple[str, str, str]:
     """Returns (title, description, full traceback) for an error.
 
-    discord.py wraps an exception raised in a command in a CommandInvokeError, so the traceback and the Discord API checks use `.original`. Missing permissions, cooldowns, failed checks and Discord API errors get plain explanations, and anything else shows its type and message.
+    discord.py wraps an exception raised in a command in a CommandInvokeError, so the traceback and the Discord API checks use `.original`. Missing permissions, cooldowns, failed checks and Discord API errors get plain explanations. Anything else says that it was saved, and only with `detailed` shows its type and message, which can name file paths or the database host.
     """
     original = getattr(error, "original", error)
     full_traceback = "".join(traceback.format_exception(type(original), original, original.__traceback__)).strip()
@@ -93,17 +98,34 @@ def format_error_details(error: BaseException) -> Tuple[str, str, str]:
             description = "Discord is rate limiting this action. Wait a moment and try again."
         elif original.status >= 500:
             description = "Discord is having trouble right now. Try again later."
-        else:
+        elif detailed:
             description = f"Discord returned an error:\n> `{original.text or original}`"
+        else:
+            description = f"Discord returned an error ({original.status}). Try again in a moment."
         return "Discord API error", description, full_traceback
 
+    if not detailed:
+        return "Something went wrong", "That couldn't be finished. The details were saved so the developer can look into it.", full_traceback
     details = str(original).strip() or "No details were given."
     return "Something went wrong", f"`{type(original).__name__}`: {details}", full_traceback
 
 
+async def drop_thinking_message(interaction: discord.Interaction) -> None:
+    """After a public defer the first follow-up replaces Discord's "thinking" message and can't be private, so an error that arrives while that message is still there removes it first, and its follow-up can be private. A reply that already holds real content is left alone, a message that is private already has nothing to hide, and so is anything that can't be checked. This runs while an error is being reported, so whatever it hits is swallowed."""
+    try:
+        original = await interaction.original_response()
+        if original.flags.loading and not original.flags.ephemeral:
+            await interaction.delete_original_response()
+    except Exception:
+        log.debug("Could not check whether the answer was still the thinking message", exc_info=True)
+
+
 async def handle_interaction_error(interaction: discord.Interaction, error: BaseException, context_name: str = "Command") -> None:
     """Logs an interaction error with the command, user, server and channel, then shows the user an `ErrorDisplayView`. Slash commands, context menus, components and modals all end up here."""
-    title, description, full_traceback = format_error_details(error)
+    detailed = can_see_details(interaction)
+    title, description, full_traceback = format_error_details(error, detailed)
+    # Written in the log and shown to the person, so the developer can find the entry for a report.
+    reference = secrets.token_hex(3)
 
     if interaction.command:
         command_name = interaction.command.name
@@ -115,8 +137,8 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
     channel_name = getattr(interaction.channel, "name", None)
     channel_info = f"#{channel_name} ({interaction.channel_id})" if channel_name else f"channel {interaction.channel_id}"
     log.error(
-        "Error in %s '%s' by %s (%s) in %s, %s:\n%s",
-        context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, full_traceback,
+        "Error [%s] in %s '%s' by %s (%s) in %s, %s:\n%s",
+        reference, context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, full_traceback,
     )
 
     original = getattr(error, "original", error)
@@ -124,10 +146,11 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
     if isinstance(original, discord.NotFound) and original.code == 10062:
         return
 
-    view = ErrorDisplayView(title, description, full_traceback, interaction.user.id)
+    view = ErrorDisplayView(title, description, full_traceback if detailed else "", interaction.user.id, reference)
     try:
-        # If the command already answered or deferred, the error goes out as a follow-up. After a public defer that first follow-up can't be private.
+        # If the command already answered or deferred, the error goes out as a follow-up, privately even after a public defer.
         if interaction.response.is_done():
+            await drop_thinking_message(interaction)
             await interaction.followup.send(view=view, ephemeral=True)
         else:
             await interaction.response.send_message(view=view, ephemeral=True)

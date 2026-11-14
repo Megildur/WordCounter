@@ -107,7 +107,7 @@ def goal_view(settings: Dict[str, Any], goal: Optional[Dict[str, Any]]) -> Optio
     }
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/swearjar")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/swearjar")
 async def swearjar(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -211,7 +211,7 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
     return "goal_saved"
 
 
-@routes.post(r"/dashboard/{guild_id:\d+}/swearjar")
+@routes.post(r"/dashboard/{guild_id:[0-9]{1,19}}/swearjar")
 async def swearjar_action(request: web.Request) -> web.Response:
     """Handles every form on the page. The `action` field picks what to do, and the result code goes into the redirect as `msg`.
 

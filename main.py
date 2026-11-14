@@ -8,9 +8,10 @@ import logging
 import os
 import sys
 from typing import Any, Set
+import aiohttp
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist, startup
+from cogs.utils import blacklist, expired, nettrace, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import NotMigrated, WordCounterDatabase
 from cogs.utils.http import close_session
@@ -34,15 +35,20 @@ for handler in (file_handler, console_handler):
 
 log = logging.getLogger("main")
 
-# The extensions at the repo root, loaded before the cogs. `web` is the website.
-CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web")
+# How long discord.py's HTTP session remembers the address it looked up for discord.com. Its default is 10 seconds, so a press after a quiet minute waited for a new lookup before its first answer could leave, and lookups on this host fail or take seconds now and then.
+DNS_CACHE_SECONDS = 300.0
+
+# The extensions loaded before the cogs: the ones at the repo root, `web` (the website) and the timing log lines in cogs/utils.
+CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web", "cogs.utils.timing")
 
 
 class MyBot(commands.Bot):
     """The bot. Nobody is pinged by default, so a message that must ping passes its own `allowed_mentions`."""
     def __init__(self) -> None:
         # The only text command WordCounter adds is !wcquicksync, and Intents.all() includes the privileged message content and members intents the counting needs.
-        super().__init__(command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none())
+        super().__init__(
+            command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none(), http_trace=nettrace.trace_config(),
+        )
         self.db = WordCounterDatabase(self)
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
@@ -52,10 +58,17 @@ class MyBot(commands.Bot):
         if not blacklist.screen(self, event_name, args, kwargs):
             super().dispatch(event_name, *args, **kwargs)
 
+    async def login(self, token: str) -> None:
+        # discord.py makes its HTTP session when it logs in, from this connector, so it is set here, where an event loop is running.
+        # limit=0 is what discord.py uses when it makes the connector itself: no cap on open connections.
+        self.http.connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=DNS_CACHE_SECONDS)
+        await super().login(token)
+
     async def setup_hook(self) -> None:
         await self.db.connect()
         self.blacklisted.update(await self.db.blacklisted_ids())
-        # Each install wraps the interaction parser, so startup, installed last, runs first: nobody gets through before the bot is ready, then banned users are turned away.
+        # Each install wraps the interaction parser, so startup, installed last, runs first: nobody gets through before the bot is ready, then banned users are turned away, then a press on a menu nobody listens for any more is answered as expired.
+        expired.install(self)
         blacklist.install(self)
         startup.install(self)
 

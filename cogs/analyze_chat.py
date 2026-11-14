@@ -36,6 +36,7 @@ from cogs.utils.components import (
     keyword_summary,
     make_button,
     manager_check_error,
+    private_followup,
 )
 from cogs.utils.counting import MessageStats
 from cogs.utils.jar import JAR_OFF_MESSAGE, jar_checks
@@ -611,6 +612,15 @@ class AnalyzeChat(commands.Cog):
         if interaction.guild.id in self.running_guilds:
             return "An analysis is already running in this server. Wait for it to finish."
         return None
+
+    async def _begin(self, interaction: discord.Interaction) -> bool:
+        """The start of every analysis command. Someone who isn't a manager is turned away at once, with no database read. Everyone else's interaction is deferred, because the checks that follow read the database and can wait behind a running analysis' saves, which would push the first answer past Discord's 3 seconds. Returns False after refusing."""
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        await interaction.response.defer()
+        return True
 
     async def _send(self, interaction: discord.Interaction, view: discord.ui.LayoutView) -> discord.Message:
         """Replies to the command and returns the sent message. An interaction that was already deferred can only be answered with a follow-up."""
@@ -1243,13 +1253,15 @@ class AnalyzeChat(commands.Cog):
         },
     )
     async def swears(self, interaction: discord.Interaction) -> None:
-        reason = manager_check_error(interaction)
-        if reason is None and not (await self.bot.db.jar_settings(interaction.guild.id))["enabled"]:
+        if not await self._begin(interaction):
+            return
+        reason = None
+        if not (await self.bot.db.jar_settings(interaction.guild.id))["enabled"]:
             reason = JAR_OFF_MESSAGE
-        if reason is None and interaction.guild.id in self.running_guilds:
+        elif interaction.guild.id in self.running_guilds:
             reason = "An analysis is already running in this server. Wait for it to finish."
         if reason:
-            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            await private_followup(interaction, error_view(reason))
             return
         if await self._resume_interrupted(interaction):
             return
@@ -1274,6 +1286,8 @@ class AnalyzeChat(commands.Cog):
     )
     @app_commands.describe(target="The member whose past messages to count")
     async def single_user(self, interaction: discord.Interaction, target: discord.Member) -> None:
+        if not await self._begin(interaction):
+            return
         reason = await self._blocked_reason(interaction)
         if reason is None and target.bot:
             reason = "Bots aren't counted."
@@ -1285,7 +1299,7 @@ class AnalyzeChat(commands.Cog):
                 "-# To run it again, unlock them in `/settings` → Data & Reset Tools."
             )
         if reason:
-            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            await private_followup(interaction, error_view(reason))
             return
         if await self._resume_interrupted(interaction):
             return
@@ -1309,16 +1323,15 @@ class AnalyzeChat(commands.Cog):
         },
     )
     async def whole_server(self, interaction: discord.Interaction) -> None:
+        if not await self._begin(interaction):
+            return
         reason = await self._blocked_reason(interaction)
         if reason:
-            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            await private_followup(interaction, error_view(reason))
             return
         if await self._resume_interrupted(interaction):
             return
 
-        # Loading the member list of a big server can take longer than the 3 seconds Discord allows for a first reply, so defer first when it isn't cached.
-        if not interaction.guild.chunked:
-            await interaction.response.defer()
         pending, already_done = await self._pending_members(interaction.guild)
         if not pending:
             await self._send(

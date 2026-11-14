@@ -529,9 +529,11 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await interaction.response.send_message(view=view, ephemeral=True)
 
     async def _blacklist_list(self, interaction: discord.Interaction) -> None:
+        # Private from the start, so the reply after the database read is a plain follow-up.
+        await interaction.response.defer(ephemeral=True)
         entries = await self.bot.db.blacklist_entries()
         if not entries:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 view=create_v2_view("Nobody is blacklisted", "Every user and server can use WordCounter.", color=NEUTRAL_COLOR), ephemeral=True,
             )
             return

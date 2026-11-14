@@ -14,12 +14,14 @@ from aiohttp import web
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, current_user, error_page, post_form, redirect, render
+from web.core import ENV, RateLimit, current_user, error_page, post_form, redirect, render
 
 routes = web.RouteTableDef()
 
 PAGE_SIZE = 25
 KEYWORD_TOP = 10
+# Every dashboard page reads the database, whose one connection everything shares, so a signed-in person gets 90 requests per 30 seconds, much more than clicking around needs.
+REQUESTS = RateLimit(90, 30.0)
 LISTABLE_TYPES = (*TRACKABLE_CHANNEL_TYPES, discord.ChannelType.category)
 
 
@@ -61,6 +63,12 @@ def require_user(request: web.Request) -> auth.User:
         raise web.HTTPFound(f"/login?next={quote(request.path_qs, safe='/?=&')}")
     if int(user["id"]) in request.app["bot"].blacklisted:
         raise web.HTTPForbidden(text="You've been banned from using WordCounter, so its dashboard is closed to you.")
+    # A handler that checks again, such as read_form after member_access, doesn't count the request twice.
+    if not request.get("rate_checked"):
+        request["rate_checked"] = True
+        wait = REQUESTS.wait(int(user["id"]))
+        if wait:
+            raise web.HTTPTooManyRequests(headers={"Retry-After": str(math.ceil(wait))})
     return user
 
 
@@ -68,12 +76,26 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
     return guild.icon.with_size(128).url if guild.icon else None
 
 
+# (server id, user id) to when Discord answered that they aren't in the server, asked because its member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time. Only that answer is kept: a found member could have lost a permission, and an error could be passing.
+_asked: Dict[Tuple[int, int], float] = {}
+ASKED_SECONDS = 20.0
+ASKED_LIMIT = 2000
+
+
 async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
     member = guild.get_member(user_id)
     # Only ask Discord when the member list isn't fully cached. A fully cached list already shows the person isn't in the server.
     if member is None and not guild.chunked:
+        key = (guild.id, user_id)
+        asked = _asked.get(key)
+        if asked is not None and time.monotonic() - asked < ASKED_SECONDS:
+            return None
         try:
             member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            if len(_asked) >= ASKED_LIMIT:
+                _asked.clear()
+            _asked[key] = time.monotonic()
         except discord.HTTPException:
             return None
     return member
@@ -85,7 +107,9 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     The bot not being in the server, or the person not being in it, gives the same 404 as any missing page. A banned server gives a 403. Every `/dashboard/{guild_id}` handler calls this, and the manager-only pages then check the flag.
     """
     user = require_user(request)
-    guild = request.app["bot"].get_guild(int(request.match_info["guild_id"]))
+    # The route only matches 1 to 19 ASCII digits, and this keeps a number that big from being turned into an ID that doesn't exist.
+    guild_id = whole_number(request.match_info["guild_id"])
+    guild = request.app["bot"].get_guild(guild_id) if guild_id else None
     if guild is None:
         raise web.HTTPNotFound()
     if guild.id in request.app["bot"].blacklisted:
@@ -254,7 +278,7 @@ async def dashboard(request: web.Request) -> web.Response:
     return render(request, "dashboard.html", "dashboard", servers=servers)
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}")
 async def own_stats(request: web.Request) -> web.Response:
     guild, member, can_manage = await member_access(request)
     bot = request.app["bot"]
@@ -269,7 +293,7 @@ async def own_stats(request: web.Request) -> web.Response:
     )
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/leaderboard")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/leaderboard")
 async def leaderboard(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -311,7 +335,7 @@ async def leaderboard(request: web.Request) -> web.Response:
     return render(request, "server_leaderboard.html", "dashboard", **context, **guild_context(guild, can_manage, "leaderboard"))
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/members")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/members")
 async def members(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -345,13 +369,15 @@ async def members(request: web.Request) -> web.Response:
     )
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/members/{member_id:\d+}")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/members/{member_id:[0-9]{1,19}}")
 async def member_page(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     bot = request.app["bot"]
-    member_id = int(request.match_info["member_id"])
+    member_id = whole_number(request.match_info["member_id"])
+    if member_id is None:
+        raise web.HTTPNotFound()
     running, busy = await analysis_state(bot, guild.id)
     return render(
         request,
@@ -372,12 +398,14 @@ async def member_page(request: web.Request) -> web.Response:
     )
 
 
-@routes.post(r"/dashboard/{guild_id:\d+}/members/{member_id:\d+}")
+@routes.post(r"/dashboard/{guild_id:[0-9]{1,19}}/members/{member_id:[0-9]{1,19}}")
 async def member_action(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
-    member_id = int(request.match_info["member_id"])
+    member_id = whole_number(request.match_info["member_id"])
+    if member_id is None:
+        raise web.HTTPNotFound()
     db = request.app["bot"].db
     form, csrf_ok = await read_form(request)
     action = form.get("action")
@@ -399,7 +427,7 @@ async def member_action(request: web.Request) -> web.Response:
     return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
 
 
-@routes.get(r"/dashboard/{guild_id:\d+}/settings")
+@routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
 async def settings(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
@@ -431,7 +459,7 @@ async def settings(request: web.Request) -> web.Response:
     )
 
 
-@routes.post(r"/dashboard/{guild_id:\d+}/settings")
+@routes.post(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
 async def settings_action(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
