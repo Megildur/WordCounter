@@ -23,10 +23,14 @@ class ErrorAccessLogger(AbstractAccessLogger):
 
 
 class ProbeFilter(logging.Filter):
-    """Drops the "Pause on PRI/Upgrade" error from the server log, so scanner requests that trigger it aren't logged as errors."""
+    """Cleans up aiohttp's own server log. It drops the "Pause on PRI/Upgrade" error, so scanner requests that trigger it aren't logged as errors, and it takes the visitor's address out of lines like "Error handling request from <address>", because the Privacy Policy says the log doesn't record who visited."""
     def filter(self, record: logging.LogRecord) -> bool:
         error = record.exc_info[1] if record.exc_info else None
-        return "Pause on PRI/Upgrade" not in str(error)
+        if "Pause on PRI/Upgrade" in str(error):
+            return False
+        if isinstance(record.msg, str) and record.msg.endswith(" from %s") and len(record.args or ()) == 1:
+            record.msg, record.args = record.msg[: -len(" from %s")], ()
+        return True
 
 
 def create_app(bot) -> web.Application:
