@@ -167,7 +167,7 @@
           <section id="security">
             <h2><span class="num">08</span>Data storage and security</h2>
             <p>
-              Counts and settings live in a MySQL database on the bot's host that only the bot can reach.
+              Counts and settings live in a MySQL database on the bot's host that only the bot can reach. The counts from new messages are held in the bot's memory for a couple of seconds so they can be written together, and a deletion request clears them from memory as well as from the database.
             </p>
             <p>
               <a href="https://wispbyte.com" target="_blank" rel="noopener noreferrer">Wispbyte</a>, a hosting company, runs WordCounter and this website and stores the database and log files. No system is perfectly secure, but we keep access limited to the bot and the developer.

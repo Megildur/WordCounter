@@ -229,7 +229,7 @@ class Counter(commands.Cog):
 
     async def _apply(self, message: discord.Message, channel_id: int, **changes: Any) -> None:
         # The month is the one the message was created in, so an edit or delete later adjusts the month it was first counted in.
-        await self.bot.db.apply_activity(
+        await self.bot.db.queue_activity(
             message.guild.id,
             message.author.id,
             channel_id,

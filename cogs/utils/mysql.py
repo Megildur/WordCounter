@@ -148,8 +148,13 @@ class SessionLock:
                 self._needs_ping = True
                 await self.connection.ping(reconnect=True)
                 self._needs_ping = False
+            # Counts that were waiting in memory go in first, in their own transaction (see activity_buffer.py).
+            flush = getattr(self.owner, "flush_before_block", None)
+            if flush is not None:
+                await flush(Session(self.connection))
         except BaseException:
-            # Also covers a cancelled task. Give the lock back or every later caller waits forever.
+            # Also covers a cancelled task, and counts that couldn't be written. Give the lock back or every later caller waits forever.
+            self._needs_ping = True
             await self._release()
             raise
         # owner.db exists only while the block is open, which is why queries must run inside `async with db_lock`.

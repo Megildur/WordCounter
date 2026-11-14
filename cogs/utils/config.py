@@ -37,6 +37,11 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 MYSQL_DB = _env("MYSQL_DB", "wordcounter")
 # The database file from before MySQL, which sqlite_import copies over the first time the bot starts with it.
 SQLITE_PATH = "Data/WordCounter.db"
+# How long, in seconds, a message's counts wait in memory so they can be written together with others'. 0 writes every message at once, as before.
+try:
+    ACTIVITY_FLUSH_SECONDS = max(0.0, float(_env("ACTIVITY_FLUSH_SECONDS", "2")))
+except ValueError:
+    ACTIVITY_FLUSH_SECONDS = 2.0
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
 # Signs the website's login cookies. Without SESSION_SECRET it is derived from the bot token, so it stays the same across restarts.
 SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()

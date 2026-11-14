@@ -151,6 +151,8 @@ class DataConfirmView(AuthorOnlyView):
             # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so the live counter stops saving anything new for it. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
             self.bot.blacklisted.add(self.target.id)
+        # Counts that are only in memory, waiting for the next batch, can't be reached by the database delete, so they are dropped first.
+        self.bot.db.forget_activity(self.target.id)
         removed = await self.bot.db.delete_by_id(self.target.id)
         # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID.
         jar = self.bot.get_cog("SwearJar")
