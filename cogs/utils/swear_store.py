@@ -328,7 +328,8 @@ class SwearJarQueries:
         await self._write([(
             """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, 0)
             ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages)""",
-            list(rows),
+            # Not turned into a list here: `_write` reads it once it holds the database lock, so the caller can leave rows out up to that moment.
+            rows,
         )])
 
     async def jar_credit_day(

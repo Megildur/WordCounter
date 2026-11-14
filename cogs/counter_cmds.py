@@ -57,6 +57,11 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         self.menu_view = menu_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # A modal stays open for a while after the button that opened it was pressed, so Manage Server is checked again when it is sent.
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return
         # Defer first: a modal must be answered within 3 seconds too, and the database work below can take longer.
         await interaction.response.defer()
         keywords = parse_keywords(self.keywords_input.value)
@@ -91,6 +96,10 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return
         await interaction.response.defer()
         keywords = parse_keywords(self.keywords_input.value or "")
         await self.menu_view.bot.db.replace_keywords(interaction.guild_id, keywords)

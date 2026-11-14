@@ -1168,6 +1168,10 @@ class AnalyzeChat(commands.Cog):
         saved = False
         self.running_guilds.add(guild.id)
         try:
+            if target.id in self.bot.blacklisted:
+                # Banned after the command was run: nothing is read or saved for them.
+                await status.show(error_view(f"{target.mention} is banned from using WordCounter, so their messages aren't counted."))
+                return
             if await self.bot.db.is_user_analyzed(guild.id, target.id):
                 await status.show(error_view(f"{target.mention} has already been analyzed in this server."))
                 return
