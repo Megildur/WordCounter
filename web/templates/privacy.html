@@ -134,7 +134,7 @@
 
           <section id="third-party">
             <h2><span class="num">05</span>Third-party services</h2>
-            <p>WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are and which servers you manage when you log in. It doesn't send your data to any other service.</p>
+            <p>WordCounter talks only to Discord: to read messages and send replies, and on this website to confirm who you are and which servers you manage when you log in. It doesn't send your data to any other service. The website is served through Cloudflare, which is described in section 07.</p>
             <p>Apart from these services, our host (see section 08) and the join and leave notices in section 03, we don't share data with anyone. We never sell it or use it for ads.</p>
           </section>
 
@@ -160,7 +160,10 @@
               <strong>Other cookies.</strong> While you log in, a cookie called <code>__Host-wordcounter_login</code> holds a random value for up to 10 minutes so the login can't be started by another site. We don't use advertising or analytics cookies.
             </p>
             <p>
-              <strong>Slowing down abuse.</strong> If it is turned on, the website counts the requests from each IP address in the bot's memory for a few minutes, to turn away a flood of them. Those counts are never saved or logged, and they are gone when the bot restarts.
+              <strong>Cloudflare.</strong> This website is served through Cloudflare. Your browser connects to Cloudflare, which passes the request on to the website, and it can see the address, the page and the details your browser sends with each visit, so that it can block floods and attacks. Cloudflare's own privacy policy covers what it does with them. WordCounter sends it nothing else.
+            </p>
+            <p>
+              <strong>Slowing down abuse.</strong> The website counts the requests from each visitor's IP address (which Cloudflare passes to it in a header) in the bot's memory for a few minutes, to turn away a flood of them. Those counts are never saved or logged, and they are gone when the bot restarts.
             </p>
             <p>
               <strong>Outside requests from your browser.</strong> Pages that show avatars or server icons load those images directly from Discord (<code>cdn.discordapp.com</code>). Like any site you visit, they can see your IP address. Fonts and other files are served from this site.
