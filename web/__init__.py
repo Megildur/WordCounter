@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.abc import AbstractAccessLogger
 from cogs.utils.config import SITE_URL, WEB_HOST, WEB_PORT
 from web import dashboard, pages, swearjar
-from web.core import load_templates, site_middleware, static_file
+from web.core import load_templates, origin_status, site_middleware, static_file
 
 log = logging.getLogger("web")
 
@@ -62,6 +62,7 @@ async def setup(bot) -> None:
         return
     bot.web_runner = runner
     log.info("Website running on %s:%s for %s", WEB_HOST, WEB_PORT, SITE_URL)
+    log.info("%s", origin_status())
 
 
 async def teardown(bot) -> None:

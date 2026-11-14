@@ -432,6 +432,15 @@ async def post_form(request: web.Request) -> MultiDictProxy:
     return MultiDictProxy(MultiDict((key, value) for key, value in form.items() if isinstance(value, str)))
 
 
+def origin_status() -> str:
+    """One sentence for the start-up log: whether the origin check is off, only logging, or refusing requests without the secret, so a restart shows which of the three is in force."""
+    if not ORIGIN_SECRET:
+        return "The origin check is off (ORIGIN_SECRET isn't set), so the website answers requests that skip Cloudflare."
+    if ORIGIN_SECRET_MODE == "enforce":
+        return f"The origin check is enforcing: a request without the right {ORIGIN_HEADER} gets a 403."
+    return f"The origin check only logs (ORIGIN_SECRET_MODE is log): a request without the right {ORIGIN_HEADER} is let through."
+
+
 def origin_allowed(request: web.Request) -> bool:
     """Whether the request may go on, by the secret Cloudflare adds in `X-Origin-Secret`. With ORIGIN_SECRET empty everything may. With it set, a request that carries the right value always may; one that doesn't may only in `log` mode, which says so in the log (a few times, without any address) so the Cloudflare rule can be checked before `enforce` is switched on. The value is compared in constant time."""
     if not ORIGIN_SECRET:
