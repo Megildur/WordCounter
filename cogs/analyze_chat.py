@@ -206,8 +206,8 @@ class LiveCoverage:
             # Everything after the later of the tracking start and the newest reset was counted live, so only older messages need reading.
             self.scan_before = min(command_cutoff, max([self.tracking_since, *resets.values()]))
 
-    def counts(self, user_id: int, channel_id: int, message_id: int) -> bool:
-        """Returns whether the analysis should count this message, which is when it is older than a reset or falls outside every tracking period. Swear runs pass user_id 0 and have no reset markers."""
+    def reset_marker(self, user_id: int, channel_id: int) -> int:
+        """Returns the snowflake of the newest reset that covers this member in this channel, or 0 when none does. Messages older than it lost their counts."""
         key = (user_id, channel_id)
         reset_before = self._reset_before.get(key)
         if reset_before is None:
@@ -218,8 +218,12 @@ class LiveCoverage:
                 self.resets.get((0, channel_id), 0),
                 self.resets.get((user_id, channel_id), 0),
             )
+        return reset_before
+
+    def counts(self, user_id: int, channel_id: int, message_id: int) -> bool:
+        """Returns whether the analysis should count this message, which is when it is older than a reset or falls outside every tracking period. Swear runs pass user_id 0 and have no reset markers."""
         # A reset may have wiped the count of any message older than it, so those are counted again even inside a tracking period.
-        if message_id < reset_before:
+        if message_id < self.reset_marker(user_id, channel_id):
             return True
         return not any(start <= message_id and (end is None or message_id < end) for start, end in self.periods)
 

@@ -142,8 +142,9 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS message_user (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, messages BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
+    # analyzed_at is the snowflake of the moment the analysis finished for the member (NULL for rows saved before it was kept), so a later edit or delete can tell whether the analysis ran after a reset wiped their counts.
     """CREATE TABLE IF NOT EXISTS analyzed_users (
-        user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL, analyzed_at BIGINT,
         PRIMARY KEY (user_id, guild_id))""",
     """CREATE TABLE IF NOT EXISTS emojis_channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
@@ -256,6 +257,7 @@ ADDED_COLUMNS = (
     ("monthly_user_stats", "emojis", "BIGINT NOT NULL DEFAULT 0"),
     ("jar_settings", "english", "INT NOT NULL DEFAULT 1"),
     ("jar_settings", "polish", "INT NOT NULL DEFAULT 0"),
+    ("analyzed_users", "analyzed_at", "BIGINT NULL"),
 )
 
 
@@ -419,6 +421,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
             cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
             resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
         return periods, resets
+
+    async def get_member_coverage(self, guild_id: int, user_id: int) -> Tuple[List[Tuple[int, Optional[int]]], Dict[Tuple[int, int], int], bool, Optional[int]]:
+        """Returns what decides whether one member's old message was ever counted: the server's tracking periods and reset markers (as `get_count_history`), whether the member was analyzed, and when (None for a member analyzed before the time was kept). One lock hold, so an edit or delete asks once."""
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
+            periods = [(row[0], row[1]) for row in await cursor.fetchall()]
+            cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
+            resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
+            cursor = await self.db.execute("SELECT analyzed_at FROM analyzed_users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            row = await cursor.fetchone()
+        return periods, resets, row is not None, row[0] if row else None
 
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
         """Returns (watched IDs, ignored IDs), as copies. Either set can hold categories as well as channels, and 1 in the watched set means the entire server. Every message asks, so the answer is kept for KEPT_SECONDS and dropped when a change to the tables is committed."""
@@ -767,10 +781,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         await self.db.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
-        """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time. Members already marked are ignored."""
+        """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time, and records when. Members already marked are ignored, so their time stays the first one."""
+        now = now_snowflake()
         await self.db.executemany(
-            "INSERT IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
-            [(user_id, guild_id) for user_id in user_ids],
+            "INSERT IGNORE INTO analyzed_users (user_id, guild_id, analyzed_at) VALUES (?, ?, ?)",
+            [(user_id, guild_id, now) for user_id in user_ids],
         )
 
     async def save_retroactive_results(

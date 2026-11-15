@@ -34,7 +34,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 
 ## What it does
 
-- **Live tracking.** Every message in a tracked channel is counted as it's sent, and counts are corrected when messages are edited or deleted.
+- **Live tracking.** Every message in a tracked channel is counted as it's sent, and counts are corrected when a message that was counted is edited or deleted. A message from before tracking, from a gap while it was off, or from before a reset changes the counts only if `/analyze_chat` counted it, because its counts were never in the totals (after a reset, only if the analysis ran after it).
 - **Monthly history.** Everything is grouped by month and channel, both for live tracking and for past messages.
 - **Member stats** (`/stats user`). Totals at the top, then a month-by-month view you can page through, with a per-channel breakdown.
 - **Leaderboards** (`/leaderboard [channel]`). Switch between words, messages, attachments, emojis, keywords and swears. Pick a channel to see its top members and monthly history.
