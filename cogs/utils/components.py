@@ -81,8 +81,8 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
 
 
 def safe_name(name: str) -> str:
-    """Escapes markdown and mentions, so a display name can't format the message around it or look like a ping."""
-    return discord.utils.escape_mentions(discord.utils.escape_markdown(name))
+    """Escapes markdown and mentions, so a display name can't format the message around it, hold a link or look like a ping. escape_markdown stops only the first of several links, so the "](" every link needs is broken up as well."""
+    return discord.utils.escape_mentions(discord.utils.escape_markdown(name).replace("](", "]\\("))
 
 
 async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
