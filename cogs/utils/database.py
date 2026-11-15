@@ -172,7 +172,7 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS count_resets (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, reset_at BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
-    # The next three tables hold an analysis that is running or was interrupted, one run per server. analysis_runs keeps the kind (member, server or swears), the snowflake the crawl reads back from (cutoff), the progress message to edit, and the running totals as JSON.
+    # The next three tables hold an analysis that is running or was interrupted, one run per server. analysis_runs keeps the kind (member, server or swears), the snowflake the crawl reads back from (cutoff), the progress message to edit, and the running totals as JSON, which also lists the member ids the run has counted (`credited` and `swear_members`), so `stored_data.ID_LISTS` reads that format to find and remove a user's id.
     """CREATE TABLE IF NOT EXISTS analysis_runs (
         guild_id BIGINT PRIMARY KEY, kind VARCHAR(32) NOT NULL, cutoff BIGINT NOT NULL,
         status_channel_id BIGINT, status_message_id BIGINT, started_at DOUBLE NOT NULL,

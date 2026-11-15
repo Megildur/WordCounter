@@ -67,17 +67,21 @@ class Target:
 
 
 def found_lines(found: stored_data.Found) -> str:
-    lines = [f"- `{table.name}`: {table.count:,}" for table in found.tables]
+    # A row that only lists the id (in a saved analysis) stays, and the id is taken out of its list.
+    lines = [f"- `{table.name}`: {table.count:,}" + (" (the row stays, only their ID is taken out of its lists)" if table.listed else "") for table in found.tables]
     if len(lines) > LISTED_TABLES:
         lines = lines[:LISTED_TABLES] + [f"- and {plural(len(lines) - LISTED_TABLES, 'more table')}"]
     return "\n".join(lines)
 
 
-def deleted_text(removed: Dict[str, int]) -> str:
-    rows = sum(removed.values())
-    if not rows:
+def deleted_text(deleted: stored_data.Deleted) -> str:
+    rows, cleared = sum(deleted.removed.values()), sum(deleted.cleared.values())
+    if not rows and not cleared:
         return "There were no rows left to delete."
-    return f"Deleted {plural(rows, 'row')} from {plural(len(removed), 'table')}."
+    text = f"Deleted {plural(rows, 'row')} from {plural(len(deleted.removed), 'table')}." if rows else ""
+    if cleared:
+        text += f"{' ' if text else ''}Took the ID out of the lists in {plural(cleared, 'row')} that belong to a server, which stay."
+    return text
 
 
 def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> discord.ui.LayoutView:
@@ -161,16 +165,16 @@ class DataConfirmView(AuthorOnlyView):
         analysis = self.bot.get_cog("AnalyzeChat")
         if analysis is not None:
             analysis.forget(self.target.id)
-        removed = await self.bot.db.delete_by_id(self.target.id)
+        deleted = await self.bot.db.delete_by_id(self.target.id)
         if jar is not None:
             jar.forget(self.target.id)
         # No ID in the log: a deletion that left the ID in a log file for 90 days would not be a deletion, and the Privacy Policy lists what the log can hold.
-        log.info("%s a %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, removed)
+        log.info("%s a %s: deleted %s, took the ID out of %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, deleted.removed, deleted.cleared)
         if self.ban:
             who = f"{self.target.label[0].upper()}{self.target.label[1:]}"
-            view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(removed)}", color=SUCCESS_COLOR)
+            view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(deleted)}", color=SUCCESS_COLOR)
         else:
-            view = create_v2_view("Data deleted", f"For {self.target.label}: {deleted_text(removed)}", color=SUCCESS_COLOR)
+            view = create_v2_view("Data deleted", f"For {self.target.label}: {deleted_text(deleted)}", color=SUCCESS_COLOR)
         await interaction.edit_original_response(view=view)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:

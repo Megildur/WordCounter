@@ -417,7 +417,7 @@ class CrawlRun:
         return len(self.credited | {user_id for user_id, tally in self.tallies.items() if tally.messages})
 
     def state(self) -> str:
-        """The running totals as the JSON saved in analysis_runs.totals, which `__init__` reads back on a resume."""
+        """The running totals as the JSON saved in analysis_runs.totals, which `__init__` reads back on a resume. `credited` and `swear_members` list user IDs, which `stored_data.ID_LISTS` finds and removes for the owner's data commands, so a change to these names or this format must change it too."""
         return json.dumps({
             **self.totals.totals(),
             "credited": sorted(self.credited - self.forgotten),
