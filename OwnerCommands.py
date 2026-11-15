@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    create_v2_container, create_v2_view, error_view, make_button, private_followup, safe_name,
+    code_span, create_v2_container, create_v2_view, error_view, make_button, private_followup, safe_name,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -268,6 +268,12 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if not await self._admin_only(interaction):
             return
         await interaction.response.defer()
+        # A name is imported as a module when it is loaded, so only a cog on disk or one that is already loaded is accepted.
+        if extension not in self.all_extensions():
+            await interaction.followup.send(
+                view=create_v2_view(f"Couldn't {action} an extension", f"No extension is named {code_span(extension[:100])}. Pick one from the list that shows as you type.", color=ERROR_COLOR)
+            )
+            return
         handlers = {
             "load": self.bot.load_extension,
             "unload": self.bot.unload_extension,
@@ -282,7 +288,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         except commands.ExtensionNotFound:
             problem = "No extension with that name exists."
         except commands.ExtensionFailed as error:
-            problem = f"It failed during setup.\n```{error}```"
+            log.warning("Extension %s failed to %s: %s", extension, action, error)
+            problem = "It failed during setup. The error is in the log."
         else:
             problem = ""
 
