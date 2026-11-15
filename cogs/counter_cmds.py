@@ -24,9 +24,11 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     can_attach,
+    code_span,
     private_followup,
     display_names,
     member_names,
+    safe_name,
     rank_prefix,
     tab_rows,
 )
@@ -73,9 +75,9 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         added, skipped = await self.menu_view.bot.db.add_keywords(interaction.guild_id, keywords)
         lines = []
         if added:
-            lines.append(f"Added {len(added)} keyword(s): `{', '.join(added[:10])}`")
+            lines.append(f"Added {len(added)} keyword(s): {code_span(', '.join(added[:10]))}")
         if skipped:
-            lines.append(f"Already tracked: `{', '.join(skipped[:10])}`")
+            lines.append(f"Already tracked: {code_span(', '.join(skipped[:10]))}")
         self.menu_view.status_banner = ("\n".join(lines), SUCCESS_COLOR if added else WARNING_COLOR)
         await self.menu_view.refresh_and_edit(interaction)
 
@@ -157,7 +159,7 @@ class SettingsMenuView(SectionMenu):
             specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
             scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids) or "None picked yet"
 
-        keyword_preview = ", ".join(f"`{k}`" for k in self.keywords[:20]) or "None"
+        keyword_preview = ", ".join(code_span(k) for k in self.keywords[:20]) or "None"
         if len(self.keywords) > 20:
             keyword_preview += f" and {len(self.keywords) - 20} more"
 
@@ -268,7 +270,7 @@ class SettingsMenuView(SectionMenu):
         )
 
     def _populate_keywords_tab(self, container: discord.ui.Container) -> None:
-        listed = "\n".join(f"- `{kw}`" for kw in self.keywords[:30]) or "None yet."
+        listed = "\n".join(f"- {code_span(kw)}" for kw in self.keywords[:30]) or "None yet."
         if len(self.keywords) > 30:
             listed += f"\n…and {len(self.keywords) - 30} more"
         container.add_item(
@@ -439,7 +441,7 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.defer()
         removed = interaction.data.get("values", [])
         await self.bot.db.remove_keywords(self.guild.id, removed)
-        self.status_banner = (f"Removed {len(removed)} keyword(s): `{', '.join(removed)}`", SUCCESS_COLOR)
+        self.status_banner = (f"Removed {len(removed)} keyword(s): {code_span(', '.join(removed))}", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_keywords(self, interaction: discord.Interaction) -> None:
@@ -601,7 +603,7 @@ class LeaderboardPaginator(ButtonPaginator):
             for keyword, users in chunk:
                 top = users[:10]
                 fields.append((
-                    f'"{keyword}"',
+                    f'"{safe_name(keyword)}"',
                     "\n".join(f"{rank_prefix(rank)} **{names[uid]}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"

@@ -152,8 +152,13 @@ def activity_line(words: int, messages: int, attachments: int, emojis: int, *, b
     return " · ".join(f"{mark}{value:,}{mark} {label}" for value, label in parts)
 
 
+def code_span(text: str) -> str:
+    """Puts text a member typed, such as a keyword, in an inline code span. A backtick can't be escaped inside one, so it would end the span early and leave the rest of the text live (a link, bold), so it is swapped for a look-alike."""
+    return "`" + text.replace("`", "ˋ") + "`"
+
+
 def keyword_summary(counts: Iterable[Tuple[str, int]]) -> str:
-    return " · ".join(f"`{keyword}` {count:,}" for keyword, count in counts)
+    return " · ".join(f"{code_span(keyword)} {count:,}" for keyword, count in counts)
 
 
 def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
