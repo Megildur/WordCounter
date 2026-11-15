@@ -81,7 +81,7 @@
               </div>
               <div>
                 <dt>Records that keep counts accurate</dt>
-                <dd>When tracking was turned on or off and when counts were reset, so past messages are never counted twice. While <code>/analyze_chat</code> is running, the ID of the last message read in each channel, so it can pick up where it left off after a restart. These checkpoints are deleted when the analysis finishes.</dd>
+                <dd>When tracking was turned on or off and when counts were reset, so past messages are never counted twice. While <code>/analyze_chat</code> is running, the ID of the last message read in each channel and which members the run has counted so far (their user IDs), so it can pick up where it left off after a restart. These checkpoints are deleted when the analysis finishes, and when your data is deleted your ID is taken out of a running or interrupted analysis's list of counted members.</dd>
               </div>
               <div>
                 <dt>Support emails</dt>
