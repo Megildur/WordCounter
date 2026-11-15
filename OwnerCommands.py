@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    create_v2_container, create_v2_view, error_view, make_button, private_followup,
+    create_v2_container, create_v2_view, error_view, make_button, private_followup, safe_name,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -58,7 +58,7 @@ class Target:
     @property
     def label(self) -> str:
         if self.name:
-            return f"{self.what} **{discord.utils.escape_markdown(self.name)}** (`{self.id}`)"
+            return f"{self.what} **{safe_name(self.name)}** (`{self.id}`)"
         return f"{self.what} `{self.id}`"
 
     @property
@@ -122,7 +122,7 @@ class DataConfirmView(AuthorOnlyView):
                 does = "WordCounter stops counting their messages in every server, ignores everything they do, and answers their commands and buttons with a notice that they're banned."
             description = f"{who}.\n{does}"
             if reason:
-                description += f"\n**Reason:** {discord.utils.escape_markdown(reason)}"
+                description += f"\n**Reason:** {safe_name(reason)}"
             if found.empty:
                 description += "\n**Their data:** nothing stored."
                 confirm = "Blacklist"
@@ -252,7 +252,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         else:
             removed = len(self.bot.tree.get_commands(guild=interaction.guild))
             self.bot.tree.clear_commands(guild=interaction.guild)
-            target = f"from **{interaction.guild.name}**"
+            target = f"from **{safe_name(interaction.guild.name)}**"
         log.info("Cleared %s commands %s", removed, target.replace("**", ""))
         await interaction.followup.send(
             view=create_v2_view(
@@ -558,10 +558,10 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             found = self.bot.get_guild(entry.target_id) if entry.kind == blacklist.SERVER else self.bot.get_user(entry.target_id)
             line = f"**{entry.kind.capitalize()}** `{entry.target_id}`"
             if getattr(found, "name", None):
-                line += f" {discord.utils.escape_markdown(found.name)}"
+                line += f" {safe_name(found.name)}"
             line += f" · since <t:{int(entry.added_at)}:D>"
             if entry.reason:
-                line += f"\n-# {discord.utils.escape_markdown(entry.reason)}"
+                line += f"\n-# {safe_name(entry.reason)}"
             lines.append(line)
         count = "1 user or server can't" if len(entries) == 1 else f"{len(entries):,} users and servers can't"
         pages = [
