@@ -210,7 +210,7 @@ class StoredDataQueries:
                     if found:
                         names = [description[0] for description in cursor.description]
                         matched = [column for column in columns if any(row[names.index(column)] == target_id for row in found)]
-                        tables.append(Table(name, len(found), matched, names, found))
+                        tables.append(Table(name, len(found), matched, columns=names, rows=found))
                     continue
                 # One query counts the rows and says which columns held the id: the COUNTs come first in the SELECT, so their placeholders take the first values.
                 picks = "".join(f", COUNT(CASE WHEN `{column}` = ? THEN 1 END)" for column in columns)
