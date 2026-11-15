@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    create_v2_container, create_v2_view, error_view, make_button,
+    create_v2_container, create_v2_view, error_view, make_button, private_followup,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -405,11 +405,12 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
                 ephemeral=True,
             )
             return
+        # The export is public, and looking the ID up can ask Discord for the user, so defer first and send the problems privately with `private_followup`.
+        await interaction.response.defer()
         target, problem = await self._target(kind, target_id)
         if target is None:
-            await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
+            await private_followup(interaction, error_view(problem, title="Can't use that ID"))
             return
-        await interaction.response.defer()
         found = await self.bot.db.find_by_id(target.id, rows=True)
         if found.empty:
             view = create_v2_view("Nothing stored", f"WordCounter has nothing stored about {target.label}.", color=NEUTRAL_COLOR)
@@ -442,18 +443,20 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     async def kept_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
         if not await self._admin_only(interaction):
             return
+        # Looking the ID up can ask Discord for the user, and the check reads every table, so defer first. The post is public, so the problems go out privately with `private_followup`.
+        await interaction.response.defer()
         target, problem = await self._target(kind, target_id)
         if target is None:
-            await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
+            await private_followup(interaction, error_view(problem, title="Can't use that ID"))
             return
         if not (await self.bot.db.find_by_id(target.id)).empty:
-            await interaction.response.send_message(view=error_view(
+            await private_followup(interaction, error_view(
                 f"WordCounter still stores data about {target.label} that a deletion removes. Delete it with `/owner delete_data` first, then post this.",
                 title="Not deleted yet",
-            ), ephemeral=True)
+            ))
             return
         view = kept_view(target, await self.bot.db.blacklist_entry(target.id))
-        await interaction.response.send_message(view=view, allowed_mentions=NO_PINGS)
+        await interaction.followup.send(view=view, allowed_mentions=NO_PINGS)
 
     @app_commands.command(name="blacklist", description="Ban a user or server from using WordCounter, lift a ban, or list bans")
     @app_commands.describe(
@@ -520,9 +523,11 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if target_id is None:
             await interaction.response.send_message(view=error_view(BAD_ID, title="Can't use that ID"), ephemeral=True)
             return
+        # The look-up and the write wait for the database lock, which can take longer than the 3 seconds Discord gives for a reply, so defer first.
+        await interaction.response.defer(ephemeral=True)
         entry = await self.bot.db.blacklist_entry(target_id)
         if entry is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 view=create_v2_view("Not blacklisted", f"`{target_id}` isn't on the blacklist.", color=NEUTRAL_COLOR), ephemeral=True,
             )
             return
@@ -536,7 +541,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             f"The {entry.kind} `{target_id}` can use WordCounter again. The data deleted with the ban doesn't come back.",
             color=SUCCESS_COLOR,
         )
-        await interaction.response.send_message(view=view, ephemeral=True)
+        await interaction.followup.send(view=view, ephemeral=True)
 
     async def _blacklist_list(self, interaction: discord.Interaction) -> None:
         # Private from the start, so the reply after the database read is a plain follow-up.
