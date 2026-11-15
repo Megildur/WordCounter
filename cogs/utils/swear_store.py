@@ -326,10 +326,11 @@ class SwearJarQueries:
     async def jar_add_day_messages(self, rows: Iterable[Tuple[int, int, int, int]]) -> None:
         """Adds message counts to jar_days. `rows` are (guild_id, user_id, day, messages). A new row starts unfined, and an existing row keeps its fined flag."""
         await self._write([(
-            """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, 0)
+            # The fined flag is a placeholder too: aiomysql sends one multi-row statement only when every item of the VALUES list is a placeholder, and with a literal 0 it would run one statement per row while holding the database lock.
+            """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages)""",
             # Not turned into a list here: `_write` reads it once it holds the database lock, so the caller can leave rows out up to that moment.
-            rows,
+            ((guild_id, user_id, day, messages, 0) for guild_id, user_id, day, messages in rows),
         )])
 
     async def jar_credit_day(
