@@ -80,9 +80,14 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
     _fetched_names[user_id] = (time.monotonic(), name)
 
 
+# A private-use character that stands in for the backslash while escape_markdown runs, because a real one would be escaped itself.
+_LINK_BREAK = ""
+
+
 def safe_name(name: str) -> str:
-    """Escapes markdown and mentions, so a display name can't format the message around it, hold a link or look like a ping. escape_markdown stops only the first of several links, so the "](" every link needs is broken up as well."""
-    return discord.utils.escape_mentions(discord.utils.escape_markdown(name).replace("](", "]\\("))
+    """Escapes markdown and mentions, so a display name can't format the message around it, hold a link or look like a ping. The "](" every link needs is broken up before escape_markdown runs: its own link pattern runs from the first "[" to the last ")" on a line, escapes only the "[" and leaves everything in between (bold, a spoiler, a code fence) live."""
+    escaped = discord.utils.escape_markdown(name.replace("](", "]" + _LINK_BREAK + "(")).replace("]" + _LINK_BREAK + "(", "]\\(")
+    return discord.utils.escape_mentions(escaped)
 
 
 async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
