@@ -157,6 +157,10 @@ class DataConfirmView(AuthorOnlyView):
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
+        # A running /analyze_chat keeps counts in memory too, until its next checkpoint, and would save them (and mark the member analyzed) after the delete. It is told before the delete and checks again when its own write gets the database lock.
+        analysis = self.bot.get_cog("AnalyzeChat")
+        if analysis is not None:
+            analysis.forget(self.target.id)
         removed = await self.bot.db.delete_by_id(self.target.id)
         if jar is not None:
             jar.forget(self.target.id)
