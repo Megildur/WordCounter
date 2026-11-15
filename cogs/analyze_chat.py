@@ -615,7 +615,7 @@ class AnalyzeChat(commands.Cog):
         return guild_id in self.running_guilds or await self.bot.db.has_analysis_run(guild_id)
 
     def forget(self, target_id: int) -> None:
-        """Makes a running analysis drop a user or server id: the counts it holds in memory for that id aren't saved, and it stops counting that user's messages. The owner data commands call it before deleting stored data. A write that already took its counts and is waiting for the database lock checks again when it gets the lock (`WithoutForgotten`)."""
+        """Makes a running analysis drop a user or server id: the counts it holds in memory for that id aren't saved, and it stops counting that user's messages. The owner data commands call it before deleting stored data. A write that already took its counts and is waiting for the database lock checks again when it gets the lock (`WithoutForgotten`, and the checkpoint's totals). An interrupted run isn't running, so it has nothing in memory to drop and this does nothing: the data deletion takes the ID out of its saved row (`stored_data.ID_LISTS`), and the owner commands call this again after it, in case the run was resumed in between from the row as it was before."""
         if self.running_guilds:
             self.forgotten.add(target_id)
 
@@ -963,11 +963,11 @@ class AnalyzeChat(commands.Cog):
 
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
         """Saves the crawl's progress. Raises AnalysisCancelled when the run was deleted, which stops the crawl."""
-        # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them.
+        # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them. `state` is passed as a function so the write reads it when it has the database lock, as it does for the counts, and a member forgotten while it waited isn't saved in the totals either.
         results = WithoutForgotten(run.flush(), self.forgotten)
         swears = WithoutForgotten(run.flush_swears(), self.forgotten)
         saved = await self.bot.db.checkpoint_analysis_run(
-            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state(), swears
+            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state, swears
         )
         if not saved:
             raise AnalysisCancelled

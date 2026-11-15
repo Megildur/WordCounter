@@ -12,7 +12,7 @@ import re
 import time
 from collections import defaultdict
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
 from pathlib import Path
 from cogs.utils import config
@@ -870,10 +870,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         cursors: Mapping[int, int],
         finished: Mapping[int, str],
         messages_read: int,
-        totals: str,
+        totals: Callable[[], str],
         swears: Optional[SwearCounts] = None,
     ) -> bool:
-        """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running `totals` JSON, and where each channel stands. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
+        """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running totals JSON, and where each channel stands. `totals` is a function that returns the JSON and is called once the database lock is held, like the lazy `results` and `swears`, so the owner deleting a member's data while this write waited can't have the ID saved again. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
 
         Counts and cursors commit together, so after a restart the crawl continues from exactly where the saved counts stop and nothing is counted twice.
 
@@ -884,7 +884,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
             # Updated first on purpose. The reset deletes this row, so a rowcount of 0 means the run was cancelled and none of the writes below should happen.
             cursor = await self.db.execute(
                 "UPDATE analysis_runs SET messages_read = ?, totals = ? WHERE guild_id = ?",
-                (messages_read, totals, guild_id),
+                (messages_read, totals(), guild_id),
             )
             if cursor.rowcount == 0:
                 return False

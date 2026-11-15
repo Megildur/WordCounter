@@ -161,13 +161,15 @@ class DataConfirmView(AuthorOnlyView):
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
-        # A running /analyze_chat keeps counts in memory too, until its next checkpoint, and would save them (and mark the member analyzed) after the delete. It is told before the delete and checks again when its own write gets the database lock.
+        # A running /analyze_chat keeps counts in memory too, until its next checkpoint, and would save them (and mark the member analyzed) after the delete. It is told before the delete and checks again when its own write gets the database lock. It is told again after the delete, like the jar, because a run that was interrupted and resumed while the delete was working read the saved row before the ID was taken out of it.
         analysis = self.bot.get_cog("AnalyzeChat")
         if analysis is not None:
             analysis.forget(self.target.id)
         deleted = await self.bot.db.delete_by_id(self.target.id)
         if jar is not None:
             jar.forget(self.target.id)
+        if analysis is not None:
+            analysis.forget(self.target.id)
         # No ID in the log: a deletion that left the ID in a log file for 90 days would not be a deletion, and the Privacy Policy lists what the log can hold.
         log.info("%s a %s: deleted %s, took the ID out of %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, deleted.removed, deleted.cleared)
         if self.ban:
