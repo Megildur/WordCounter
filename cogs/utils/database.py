@@ -194,10 +194,9 @@ COUNT_DATA_TABLES = (
 
 ANALYSIS_RUN_TABLES = ("analysis_runs", "analysis_run_members", "analysis_run_channels")
 
-# Every table with a guild_id. `reset_entire_server` deletes one server's rows from each, so a new per-server table must be added here.
-GUILD_TABLES = (
-    *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword",
-    "tracking_periods", "count_resets", *ANALYSIS_RUN_TABLES, *JAR_TABLES,
+# Every table of the tracking side with a guild_id, apart from a saved analysis. `reset_entire_server` deletes one server's rows from these and from JAR_TABLES (the swear jar), so a new per-server table must be added to one of the two.
+TRACKING_TABLES = (
+    *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword", "tracking_periods", "count_resets",
 )
 
 
@@ -1115,8 +1114,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         await self.db.executemany(decrement, [(row["amount"], *_key_values(table, row)) for row in removed])
         await self.db.executemany(prune, [_key_values(table, row) for row in removed])
 
-    async def reset_entire_server(self, guild_id: int) -> None:
-        await self._write([(f"DELETE FROM `{table}` WHERE guild_id = ?", [(guild_id,)]) for table in GUILD_TABLES])
+    async def reset_entire_server(self, guild_id: int, counts: bool = True, jar: bool = True) -> None:
+        """Deletes one server's data: with `counts` the tracking side (counts, who was analyzed, tracked and ignored channels, keywords, tracking periods, reset markers and a saved member or server analysis), with `jar` the whole swear jar (settings, words, channel rules, goal, balances, fines, swear counts, coverage and a saved swears analysis). Both is a reset of everything."""
+        if not counts and not jar:
+            return
+        tables = [*(TRACKING_TABLES if counts else ()), *(JAR_TABLES if jar else ())]
+        statements: List[Tuple[str, Sequence[Sequence[Any]]]] = [(f"DELETE FROM `{table}` WHERE guild_id = ?", [(guild_id,)]) for table in tables]
+        # A server has one saved run, and its kind says which side it belongs to. Its two detail tables have no kind, so they go first, while the run row they are matched against is still there.
+        kind = "" if counts and jar else " AND kind <> 'swears'" if counts else " AND kind = 'swears'"
+        for table in ANALYSIS_RUN_TABLES[1:]:
+            statements.append((f"DELETE FROM `{table}` WHERE guild_id IN (SELECT guild_id FROM analysis_runs WHERE guild_id = ?{kind})", [(guild_id,)]))
+        statements.append((f"DELETE FROM analysis_runs WHERE guild_id = ?{kind}", [(guild_id,)]))
+        await self._write(statements)
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()

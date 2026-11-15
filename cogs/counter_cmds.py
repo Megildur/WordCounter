@@ -34,7 +34,7 @@ from cogs.utils.components import (
 )
 from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
-from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
+from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
 
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
@@ -310,11 +310,17 @@ class SettingsMenuView(SectionMenu):
         if self.pending_confirmation == "wipe_server":
             self._confirmation(
                 container,
-                "**Reset everything?**\n"
-                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
-                "Reset everything",
+                "**Reset everything?** Pick what to delete. It can't be undone.\n"
+                "- **Stats and settings:** every member's counts (words, messages, attachments, emojis and keywords), who has been analyzed, the tracked and ignored channels and the keyword list. The swear jar stays.\n"
+                "- **Swear jar:** its settings, word list, channel rules, goal, balances, fines and swear counts. Stats and tracking stay.\n"
+                "- **Both:** everything above.",
+                "Reset stats and settings",
                 discord.ButtonStyle.danger,
-                self._confirm_wipe_server,
+                self._confirm_wipe_server("stats"),
+                more=(
+                    ("Reset swear jar", discord.ButtonStyle.danger, self._confirm_wipe_server("jar")),
+                    ("Reset both", discord.ButtonStyle.danger, self._confirm_wipe_server("both")),
+                ),
             )
             return
         if self.pending_confirmation == "scoped_reset":
@@ -503,21 +509,34 @@ class SettingsMenuView(SectionMenu):
                 )
         await self.refresh_and_edit(interaction)
 
-    async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        self.pending_confirmation = None
-        # Unlike the other resets, only a run going right now blocks this one, because it also deletes an interrupted run's saved progress.
-        running, _ = await analysis_state(self.bot, self.guild.id)
-        if running:
-            self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+    def _confirm_wipe_server(self, what: str) -> Callback:
+        """Returns the button callback for one choice of `WIPES`: reset the stats and settings, the swear jar or both."""
+        counts, jar, result = WIPES[what]
+
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            self.pending_confirmation = None
+            # Unlike the other resets, only a run going right now blocks this one, because it also deletes an interrupted run's saved progress (a swears run when the jar is reset, any other run when the stats are).
+            running, _ = await analysis_state(self.bot, self.guild.id)
+            if running:
+                self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+                await self.refresh_and_edit(interaction)
+                return
+            await self.bot.db.reset_entire_server(self.guild.id, counts=counts, jar=jar)
+            if jar:
+                # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
+                swear_jar = self.bot.get_cog("SwearJar")
+                if swear_jar is not None:
+                    swear_jar.forget(self.guild.id)
+            if counts:
+                self.selected_reset_user_id = None
+                self.selected_reset_channel_id = None
+                self.active_tab = "overview"
+            self.status_banner = (result, SUCCESS_COLOR)
             await self.refresh_and_edit(interaction)
-            return
-        await self.bot.db.reset_entire_server(self.guild.id)
-        self.selected_reset_user_id = None
-        self.selected_reset_channel_id = None
-        self.active_tab = "overview"
-        self.status_banner = ("Server reset. All stats, analysis history, channels and keywords were cleared.", SUCCESS_COLOR)
-        await self.refresh_and_edit(interaction)
+
+        return callback
+
 
 class LeaderboardPaginator(ButtonPaginator):
     """Pages of ranked members for one metric, with a podium picture on the first page and a row of buttons to switch metric.

@@ -93,7 +93,7 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
             ("Keywords", "Words or phrases to count separately, like an inside joke or a catchphrase."),
             (
                 "Data & Reset Tools",
-                "Reset all counts for a member, a channel or both, re-analyze a member from scratch, or reset the whole server.",
+                "Reset all counts for a member, a channel or both, re-analyze a member from scratch, or reset the whole server: its stats and settings, its swear jar, or both.",
             ),
         ],
     ),

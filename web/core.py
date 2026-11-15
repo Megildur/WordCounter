@@ -18,7 +18,7 @@ from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
 from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_EMAIL, SUPPORT_URL, invite_url
-from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE
+from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, WIPES
 from web import auth
 
 log = logging.getLogger("web")
@@ -65,7 +65,8 @@ MESSAGES = {
     "keywords_saved": ("success", "Keyword list saved."),
     "counts_reset": ("success", "Counts reset."),
     "reanalysis_ready": ("success", "Counts cleared. Run /analyze_chat in Discord to rebuild them."),
-    "server_reset": ("success", "Server reset. All stats, analysis history, channels and keywords were cleared."),
+    **{f"reset_{what}": ("success", result) for what, (_, _, result) in WIPES.items()},
+    "bad_reset": ("error", "Pick what to reset."),
     "busy": ("error", ANALYSIS_BUSY_MESSAGE),
     "confirm_needed": ("error", "Tick the confirmation box to do that."),
     "expired_form": ("error", "That form expired. Please try again."),

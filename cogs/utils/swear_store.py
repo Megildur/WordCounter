@@ -83,7 +83,7 @@ JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
 
 # The per-member tables, which jar_reset_members clears. The server's settings, words, rules, goal and coverage rows stay.
 JAR_PLAYER_TABLES = ("jar_members", "jar_days", "jar_fines", "swears_channels", "swears_users")
-# Every jar table, so that resetting a whole server (GUILD_TABLES in database.py) wipes the jar too.
+# Every jar table, which `reset_entire_server` (database.py) deletes when the swear jar is reset along with, or instead of, the tracking side.
 JAR_TABLES = ("jar_settings", "jar_words", "jar_channels", "jar_goals", "jar_coverage", *JAR_PLAYER_TABLES)
 
 # Same shape as COUNT_TABLES in database.py, which includes these so get_leaderboard can read the swear counts like the others.
