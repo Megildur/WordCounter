@@ -219,9 +219,9 @@ class Counter(commands.Cog):
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
         """Returns the channel id the message counts under, or None when it must not be counted.
 
-        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
+        Bots, direct messages and system messages (joins, pins, boosts, thread renames) are never counted, the same messages `/analyze_chat` leaves out, so the live numbers and the analysed ones agree. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
         """
-        if message.author.bot or message.guild is None:
+        if message.author.bot or message.guild is None or message.is_system():
             return None
         watched, ignored = await self.bot.db.get_guild_tracking_config(message.guild.id)
         tracked, channel_id = check_channel_with_config(message.guild, message.channel, watched, ignored)
