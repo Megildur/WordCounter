@@ -1,6 +1,6 @@
 """Finds, exports and deletes everything WordCounter stores about a Discord user or server, and holds the blacklist queries.
 
-/owner delete_data, export_data and blacklist use it. It reads information_schema and searches every integer column whose name ends in `_id`, so any table with such a column is covered without changes here. That is why Discord ids must be stored in `..._id` integer columns. The id search and the deletion skip the blacklist table, and KEPT_POLICY is the text that says why.
+/owner delete_data, export_data, kept_data and blacklist use it. It reads information_schema and searches every integer column whose name ends in `_id`, so any table with such a column is covered without changes here. `find_by_id` counts what it finds and reads the rows only for the export. That is why Discord ids must be stored in `..._id` integer columns. The id search and the deletion skip the blacklist table, and KEPT_POLICY is the text that says why.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ import datetime
 import io
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 from cogs.utils.mysql import TABLE_OPTIONS
 
@@ -35,21 +35,25 @@ KEPT_POLICY = (
 
 @dataclass
 class Table:
-    """The rows of one table that mention an id. `matched` lists the id columns that held it."""
+    """The rows of one table that mention an id. `count` is how many there are and `matched` lists the id columns that held it. `columns` and `rows` stay empty unless `find_by_id` was asked for the rows."""
     name: str
-    columns: List[str]
-    rows: List[Tuple[Any, ...]]
+    count: int
     matched: List[str]
+    columns: List[str] = field(default_factory=list)
+    rows: List[Tuple[Any, ...]] = field(default_factory=list)
 
 
 @dataclass
 class Found:
     target_id: int
     tables: List[Table]
+    # Whether the tables carry their rows, which only the export needs.
+    has_rows: bool = False
 
     @property
     def rows(self) -> int:
-        return sum(len(table.rows) for table in self.tables)
+        """How many rows the id is in, counted over every table."""
+        return sum(table.count for table in self.tables)
 
     @property
     def empty(self) -> bool:
@@ -85,11 +89,13 @@ def _show(value: Any) -> str:
 
 
 def report(found: Found, heading: str) -> str:
-    """Renders what was found as plain text for the export file: the heading, a summary line, then each table's rows."""
+    """Renders what was found as plain text for the export file: the heading, a summary line, then each table's rows. `found` must come from `find_by_id(..., rows=True)`: a count-only result raises instead of exporting empty tables."""
+    if not found.has_rows:
+        raise ValueError("report() needs find_by_id(..., rows=True), which reads the rows")
     now = datetime.datetime.now(datetime.timezone.utc)
     lines = [heading, f"Exported {now:%Y-%m-%d %H:%M} UTC: {summary(found)}.", ""]
     for table in found.tables:
-        lines.append(f"== {table.name}: {_plural(len(table.rows), 'row')} ==")
+        lines.append(f"== {table.name}: {_plural(table.count, 'row')} ==")
         lines.append(f"Found in: {', '.join(table.matched)}.")
         for number, row in enumerate(table.rows, 1):
             lines.append(f"  Row {number}")
@@ -126,21 +132,29 @@ class StoredDataQueries:
                 found.setdefault(table, []).append(column)
         return found
 
-    async def find_by_id(self, target_id: int) -> Found:
-        """Returns every row that holds `target_id` in any `_id` column of any table, for a user id or a server id."""
+    async def find_by_id(self, target_id: int, *, rows: bool = False) -> Found:
+        """Returns every table that holds `target_id` in any `_id` column, for a user id or a server id, with how many rows it has there. The rows themselves are read only with `rows=True`, which the export needs and the confirm panels and /owner kept_data don't, so a big server costs no memory."""
         await self.ensure_connected()
         tables: List[Table] = []
         async with self.db_lock:
             for name, columns in (await self._id_columns()).items():
                 # Names come from information_schema, not from user input. A row matches when any of the table's id columns holds the id.
                 where = " OR ".join(f"`{column}` = ?" for column in columns)
-                cursor = await self.db.execute(f"SELECT * FROM `{name}` WHERE {where}", (target_id,) * len(columns))
-                rows = [tuple(row) for row in await cursor.fetchall()]
                 if rows:
-                    names = [description[0] for description in cursor.description]
-                    matched = [column for column in columns if any(row[names.index(column)] == target_id for row in rows)]
-                    tables.append(Table(name, names, rows, matched))
-        return Found(target_id, tables)
+                    cursor = await self.db.execute(f"SELECT * FROM `{name}` WHERE {where}", (target_id,) * len(columns))
+                    found = [tuple(row) for row in await cursor.fetchall()]
+                    if found:
+                        names = [description[0] for description in cursor.description]
+                        matched = [column for column in columns if any(row[names.index(column)] == target_id for row in found)]
+                        tables.append(Table(name, len(found), matched, names, found))
+                    continue
+                # One query counts the rows and says which columns held the id: the COUNTs come first in the SELECT, so their placeholders take the first values.
+                picks = "".join(f", COUNT(CASE WHEN `{column}` = ? THEN 1 END)" for column in columns)
+                cursor = await self.db.execute(f"SELECT COUNT(*){picks} FROM `{name}` WHERE {where}", (target_id,) * (2 * len(columns)))
+                total, *per_column = await cursor.fetchone()
+                if total:
+                    tables.append(Table(name, int(total), [column for column, n in zip(columns, per_column) if n]))
+        return Found(target_id, tables, has_rows=rows)
 
     async def delete_by_id(self, target_id: int) -> Dict[str, int]:
         """Deletes every row find_by_id would return and returns {table: rows deleted}. The blacklist table is not touched."""

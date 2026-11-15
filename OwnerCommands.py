@@ -67,7 +67,7 @@ class Target:
 
 
 def found_lines(found: stored_data.Found) -> str:
-    lines = [f"- `{table.name}`: {len(table.rows):,}" for table in found.tables]
+    lines = [f"- `{table.name}`: {table.count:,}" for table in found.tables]
     if len(lines) > LISTED_TABLES:
         lines = lines[:LISTED_TABLES] + [f"- and {plural(len(lines) - LISTED_TABLES, 'more table')}"]
     return "\n".join(lines)
@@ -410,7 +410,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
             return
         await interaction.response.defer()
-        found = await self.bot.db.find_by_id(target.id)
+        found = await self.bot.db.find_by_id(target.id, rows=True)
         if found.empty:
             view = create_v2_view("Nothing stored", f"WordCounter has nothing stored about {target.label}.", color=NEUTRAL_COLOR)
             await interaction.followup.send(view=view, allowed_mentions=NO_PINGS)
