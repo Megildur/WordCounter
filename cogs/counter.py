@@ -21,6 +21,7 @@ from cogs.utils.components import (
     error_view,
     keyword_summary,
     private_followup,
+    safe_name,
 )
 from cogs.analyze_chat import LiveCoverage
 from cogs.utils import cards
@@ -59,7 +60,7 @@ class UserStatsPaginator(ButtonPaginator):
         if keywords:
             fields.append(("Keywords", keyword_summary(keywords)))
 
-        footer = self.guild.name
+        footer = safe_name(self.guild.name)
         if month is not None:
             label = f"{calendar.month_name[month['month']]} {month['year']}"
             summary = [activity_line(month["words"], month["messages"], month["attachments"], month.get("emojis", 0))]
@@ -79,7 +80,7 @@ class UserStatsPaginator(ButtonPaginator):
                 channel_lines.append(line)
             if channel_lines:
                 fields.append((f"Channels in {label}", "\n".join(channel_lines)))
-            footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {self.guild.name}"
+            footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {safe_name(self.guild.name)}"
 
         container = create_v2_container(
             title="User stats",

@@ -33,6 +33,7 @@ from cogs.utils.components import (
     member_names,
     private_followup,
     rank_prefix,
+    safe_name,
     tab_rows,
 )
 from cogs.utils.jar import (
@@ -276,7 +277,7 @@ class JarSettingsView(SectionMenu):
         self.cog.invalidate(self.guild.id)
 
     def description(self) -> str:
-        return f"Fines for swearing in **{self.guild.name}**, paid back with clean streaks."
+        return f"Fines for swearing in **{safe_name(self.guild.name)}**, paid back with clean streaks."
 
     def _money(self, units: int) -> str:
         return money(self.settings, units)
@@ -1231,7 +1232,7 @@ class SwearJar(commands.Cog):
         )
         container = create_v2_container(
             "Swear jar wallet",
-            f"{member.mention}'s swear jar in **{interaction.guild.name}**.",
+            f"{member.mention}'s swear jar in **{safe_name(interaction.guild.name)}**.",
             fields=wallet_fields(settings, data),
             footer=earning_footer(settings),
             color=WARNING_COLOR if balance < 0 else SUCCESS_COLOR,

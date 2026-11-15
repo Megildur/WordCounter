@@ -139,7 +139,7 @@ class SettingsMenuView(SectionMenu):
         return bool(self.watched_ids)
 
     def description(self) -> str:
-        return f"Tracking, channels, keywords and resets for **{self.guild.name}**."
+        return f"Tracking, channels, keywords and resets for **{safe_name(self.guild.name)}**."
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         if not self.is_enabled:
