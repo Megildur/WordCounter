@@ -13,7 +13,7 @@ import discord
 from aiohttp import web
 from cogs.utils.config import guild_invite_url
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
-from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
+from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from web import auth
 from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, post_form, redirect, render, sent_from_other_site
 
@@ -558,7 +558,14 @@ async def settings_action(request: web.Request) -> web.Response:
             if result == "reanalysis_ready":
                 await db.allow_reanalysis(guild.id)
         elif action == "reset_server":
-            result = await confirmed_and_free(request, form, guild, running_only=True) or "server_reset"
-            if result == "server_reset":
-                await db.reset_entire_server(guild.id)
+            what = form.get("what")
+            result = "bad_reset" if what not in WIPES else await confirmed_and_free(request, form, guild, running_only=True) or f"reset_{what}"
+            if what in WIPES and result == f"reset_{what}":
+                counts, jar, _ = WIPES[what]
+                await db.reset_entire_server(guild.id, counts=counts, jar=jar)
+                if jar:
+                    # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
+                    cog = request.app["bot"].get_cog("SwearJar")
+                    if cog is not None:
+                        cog.forget(guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")

@@ -6,6 +6,13 @@ import discord
 
 ANALYSIS_BUSY_MESSAGE = "An analysis is running in this server. Try again once it finishes."
 
+# The choices of "Reset everything" in Discord and on the dashboard: what to reset (the stats and settings, the swear jar) and what to tell the person afterwards.
+WIPES = {
+    "stats": (True, False, "Stats and settings reset. All counts, analysis history, channels and keywords were cleared. The swear jar was kept."),
+    "jar": (False, True, "Swear jar reset. Its settings, words, rules, goal, balances, fines and counts were cleared. Stats and tracking were kept."),
+    "both": (True, True, "Server reset. All stats, analysis history, channels, keywords and the swear jar were cleared."),
+}
+
 LEADERBOARDS = {
     "words": "Words",
     "messages": "Messages",
@@ -35,7 +42,7 @@ async def analysis_state(bot, guild_id: int) -> Tuple[bool, bool]:
 
     `running` is true while an analysis is going in this process. `busy` is also true when an interrupted run is saved and waits to resume.
 
-    Count resets in /settings are refused while busy. The swear jar reset and the whole-server wipe are refused only while running, and the wipe also deletes the saved run.
+    Count resets in /settings are refused while busy. The swear jar reset and the whole-server wipe are refused only while running, and the wipe also deletes the saved run that belongs to what it resets.
     """
     cog = bot.get_cog("AnalyzeChat")
     running = cog is not None and guild_id in cog.running_guilds

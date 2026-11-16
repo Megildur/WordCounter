@@ -131,12 +131,19 @@
 
 <section class="panel panel--danger" aria-labelledby="wipe-title">
   <h3 id="wipe-title">Reset everything</h3>
-  <p>Deletes all of this server's stats, clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.</p>
+  <p>Choose what to delete. It can't be undone.</p>
+  <p><strong>Stats and settings:</strong> every member's counts, who has been analyzed, the tracked and ignored channels and the keyword list. The swear jar stays.</p>
+  <p><strong>Swear jar:</strong> its settings, word list, channel rules, goal, balances, fines and swear counts. Stats and tracking stay.</p>
+  <p><strong>Both:</strong> everything above.</p>
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="reset_server">
-    {{ ui.confirm("wipe-confirm", "I understand this deletes everything WordCounter has for this server.") }}
-    <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset everything</button></div>
+    {{ ui.confirm("wipe-confirm", "I understand the one I pick deletes that data for this server for good.") }}
+    <div class="form-actions">
+      <button type="submit" name="what" value="stats" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset stats and settings</button>
+      <button type="submit" name="what" value="jar" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset swear jar</button>
+      <button type="submit" name="what" value="both" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset both</button>
+    </div>
   </form>
 </section>
 {% endblock %}

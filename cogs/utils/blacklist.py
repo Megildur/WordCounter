@@ -9,7 +9,7 @@ import logging
 from typing import Any, Dict, Iterator, Optional, Sequence, Set, Tuple
 import discord
 from cogs.utils.components import ERROR_COLOR, create_v2_view
-from cogs.utils.config import SUPPORT_URL
+from cogs.utils.config import SUPPORT_EMAIL, SUPPORT_URL
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def banned_view(kind: str) -> discord.ui.LayoutView:
     else:
         title = "You can't use WordCounter"
         description = "You've been banned from using WordCounter, so it won't answer your commands or buttons."
-    footer = f"If you think this is a mistake, ask in the [support server]({SUPPORT_URL})."
+    footer = f"If you think this is a mistake, ask in the [support server]({SUPPORT_URL}) or email {SUPPORT_EMAIL}."
     return create_v2_view(title, description, footer=footer, color=ERROR_COLOR)
 
 

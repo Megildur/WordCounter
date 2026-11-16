@@ -16,7 +16,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple, Union
 import aiohttp
 import discord
 from discord import app_commands
@@ -206,8 +206,8 @@ class LiveCoverage:
             # Everything after the later of the tracking start and the newest reset was counted live, so only older messages need reading.
             self.scan_before = min(command_cutoff, max([self.tracking_since, *resets.values()]))
 
-    def counts(self, user_id: int, channel_id: int, message_id: int) -> bool:
-        """Returns whether the analysis should count this message, which is when it is older than a reset or falls outside every tracking period. Swear runs pass user_id 0 and have no reset markers."""
+    def reset_marker(self, user_id: int, channel_id: int) -> int:
+        """Returns the snowflake of the newest reset that covers this member in this channel, or 0 when none does. Messages older than it lost their counts."""
         key = (user_id, channel_id)
         reset_before = self._reset_before.get(key)
         if reset_before is None:
@@ -218,8 +218,12 @@ class LiveCoverage:
                 self.resets.get((0, channel_id), 0),
                 self.resets.get((user_id, channel_id), 0),
             )
+        return reset_before
+
+    def counts(self, user_id: int, channel_id: int, message_id: int) -> bool:
+        """Returns whether the analysis should count this message, which is when it is older than a reset or falls outside every tracking period. Swear runs pass user_id 0 and have no reset markers."""
         # A reset may have wiped the count of any message older than it, so those are counted again even inside a tracking period.
-        if message_id < reset_before:
+        if message_id < self.reset_marker(user_id, channel_id):
             return True
         return not any(start <= message_id and (end is None or message_id < end) for start, end in self.periods)
 
@@ -330,14 +334,30 @@ class StatusMessage:
             log.warning("Could not update analysis status message: %s", error)
 
 
+class WithoutForgotten(Mapping):
+    """A read-only view of `counts` that leaves out the IDs in `forgotten` at the moment it is read, which for a database write is after it has the database lock. A write that was already waiting when the owner deleted someone's data then finds that ID gone."""
+    def __init__(self, counts: Mapping[int, Any], forgotten: Set[int]) -> None:
+        self.counts, self.forgotten = counts, forgotten
+
+    def __getitem__(self, user_id: int) -> Any:
+        return self.counts[user_id]
+
+    def __iter__(self) -> Iterator[int]:
+        return (user_id for user_id in self.counts if user_id not in self.forgotten)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
 class CrawlRun:
     """The in-memory state of one crawl, rebuilt from the saved run record when it resumes.
 
-    `authors` are the member IDs being counted. `tallies` hold counts not saved yet: `flush` hands them over and folds them into `totals`. `cursors` maps channel_id to the oldest message read so far in channels still being read, and `finished` maps channel_id to its final status (done, unreadable or failed).
+    `authors` are the member IDs being counted. `tallies` hold counts not saved yet: `flush` hands them over and folds them into `totals`. `cursors` maps channel_id to the oldest message read so far in channels still being read, and `finished` maps channel_id to its final status (done, unreadable or failed). `forgotten` is the cog's set of IDs whose stored data the owner deleted while an analysis runs, which the crawl stops counting and never saves.
     """
-    def __init__(self, guild_id: int, record: Dict[str, Any], coverage: LiveCoverage) -> None:
+    def __init__(self, guild_id: int, record: Dict[str, Any], coverage: LiveCoverage, forgotten: Set[int]) -> None:
         state = json.loads(record["totals"] or "{}")
         self.guild_id = guild_id
+        self.forgotten = forgotten
         self.kind: str = record["kind"]
         self.authors: Set[int] = record["members"]
         self.scan_before: int = record["cutoff"]
@@ -397,12 +417,12 @@ class CrawlRun:
         return len(self.credited | {user_id for user_id, tally in self.tallies.items() if tally.messages})
 
     def state(self) -> str:
-        """The running totals as the JSON saved in analysis_runs.totals, which `__init__` reads back on a resume."""
+        """The running totals as the JSON saved in analysis_runs.totals, which `__init__` reads back on a resume. `credited` and `swear_members` list user IDs, which `stored_data.ID_LISTS` finds and removes for the owner's data commands, so a change to these names or this format must change it too."""
         return json.dumps({
             **self.totals.totals(),
-            "credited": sorted(self.credited),
+            "credited": sorted(self.credited - self.forgotten),
             "swears": self.swear_total,
-            "swear_members": sorted(self.swear_members),
+            "swear_members": sorted(self.swear_members - self.forgotten),
         })
 
 
@@ -541,6 +561,8 @@ class AnalyzeChat(commands.Cog):
         self.bot = bot
         # Servers with an analysis running in this process, whether it is searching or reading history. Other cogs read it through server_settings.analysis_state.
         self.running_guilds: Set[int] = set()
+        # IDs whose stored data the owner deleted, or who were banned, while an analysis was running. Only kept until the last running analysis ends (`_finished`), because a later one starts from the database, where they are gone.
+        self.forgotten: Set[int] = set()
         # Search requests from every server go through one lock and one clock, so they stay SEARCH_INTERVAL apart.
         self.search_lock = asyncio.Lock()
         self.last_search = 0.0
@@ -591,6 +613,17 @@ class AnalyzeChat(commands.Cog):
 
     async def is_busy(self, guild_id: int) -> bool:
         return guild_id in self.running_guilds or await self.bot.db.has_analysis_run(guild_id)
+
+    def forget(self, target_id: int) -> None:
+        """Makes a running analysis drop a user or server id: the counts it holds in memory for that id aren't saved, and it stops counting that user's messages. The owner data commands call it before deleting stored data. A write that already took its counts and is waiting for the database lock checks again when it gets the lock (`WithoutForgotten`, and the checkpoint's totals). An interrupted run isn't running, so it has nothing in memory to drop and this does nothing: the data deletion takes the ID out of its saved row (`stored_data.ID_LISTS`), and the owner commands call this again after it, in case the run was resumed in between from the row as it was before."""
+        if self.running_guilds:
+            self.forgotten.add(target_id)
+
+    def _finished(self, guild_id: int) -> None:
+        """Marks a server's analysis as over. The forgotten IDs go once nothing is running, since a new analysis reads its members from the database."""
+        self.running_guilds.discard(guild_id)
+        if not self.running_guilds:
+            self.forgotten.clear()
 
     async def _resume(self, guild: discord.Guild) -> None:
         """Continues an interrupted run after a restart. Only the saved message IDs survive a restart, so progress is shown by editing that message."""
@@ -892,7 +925,7 @@ class AnalyzeChat(commands.Cog):
                             run.cursors[channel.id] = message.id
                             progress.read += 1
                             author_id = message.author.id
-                            if author_id in self.bot.blacklisted:
+                            if author_id in self.bot.blacklisted or author_id in self.forgotten:
                                 continue
                             if run.counts_swears:
                                 if not message.author.bot and not message.is_system() and run.coverage.counts(0, effective_id, message.id):
@@ -930,11 +963,11 @@ class AnalyzeChat(commands.Cog):
 
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
         """Saves the crawl's progress. Raises AnalysisCancelled when the run was deleted, which stops the crawl."""
-        # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them.
-        results = run.flush()
-        swears = run.flush_swears()
+        # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them. `state` is passed as a function so the write reads it when it has the database lock, as it does for the counts, and a member forgotten while it waited isn't saved in the totals either.
+        results = WithoutForgotten(run.flush(), self.forgotten)
+        swears = WithoutForgotten(run.flush_swears(), self.forgotten)
         saved = await self.bot.db.checkpoint_analysis_run(
-            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state(), swears
+            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state, swears
         )
         if not saved:
             raise AnalysisCancelled
@@ -1095,7 +1128,7 @@ class AnalyzeChat(commands.Cog):
             else:
                 scope, keywords = await self._load_scope(guild)
                 coverage = await self._coverage(guild.id, record["cutoff"])
-            run = CrawlRun(guild.id, record, coverage)
+            run = CrawlRun(guild.id, record, coverage, self.forgotten)
             if run.counts_swears:
                 overrides = tuple(await self.bot.db.jar_word_overrides(guild.id))
                 languages = languages_for(await self.bot.db.jar_settings(guild.id))
@@ -1121,12 +1154,13 @@ class AnalyzeChat(commands.Cog):
             async with self._live_status(status, render):
                 await self._crawl(guild, run, scope, keywords, progress)
                 # Whatever is still unsaved goes in with the final write, which also marks the members analyzed. A swear run records the span it read as covered too, so later runs skip it.
-                results = run.flush()
-                swear_counts = run.flush_swears()
+                results = WithoutForgotten(run.flush(), self.forgotten)
+                swear_counts = WithoutForgotten(run.flush_swears(), self.forgotten)
                 finished = await self.bot.db.finish_analysis_run(
                     guild.id,
                     results,
-                    run.authors,
+                    # A generator, read when the write has the database lock, so an ID forgotten while it waited isn't marked analyzed again.
+                    (user_id for user_id in run.authors if user_id not in self.forgotten),
                     swear_counts,
                     run.scan_before if run.counts_swears else None,
                 )
@@ -1156,7 +1190,7 @@ class AnalyzeChat(commands.Cog):
                 error_view("The analysis hit an unexpected error. Everything up to the last checkpoint is saved, and it picks up from there when the bot restarts or you run the command again.")
             )
         finally:
-            self.running_guilds.discard(guild.id)
+            self._finished(guild.id)
 
     @tracked
     async def run_member(self, interaction: discord.Interaction, target: discord.Member) -> None:
@@ -1194,7 +1228,15 @@ class AnalyzeChat(commands.Cog):
                 await self._run_crawl(guild, status)
                 return
 
-            await self.bot.db.save_retroactive_results(guild.id, {target.id: tally.activity} if tally.messages else {}, members)
+            if target.id in self.forgotten:
+                await status.show(error_view(f"{target.mention}'s data was deleted while their messages were being counted, so nothing was saved."))
+                return
+            # Both are read when the write has the database lock, so an ID forgotten while it waited is left out.
+            await self.bot.db.save_retroactive_results(
+                guild.id,
+                WithoutForgotten({target.id: tally.activity} if tally.messages else {}, self.forgotten),
+                (user_id for user_id in members if user_id not in self.forgotten),
+            )
             saved = True
             await status.show(
                 self._summary_view(guild, "member", members, tally, int(bool(tally.messages)), keywords, progress)
@@ -1207,7 +1249,7 @@ class AnalyzeChat(commands.Cog):
                 message = "The analysis stopped because of an unexpected error, so nothing was saved. You can run it again."
             await status.show(error_view(message))
         finally:
-            self.running_guilds.discard(guild.id)
+            self._finished(guild.id)
 
     @tracked
     async def run_server(self, interaction: discord.Interaction) -> None:
@@ -1228,7 +1270,7 @@ class AnalyzeChat(commands.Cog):
             )
             await self._run_crawl(guild, status)
         finally:
-            self.running_guilds.discard(guild.id)
+            self._finished(guild.id)
 
     @tracked
     async def run_swears(self, interaction: discord.Interaction) -> None:
@@ -1242,7 +1284,7 @@ class AnalyzeChat(commands.Cog):
             await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
             await self._run_crawl(guild, status)
         finally:
-            self.running_guilds.discard(guild.id)
+            self._finished(guild.id)
 
     @analyze_chat.command(
         name="swears",

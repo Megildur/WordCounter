@@ -18,6 +18,8 @@ def _env(key: str, default: str = "") -> str:
 
 API_TOKEN = _env("API_TOKEN")
 SUPPORT_URL = _env("BOT_SERVER", "https://discord.gg/prUsgFHvRS")
+# Where people can write for help, next to the support server. Discord link buttons can't open a mail program, so views show it as text.
+SUPPORT_EMAIL = _env("SUPPORT_EMAIL", "support@wordcounter.dev")
 WEBHOOK_URL = _env("BOT_WEBHOOK_URL")
 # The servers where the owner commands exist, from a comma-separated list. Parts that aren't numbers are ignored.
 ALLOWED_GUILD_IDS: List[int] = [

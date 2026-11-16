@@ -15,7 +15,7 @@ from discord.ext import commands
 from discord.ui import ActionRow, Container, LayoutView, Modal, Separator, TextDisplay
 from discord.ui.view import BaseView
 from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, make_button
-from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_URL
+from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_EMAIL, SUPPORT_URL
 
 log = logging.getLogger("Errors")
 
@@ -49,7 +49,7 @@ class ErrorDisplayView(AuthorOnlyView):
         container = Container(accent_colour=ERROR_COLOR)
         container.add_item(TextDisplay(f"### {title}\n{description}"))
         container.add_item(Separator(spacing=discord.SeparatorSpacing.large))
-        support = f"If this keeps happening, let the developer, Brandon, know in the [support server]({SUPPORT_URL})."
+        support = f"If this keeps happening, let the developer, Brandon, know in the [support server]({SUPPORT_URL}) or at {SUPPORT_EMAIL}."
         container.add_item(TextDisplay(f"{support}\n-# Reference: {reference}" if reference else support))
         if traceback_str:
             container.add_item(Separator())

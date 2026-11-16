@@ -24,15 +24,17 @@ from cogs.utils.components import (
     make_button,
     manager_check_error,
     can_attach,
+    code_span,
     private_followup,
     display_names,
     member_names,
+    safe_name,
     rank_prefix,
     tab_rows,
 )
 from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
-from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, analysis_state, parse_keywords
+from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
 
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
@@ -73,9 +75,9 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         added, skipped = await self.menu_view.bot.db.add_keywords(interaction.guild_id, keywords)
         lines = []
         if added:
-            lines.append(f"Added {len(added)} keyword(s): `{', '.join(added[:10])}`")
+            lines.append(f"Added {len(added)} keyword(s): {code_span(', '.join(added[:10]))}")
         if skipped:
-            lines.append(f"Already tracked: `{', '.join(skipped[:10])}`")
+            lines.append(f"Already tracked: {code_span(', '.join(skipped[:10]))}")
         self.menu_view.status_banner = ("\n".join(lines), SUCCESS_COLOR if added else WARNING_COLOR)
         await self.menu_view.refresh_and_edit(interaction)
 
@@ -137,7 +139,7 @@ class SettingsMenuView(SectionMenu):
         return bool(self.watched_ids)
 
     def description(self) -> str:
-        return f"Tracking, channels, keywords and resets for **{self.guild.name}**."
+        return f"Tracking, channels, keywords and resets for **{safe_name(self.guild.name)}**."
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         if not self.is_enabled:
@@ -157,7 +159,7 @@ class SettingsMenuView(SectionMenu):
             specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
             scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids) or "None picked yet"
 
-        keyword_preview = ", ".join(f"`{k}`" for k in self.keywords[:20]) or "None"
+        keyword_preview = ", ".join(code_span(k) for k in self.keywords[:20]) or "None"
         if len(self.keywords) > 20:
             keyword_preview += f" and {len(self.keywords) - 20} more"
 
@@ -268,7 +270,7 @@ class SettingsMenuView(SectionMenu):
         )
 
     def _populate_keywords_tab(self, container: discord.ui.Container) -> None:
-        listed = "\n".join(f"- `{kw}`" for kw in self.keywords[:30]) or "None yet."
+        listed = "\n".join(f"- {code_span(kw)}" for kw in self.keywords[:30]) or "None yet."
         if len(self.keywords) > 30:
             listed += f"\n…and {len(self.keywords) - 30} more"
         container.add_item(
@@ -279,8 +281,8 @@ class SettingsMenuView(SectionMenu):
         )
 
         if self.keywords:
-            # At most 25 options, and a label or value over 100 characters is cut. Edit list and Remove all handle the rest.
-            options = [discord.SelectOption(label=kw[:100], value=kw[:100]) for kw in self.keywords[:25]]
+            # At most 25 options, and a label or value is cut at 100 characters, so a longer keyword is left out: its cut-off value would match nothing when removed. Edit list and Remove all handle those and the rest.
+            options = [discord.SelectOption(label=kw, value=kw) for kw in self.keywords if len(kw) <= 100][:25]
             remove_select = discord.ui.Select(
                 placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
             )
@@ -308,11 +310,17 @@ class SettingsMenuView(SectionMenu):
         if self.pending_confirmation == "wipe_server":
             self._confirmation(
                 container,
-                "**Reset everything?**\n"
-                "This deletes all of this server's stats (words, messages, attachments, emojis and keywords), clears who has been analyzed, and resets tracking settings and keywords. It can't be undone.",
-                "Reset everything",
+                "**Reset everything?** Pick what to delete. It can't be undone.\n"
+                "- **Stats and settings:** every member's counts (words, messages, attachments, emojis and keywords), who has been analyzed, the tracked and ignored channels and the keyword list. The swear jar stays.\n"
+                "- **Swear jar:** its settings, word list, channel rules, goal, balances, fines and swear counts. Stats and tracking stay.\n"
+                "- **Both:** everything above.",
+                "Reset stats and settings",
                 discord.ButtonStyle.danger,
-                self._confirm_wipe_server,
+                self._confirm_wipe_server("stats"),
+                more=(
+                    ("Reset swear jar", discord.ButtonStyle.danger, self._confirm_wipe_server("jar")),
+                    ("Reset both", discord.ButtonStyle.danger, self._confirm_wipe_server("both")),
+                ),
             )
             return
         if self.pending_confirmation == "scoped_reset":
@@ -439,7 +447,7 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.defer()
         removed = interaction.data.get("values", [])
         await self.bot.db.remove_keywords(self.guild.id, removed)
-        self.status_banner = (f"Removed {len(removed)} keyword(s): `{', '.join(removed)}`", SUCCESS_COLOR)
+        self.status_banner = (f"Removed {len(removed)} keyword(s): {code_span(', '.join(removed))}", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_keywords(self, interaction: discord.Interaction) -> None:
@@ -501,21 +509,34 @@ class SettingsMenuView(SectionMenu):
                 )
         await self.refresh_and_edit(interaction)
 
-    async def _confirm_wipe_server(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        self.pending_confirmation = None
-        # Unlike the other resets, only a run going right now blocks this one, because it also deletes an interrupted run's saved progress.
-        running, _ = await analysis_state(self.bot, self.guild.id)
-        if running:
-            self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+    def _confirm_wipe_server(self, what: str) -> Callback:
+        """Returns the button callback for one choice of `WIPES`: reset the stats and settings, the swear jar or both."""
+        counts, jar, result = WIPES[what]
+
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            self.pending_confirmation = None
+            # Unlike the other resets, only a run going right now blocks this one, because it also deletes an interrupted run's saved progress (a swears run when the jar is reset, any other run when the stats are).
+            running, _ = await analysis_state(self.bot, self.guild.id)
+            if running:
+                self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
+                await self.refresh_and_edit(interaction)
+                return
+            await self.bot.db.reset_entire_server(self.guild.id, counts=counts, jar=jar)
+            if jar:
+                # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
+                swear_jar = self.bot.get_cog("SwearJar")
+                if swear_jar is not None:
+                    swear_jar.forget(self.guild.id)
+            if counts:
+                self.selected_reset_user_id = None
+                self.selected_reset_channel_id = None
+                self.active_tab = "overview"
+            self.status_banner = (result, SUCCESS_COLOR)
             await self.refresh_and_edit(interaction)
-            return
-        await self.bot.db.reset_entire_server(self.guild.id)
-        self.selected_reset_user_id = None
-        self.selected_reset_channel_id = None
-        self.active_tab = "overview"
-        self.status_banner = ("Server reset. All stats, analysis history, channels and keywords were cleared.", SUCCESS_COLOR)
-        await self.refresh_and_edit(interaction)
+
+        return callback
+
 
 class LeaderboardPaginator(ButtonPaginator):
     """Pages of ranked members for one metric, with a podium picture on the first page and a row of buttons to switch metric.
@@ -601,7 +622,7 @@ class LeaderboardPaginator(ButtonPaginator):
             for keyword, users in chunk:
                 top = users[:10]
                 fields.append((
-                    f'"{keyword}"',
+                    f'"{safe_name(keyword)}"',
                     "\n".join(f"{rank_prefix(rank)} **{names[uid]}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"

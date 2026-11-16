@@ -27,13 +27,14 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
 | Website and dashboard | [wordcounter.dev](https://wordcounter.dev) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
+| Support email | [support@wordcounter.dev](mailto:support@wordcounter.dev) |
 | Source and releases | [Megildur/WordCounter](https://github.com/Megildur/WordCounter) |
 | Privacy Policy | [wordcounter.dev/privacy](https://wordcounter.dev/privacy) |
 | Terms of Service | [wordcounter.dev/terms](https://wordcounter.dev/terms) |
 
 ## What it does
 
-- **Live tracking.** Every message in a tracked channel is counted as it's sent, and counts are corrected when messages are edited or deleted.
+- **Live tracking.** Every message in a tracked channel is counted as it's sent, and counts are corrected when a message that was counted is edited or deleted. A message from before tracking, from a gap while it was off, or from before a reset changes the counts only if `/analyze_chat` counted it, because its counts were never in the totals (after a reset, only if the analysis ran after it).
 - **Monthly history.** Everything is grouped by month and channel, both for live tracking and for past messages.
 - **Member stats** (`/stats user`). Totals at the top, then a month-by-month view you can page through, with a per-channel breakdown.
 - **Leaderboards** (`/leaderboard [channel]`). Switch between words, messages, attachments, emojis, keywords and swears. Pick a channel to see its top members and monthly history.
@@ -44,7 +45,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
   - Channel reads save a checkpoint every minute. If the bot restarts mid-run, it picks up where it stopped on its own.
   - Each member is analyzed once. To redo it, **Allow re-analysis** in `/settings` clears that member's counts first, so the next run rebuilds their full history without counting anything twice.
 - **Website** ([wordcounter.dev](https://wordcounter.dev)). Log in with Discord to see your own stats in every server you share with WordCounter. In servers where you have Manage Server, you also get the leaderboards, every member's stats, the same settings and resets as `/settings`, and the swear jar's settings. The dashboard also lists the servers you manage that don't have WordCounter yet, each with a button to add it.
-- **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel, both, or the whole server.
+- **Settings** (`/settings`). Track the whole server with an ignore list, or only the channels and categories you pick. Manage keywords, and reset all counts for a member, a channel or both, or reset the whole server: its stats and settings, its swear jar, or both, after you pick which.
 - **A hello when it joins.** WordCounter posts a short welcome with its banner in the server's system channel (or the first channel where it can attach a picture): how to turn counting on, `/help`, and Botzilla and its game from the same lab. Nobody is pinged.
 - **Swear jar** (`/swearjar`). Off until an admin turns it on in `/swearjar settings`. Every swear costs, and debt is only paid back by not swearing:
   - Swears are fined by tier: mild (1 unit), explicit (4) and slurs or the server's own words (10). A message is fined for at most its 3 priciest swears. Fines show as money ($0.25 a unit by default) or the server's own tokens.
@@ -129,6 +130,7 @@ Right-click menus:
    ```
    - `API_TOKEN`: your bot token.
    - `BOT_SERVER`: support server invite shown in help and error messages.
+   - `SUPPORT_EMAIL`: optional, the support address shown next to it on the website, in help and in error messages. It is `support@wordcounter.dev` if it isn't set.
    - `BOT_WEBHOOK_URL`: optional webhook that gets a message when the bot joins or leaves a server.
    - `ALLOWED_GUILDS`: servers where the `/owner` commands (administrators only) are available.
    - `BASE_URL`: the public address of the website, without a trailing slash.
@@ -137,7 +139,7 @@ Right-click menus:
    - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
    - `ACTIVITY_FLUSH_SECONDS`: how long the counts from new messages wait in memory so they are written to the database together, `2` if it isn't set. `0` writes every message at once. A crash or a kill can lose the counts from the last few seconds.
    - `CLIENT_IP_HEADER`: optional, and it turns on limiting requests for each visitor's address. Give it the name of the request header your proxy fills in with the visitor's address, such as `CF-Connecting-IP`, and set it only if the website can't be reached except through that proxy. Give it `peer` instead if nothing stands in front of the website, or `cloudflare` if the website is behind Cloudflare: that reads `CF-Connecting-IP` and only believes it on a connection from Cloudflare's published address ranges, so a visitor who reaches the website without Cloudflare can't make the header count them as someone else, and that request just isn't limited. Without it nothing is limited by address, and the log says why and which headers a request carries (their names only, never an address).
-   - `ORIGIN_SECRET` and `ORIGIN_SECRET_MODE`: optional, for a website behind Cloudflare whose server address can also be reached directly. Add a Cloudflare request-header rule (Rules > Transform Rules > Modify Request Header) that sets `X-Origin-Secret` to a long random value on every request to your domain, and give the same value to `ORIGIN_SECRET`. In the default mode, `log`, the website only says in the log whether requests carry the secret. Once the log shows that requests through Cloudflare do, set `ORIGIN_SECRET_MODE=enforce` and every request without the secret (anyone using the server's address directly) gets a bare 403. The start-up log says which of the three states is in force (off, logging or enforcing). Switching to `enforce` before the rule exists takes the website down for everyone.
+   - `ORIGIN_SECRET` and `ORIGIN_SECRET_MODE`: optional, for a website behind Cloudflare whose server address can also be reached directly. Add a Cloudflare request-header rule (Rules > Transform Rules > Modify Request Header) that sets `X-Origin-Secret` to a long random value on every request to your domain, and give the same value to `ORIGIN_SECRET`. In the default mode, `log`, the website only says in the log whether requests carry the secret. Once the log shows that requests through Cloudflare do, set `ORIGIN_SECRET_MODE=enforce` and every request without the secret (anyone using the server's address directly) gets a bare 403. The start-up log says which of the three states is in force (off, logging or enforcing), and while enforcing it notes the first few refusals and then how many were refused, at most every 10 minutes. Switching to `enforce` before the rule exists takes the website down for everyone.
    - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
 5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
@@ -172,4 +174,4 @@ Right-click menus:
 
 ## Support
 
-Questions, bug reports and ideas go in the [support server](https://discord.gg/prUsgFHvRS).
+Questions, bug reports and ideas go in the [support server](https://discord.gg/prUsgFHvRS), or by email to [support@wordcounter.dev](mailto:support@wordcounter.dev).

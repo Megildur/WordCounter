@@ -80,9 +80,14 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
     _fetched_names[user_id] = (time.monotonic(), name)
 
 
+# A private-use character that stands in for the backslash while escape_markdown runs, because a real one would be escaped itself.
+_LINK_BREAK = ""
+
+
 def safe_name(name: str) -> str:
-    """Escapes markdown and mentions, so a display name can't format the message around it or look like a ping."""
-    return discord.utils.escape_mentions(discord.utils.escape_markdown(name))
+    """Escapes markdown and mentions, so a display name can't format the message around it, hold a link or look like a ping. The "](" every link needs is broken up before escape_markdown runs: its own link pattern runs from the first "[" to the last ")" on a line, escapes only the "[" and leaves everything in between (bold, a spoiler, a code fence) live."""
+    escaped = discord.utils.escape_markdown(name.replace("](", "]" + _LINK_BREAK + "(")).replace("]" + _LINK_BREAK + "(", "]\\(")
+    return discord.utils.escape_mentions(escaped)
 
 
 async def member_names(client: discord.Client, guild: discord.Guild, user_ids: Iterable[int]) -> Dict[int, str]:
@@ -147,8 +152,13 @@ def activity_line(words: int, messages: int, attachments: int, emojis: int, *, b
     return " · ".join(f"{mark}{value:,}{mark} {label}" for value, label in parts)
 
 
+def code_span(text: str) -> str:
+    """Puts text a member typed, such as a keyword, in an inline code span. A backtick can't be escaped inside one, so it would end the span early and leave the rest of the text live (a link, bold), so it is swapped for a look-alike."""
+    return "`" + text.replace("`", "ˋ") + "`"
+
+
 def keyword_summary(counts: Iterable[Tuple[str, int]]) -> str:
-    return " · ".join(f"`{keyword}` {count:,}" for keyword, count in counts)
+    return " · ".join(f"{code_span(keyword)} {count:,}" for keyword, count in counts)
 
 
 def manager_check_error(interaction: discord.Interaction) -> Optional[str]:

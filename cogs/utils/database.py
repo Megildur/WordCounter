@@ -12,7 +12,7 @@ import re
 import time
 from collections import defaultdict
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
 from pathlib import Path
 from cogs.utils import config
@@ -142,8 +142,9 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS message_user (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, messages BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
+    # analyzed_at is the snowflake of the moment the analysis finished for the member (NULL for rows saved before it was kept), so a later edit or delete can tell whether the analysis ran after a reset wiped their counts.
     """CREATE TABLE IF NOT EXISTS analyzed_users (
-        user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL, analyzed_at BIGINT,
         PRIMARY KEY (user_id, guild_id))""",
     """CREATE TABLE IF NOT EXISTS emojis_channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
@@ -171,7 +172,7 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS count_resets (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, reset_at BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id, channel_id))""",
-    # The next three tables hold an analysis that is running or was interrupted, one run per server. analysis_runs keeps the kind (member, server or swears), the snowflake the crawl reads back from (cutoff), the progress message to edit, and the running totals as JSON.
+    # The next three tables hold an analysis that is running or was interrupted, one run per server. analysis_runs keeps the kind (member, server or swears), the snowflake the crawl reads back from (cutoff), the progress message to edit, and the running totals as JSON, which also lists the member ids the run has counted (`credited` and `swear_members`), so `stored_data.ID_LISTS` reads that format to find and remove a user's id.
     """CREATE TABLE IF NOT EXISTS analysis_runs (
         guild_id BIGINT PRIMARY KEY, kind VARCHAR(32) NOT NULL, cutoff BIGINT NOT NULL,
         status_channel_id BIGINT, status_message_id BIGINT, started_at DOUBLE NOT NULL,
@@ -193,10 +194,9 @@ COUNT_DATA_TABLES = (
 
 ANALYSIS_RUN_TABLES = ("analysis_runs", "analysis_run_members", "analysis_run_channels")
 
-# Every table with a guild_id. `reset_entire_server` deletes one server's rows from each, so a new per-server table must be added here.
-GUILD_TABLES = (
-    *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword",
-    "tracking_periods", "count_resets", *ANALYSIS_RUN_TABLES, *JAR_TABLES,
+# Every table of the tracking side with a guild_id, apart from a saved analysis. `reset_entire_server` deletes one server's rows from these and from JAR_TABLES (the swear jar), so a new per-server table must be added to one of the two.
+TRACKING_TABLES = (
+    *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword", "tracking_periods", "count_resets",
 )
 
 
@@ -256,6 +256,7 @@ ADDED_COLUMNS = (
     ("monthly_user_stats", "emojis", "BIGINT NOT NULL DEFAULT 0"),
     ("jar_settings", "english", "INT NOT NULL DEFAULT 1"),
     ("jar_settings", "polish", "INT NOT NULL DEFAULT 0"),
+    ("analyzed_users", "analyzed_at", "BIGINT NULL"),
 )
 
 
@@ -419,6 +420,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
             cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
             resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
         return periods, resets
+
+    async def get_member_coverage(self, guild_id: int, user_id: int) -> Tuple[List[Tuple[int, Optional[int]]], Dict[Tuple[int, int], int], bool, Optional[int]]:
+        """Returns what decides whether one member's old message was ever counted: the server's tracking periods and reset markers (as `get_count_history`), whether the member was analyzed, and when (None for a member analyzed before the time was kept). One lock hold, so an edit or delete asks once."""
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
+            periods = [(row[0], row[1]) for row in await cursor.fetchall()]
+            cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
+            resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
+            cursor = await self.db.execute("SELECT analyzed_at FROM analyzed_users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            row = await cursor.fetchone()
+        return periods, resets, row is not None, row[0] if row else None
 
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
         """Returns (watched IDs, ignored IDs), as copies. Either set can hold categories as well as channels, and 1 in the watched set means the entire server. Every message asks, so the answer is kept for KEPT_SECONDS and dropped when a change to the tables is committed."""
@@ -767,10 +780,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         await self.db.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
-        """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time. Members already marked are ignored."""
+        """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time, and records when. Members already marked are ignored, so their time stays the first one."""
+        now = now_snowflake()
         await self.db.executemany(
-            "INSERT IGNORE INTO analyzed_users (user_id, guild_id) VALUES (?, ?)",
-            [(user_id, guild_id) for user_id in user_ids],
+            "INSERT IGNORE INTO analyzed_users (user_id, guild_id, analyzed_at) VALUES (?, ?, ?)",
+            [(user_id, guild_id, now) for user_id in user_ids],
         )
 
     async def save_retroactive_results(
@@ -856,10 +870,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         cursors: Mapping[int, int],
         finished: Mapping[int, str],
         messages_read: int,
-        totals: str,
+        totals: Callable[[], str],
         swears: Optional[SwearCounts] = None,
     ) -> bool:
-        """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running `totals` JSON, and where each channel stands. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
+        """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running totals JSON, and where each channel stands. `totals` is a function that returns the JSON and is called once the database lock is held, like the lazy `results` and `swears`, so the owner deleting a member's data while this write waited can't have the ID saved again. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
 
         Counts and cursors commit together, so after a restart the crawl continues from exactly where the saved counts stop and nothing is counted twice.
 
@@ -870,7 +884,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
             # Updated first on purpose. The reset deletes this row, so a rowcount of 0 means the run was cancelled and none of the writes below should happen.
             cursor = await self.db.execute(
                 "UPDATE analysis_runs SET messages_read = ?, totals = ? WHERE guild_id = ?",
-                (messages_read, totals, guild_id),
+                (messages_read, totals(), guild_id),
             )
             if cursor.rowcount == 0:
                 return False
@@ -1100,8 +1114,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
         await self.db.executemany(decrement, [(row["amount"], *_key_values(table, row)) for row in removed])
         await self.db.executemany(prune, [_key_values(table, row) for row in removed])
 
-    async def reset_entire_server(self, guild_id: int) -> None:
-        await self._write([(f"DELETE FROM `{table}` WHERE guild_id = ?", [(guild_id,)]) for table in GUILD_TABLES])
+    async def reset_entire_server(self, guild_id: int, counts: bool = True, jar: bool = True) -> None:
+        """Deletes one server's data: with `counts` the tracking side (counts, who was analyzed, tracked and ignored channels, keywords, tracking periods, reset markers and a saved member or server analysis), with `jar` the whole swear jar (settings, words, channel rules, goal, balances, fines, swear counts, coverage and a saved swears analysis). Both is a reset of everything."""
+        if not counts and not jar:
+            return
+        tables = [*(TRACKING_TABLES if counts else ()), *(JAR_TABLES if jar else ())]
+        statements: List[Tuple[str, Sequence[Sequence[Any]]]] = [(f"DELETE FROM `{table}` WHERE guild_id = ?", [(guild_id,)]) for table in tables]
+        # A server has one saved run, and its kind says which side it belongs to. Its two detail tables have no kind, so they go first, while the run row they are matched against is still there.
+        kind = "" if counts and jar else " AND kind <> 'swears'" if counts else " AND kind = 'swears'"
+        for table in ANALYSIS_RUN_TABLES[1:]:
+            statements.append((f"DELETE FROM `{table}` WHERE guild_id IN (SELECT guild_id FROM analysis_runs WHERE guild_id = ?{kind})", [(guild_id,)]))
+        statements.append((f"DELETE FROM analysis_runs WHERE guild_id = ?{kind}", [(guild_id,)]))
+        await self._write(statements)
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()

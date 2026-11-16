@@ -74,14 +74,16 @@ class SectionMenu(AuthorOnlyView):
         self.add_item(container)
 
     def _confirmation(
-        self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback
+        self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback,
+        *, more: Sequence[Tuple[str, discord.ButtonStyle, Callback]] = (),
     ) -> None:
-        """Adds a question with a confirm button and a Cancel button. Callers return straight after it, so the section's normal buttons stay hidden while the question is open."""
+        """Adds a question with a confirm button and a Cancel button, and one more confirm button for each (label, style, callback) in `more`, for a question that asks which of several things to do. Callers return straight after it, so the section's normal buttons stay hidden while the question is open."""
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(text))
         container.add_item(
             discord.ui.ActionRow(
                 make_button(confirm_label, style, on_confirm),
+                *(make_button(label, extra_style, callback) for label, extra_style, callback in more),
                 make_button("Cancel", discord.ButtonStyle.secondary, self._cancel_confirmation),
             )
         )

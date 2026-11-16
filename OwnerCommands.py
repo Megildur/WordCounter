@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    create_v2_container, create_v2_view, error_view, make_button,
+    code_span, create_v2_container, create_v2_view, error_view, make_button, private_followup, safe_name,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -58,7 +58,7 @@ class Target:
     @property
     def label(self) -> str:
         if self.name:
-            return f"{self.what} **{discord.utils.escape_markdown(self.name)}** (`{self.id}`)"
+            return f"{self.what} **{safe_name(self.name)}** (`{self.id}`)"
         return f"{self.what} `{self.id}`"
 
     @property
@@ -67,17 +67,21 @@ class Target:
 
 
 def found_lines(found: stored_data.Found) -> str:
-    lines = [f"- `{table.name}`: {len(table.rows):,}" for table in found.tables]
+    # A row that only lists the id (in a saved analysis) stays, and the id is taken out of its list.
+    lines = [f"- `{table.name}`: {table.count:,}" + (" (the row stays, only their ID is taken out of its lists)" if table.listed else "") for table in found.tables]
     if len(lines) > LISTED_TABLES:
         lines = lines[:LISTED_TABLES] + [f"- and {plural(len(lines) - LISTED_TABLES, 'more table')}"]
     return "\n".join(lines)
 
 
-def deleted_text(removed: Dict[str, int]) -> str:
-    rows = sum(removed.values())
-    if not rows:
+def deleted_text(deleted: stored_data.Deleted) -> str:
+    rows, cleared = sum(deleted.removed.values()), sum(deleted.cleared.values())
+    if not rows and not cleared:
         return "There were no rows left to delete."
-    return f"Deleted {plural(rows, 'row')} from {plural(len(removed), 'table')}."
+    text = f"Deleted {plural(rows, 'row')} from {plural(len(deleted.removed), 'table')}." if rows else ""
+    if cleared:
+        text += f"{' ' if text else ''}Took the ID out of the lists in {plural(cleared, 'row')} that belong to a server, which stay."
+    return text
 
 
 def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> discord.ui.LayoutView:
@@ -122,7 +126,7 @@ class DataConfirmView(AuthorOnlyView):
                 does = "WordCounter stops counting their messages in every server, ignores everything they do, and answers their commands and buttons with a notice that they're banned."
             description = f"{who}.\n{does}"
             if reason:
-                description += f"\n**Reason:** {discord.utils.escape_markdown(reason)}"
+                description += f"\n**Reason:** {safe_name(reason)}"
             if found.empty:
                 description += "\n**Their data:** nothing stored."
                 confirm = "Blacklist"
@@ -157,16 +161,22 @@ class DataConfirmView(AuthorOnlyView):
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
-        removed = await self.bot.db.delete_by_id(self.target.id)
+        # A running /analyze_chat keeps counts in memory too, until its next checkpoint, and would save them (and mark the member analyzed) after the delete. It is told before the delete and checks again when its own write gets the database lock. It is told again after the delete, like the jar, because a run that was interrupted and resumed while the delete was working read the saved row before the ID was taken out of it.
+        analysis = self.bot.get_cog("AnalyzeChat")
+        if analysis is not None:
+            analysis.forget(self.target.id)
+        deleted = await self.bot.db.delete_by_id(self.target.id)
         if jar is not None:
             jar.forget(self.target.id)
+        if analysis is not None:
+            analysis.forget(self.target.id)
         # No ID in the log: a deletion that left the ID in a log file for 90 days would not be a deletion, and the Privacy Policy lists what the log can hold.
-        log.info("%s a %s: deleted %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, removed)
+        log.info("%s a %s: deleted %s, took the ID out of %s", "Blacklisted" if self.ban else "Deleted the data of", self.target.what, deleted.removed, deleted.cleared)
         if self.ban:
             who = f"{self.target.label[0].upper()}{self.target.label[1:]}"
-            view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(removed)}", color=SUCCESS_COLOR)
+            view = create_v2_view("Blacklisted", f"{who} can't use WordCounter any more.\n{deleted_text(deleted)}", color=SUCCESS_COLOR)
         else:
-            view = create_v2_view("Data deleted", f"For {self.target.label}: {deleted_text(removed)}", color=SUCCESS_COLOR)
+            view = create_v2_view("Data deleted", f"For {self.target.label}: {deleted_text(deleted)}", color=SUCCESS_COLOR)
         await interaction.edit_original_response(view=view)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
@@ -248,7 +258,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         else:
             removed = len(self.bot.tree.get_commands(guild=interaction.guild))
             self.bot.tree.clear_commands(guild=interaction.guild)
-            target = f"from **{interaction.guild.name}**"
+            target = f"from **{safe_name(interaction.guild.name)}**"
         log.info("Cleared %s commands %s", removed, target.replace("**", ""))
         await interaction.followup.send(
             view=create_v2_view(
@@ -264,6 +274,12 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if not await self._admin_only(interaction):
             return
         await interaction.response.defer()
+        # A name is imported as a module when it is loaded, so only a cog on disk or one that is already loaded is accepted.
+        if extension not in self.all_extensions():
+            await interaction.followup.send(
+                view=create_v2_view(f"Couldn't {action} an extension", f"No extension is named {code_span(extension[:100])}. Pick one from the list that shows as you type.", color=ERROR_COLOR)
+            )
+            return
         handlers = {
             "load": self.bot.load_extension,
             "unload": self.bot.unload_extension,
@@ -278,7 +294,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         except commands.ExtensionNotFound:
             problem = "No extension with that name exists."
         except commands.ExtensionFailed as error:
-            problem = f"It failed during setup.\n```{error}```"
+            log.warning("Extension %s failed to %s: %s", extension, action, error)
+            problem = "It failed during setup. The error is in the log."
         else:
             problem = ""
 
@@ -401,12 +418,13 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
                 ephemeral=True,
             )
             return
+        # The export is public, and looking the ID up can ask Discord for the user, so defer first and send the problems privately with `private_followup`.
+        await interaction.response.defer()
         target, problem = await self._target(kind, target_id)
         if target is None:
-            await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
+            await private_followup(interaction, error_view(problem, title="Can't use that ID"))
             return
-        await interaction.response.defer()
-        found = await self.bot.db.find_by_id(target.id)
+        found = await self.bot.db.find_by_id(target.id, rows=True)
         if found.empty:
             view = create_v2_view("Nothing stored", f"WordCounter has nothing stored about {target.label}.", color=NEUTRAL_COLOR)
             await interaction.followup.send(view=view, allowed_mentions=NO_PINGS)
@@ -438,18 +456,20 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     async def kept_data(self, interaction: discord.Interaction, kind: Kind, target_id: str) -> None:
         if not await self._admin_only(interaction):
             return
+        # Looking the ID up can ask Discord for the user, and the check reads every table, so defer first. The post is public, so the problems go out privately with `private_followup`.
+        await interaction.response.defer()
         target, problem = await self._target(kind, target_id)
         if target is None:
-            await interaction.response.send_message(view=error_view(problem, title="Can't use that ID"), ephemeral=True)
+            await private_followup(interaction, error_view(problem, title="Can't use that ID"))
             return
         if not (await self.bot.db.find_by_id(target.id)).empty:
-            await interaction.response.send_message(view=error_view(
+            await private_followup(interaction, error_view(
                 f"WordCounter still stores data about {target.label} that a deletion removes. Delete it with `/owner delete_data` first, then post this.",
                 title="Not deleted yet",
-            ), ephemeral=True)
+            ))
             return
         view = kept_view(target, await self.bot.db.blacklist_entry(target.id))
-        await interaction.response.send_message(view=view, allowed_mentions=NO_PINGS)
+        await interaction.followup.send(view=view, allowed_mentions=NO_PINGS)
 
     @app_commands.command(name="blacklist", description="Ban a user or server from using WordCounter, lift a ban, or list bans")
     @app_commands.describe(
@@ -516,9 +536,11 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if target_id is None:
             await interaction.response.send_message(view=error_view(BAD_ID, title="Can't use that ID"), ephemeral=True)
             return
+        # The look-up and the write wait for the database lock, which can take longer than the 3 seconds Discord gives for a reply, so defer first.
+        await interaction.response.defer(ephemeral=True)
         entry = await self.bot.db.blacklist_entry(target_id)
         if entry is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 view=create_v2_view("Not blacklisted", f"`{target_id}` isn't on the blacklist.", color=NEUTRAL_COLOR), ephemeral=True,
             )
             return
@@ -532,7 +554,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             f"The {entry.kind} `{target_id}` can use WordCounter again. The data deleted with the ban doesn't come back.",
             color=SUCCESS_COLOR,
         )
-        await interaction.response.send_message(view=view, ephemeral=True)
+        await interaction.followup.send(view=view, ephemeral=True)
 
     async def _blacklist_list(self, interaction: discord.Interaction) -> None:
         # Private from the start, so the reply after the database read is a plain follow-up.
@@ -549,10 +571,10 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             found = self.bot.get_guild(entry.target_id) if entry.kind == blacklist.SERVER else self.bot.get_user(entry.target_id)
             line = f"**{entry.kind.capitalize()}** `{entry.target_id}`"
             if getattr(found, "name", None):
-                line += f" {discord.utils.escape_markdown(found.name)}"
+                line += f" {safe_name(found.name)}"
             line += f" · since <t:{int(entry.added_at)}:D>"
             if entry.reason:
-                line += f"\n-# {discord.utils.escape_markdown(entry.reason)}"
+                line += f"\n-# {safe_name(entry.reason)}"
             lines.append(line)
         count = "1 user or server can't" if len(entries) == 1 else f"{len(entries):,} users and servers can't"
         pages = [

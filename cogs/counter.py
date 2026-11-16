@@ -21,7 +21,9 @@ from cogs.utils.components import (
     error_view,
     keyword_summary,
     private_followup,
+    safe_name,
 )
+from cogs.analyze_chat import LiveCoverage
 from cogs.utils import cards
 from cogs.utils.counting import MessageStats
 from paginator import ButtonPaginator
@@ -58,7 +60,7 @@ class UserStatsPaginator(ButtonPaginator):
         if keywords:
             fields.append(("Keywords", keyword_summary(keywords)))
 
-        footer = self.guild.name
+        footer = safe_name(self.guild.name)
         if month is not None:
             label = f"{calendar.month_name[month['month']]} {month['year']}"
             summary = [activity_line(month["words"], month["messages"], month["attachments"], month.get("emojis", 0))]
@@ -78,7 +80,7 @@ class UserStatsPaginator(ButtonPaginator):
                 channel_lines.append(line)
             if channel_lines:
                 fields.append((f"Channels in {label}", "\n".join(channel_lines)))
-            footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {self.guild.name}"
+            footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {safe_name(self.guild.name)}"
 
         container = create_v2_container(
             title="User stats",
@@ -219,13 +221,24 @@ class Counter(commands.Cog):
     async def _tracked_channel(self, message: discord.Message) -> Optional[int]:
         """Returns the channel id the message counts under, or None when it must not be counted.
 
-        Bots and direct messages are never counted. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
+        Bots, direct messages and system messages (joins, pins, boosts, thread renames) are never counted, the same messages `/analyze_chat` leaves out, so the live numbers and the analysed ones agree. For a message in a thread the id is the thread's parent channel. Messages from banned users never get here, because `blacklist.screen`, called from the bot's `dispatch` in main.py, drops their events before this cog sees them. Only cogs with `acts_on_blacklisted`, like the swear jar, still get them.
         """
-        if message.author.bot or message.guild is None:
+        if message.author.bot or message.guild is None or message.is_system():
             return None
         watched, ignored = await self.bot.db.get_guild_tracking_config(message.guild.id)
         tracked, channel_id = check_channel_with_config(message.guild, message.channel, watched, ignored)
         return channel_id if tracked else None
+
+    async def _was_counted(self, message: discord.Message, channel_id: int) -> bool:
+        """Returns whether the tables hold this message's counts, so a delete or an edit may change them. A message sent while tracking was on was counted as it arrived. One from before tracking, from a gap while it was off, or from before a reset was counted only if `/analyze_chat` counted that member since (after the reset, for a reset message), because taking its counts out of a total that never held them would lower the totals of other messages."""
+        periods, resets, analyzed, analyzed_at = await self.bot.db.get_member_coverage(message.guild.id, message.author.id)
+        coverage = LiveCoverage(periods, resets, message.id)
+        reset_marker = coverage.reset_marker(message.author.id, channel_id)
+        if message.id < reset_marker:
+            return analyzed_at is not None and analyzed_at > reset_marker
+        if not coverage.counts(message.author.id, channel_id, message.id):
+            return True
+        return analyzed
 
     async def _apply(self, message: discord.Message, channel_id: int, **changes: Any) -> None:
         # The month is the one the message was created in, so an edit or delete later adjusts the month it was first counted in.
@@ -241,7 +254,7 @@ class Counter(commands.Cog):
     async def _record(self, message: discord.Message, sign: int) -> None:
         """Adds the message's counts with sign 1, or takes them back out with sign -1 for a deleted message."""
         channel_id = await self._tracked_channel(message)
-        if channel_id is None:
+        if channel_id is None or (sign < 0 and not await self._was_counted(message, channel_id)):
             return
         stats = MessageStats.of(message, await self.bot.db.get_keywords(message.guild.id))
         await self._apply(
@@ -258,16 +271,16 @@ class Counter(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         await self._record(message, 1)
 
-    # discord.py only calls this for a message still in its cache (1000 by default) and never for bulk deletes, so older or purged messages stay counted.
+    # discord.py only calls this for a message still in its cache (1000 by default) and never for bulk deletes, so older or purged messages stay counted. A message whose counts were never saved (see `_was_counted`) is left alone.
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
         await self._record(message, -1)
 
-    # Also only called for cached messages. An edit adds the difference between the old and new text, and never changes the message count.
+    # Also only called for cached messages. An edit adds the difference between the old and new text, and never changes the message count. A message whose counts were never saved (see `_was_counted`) is left alone.
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
         channel_id = await self._tracked_channel(before)
-        if channel_id is None:
+        if channel_id is None or not await self._was_counted(before, channel_id):
             return
         keywords = await self.bot.db.get_keywords(before.guild.id)
         old, new = MessageStats.of(before, keywords), MessageStats.of(after, keywords)
