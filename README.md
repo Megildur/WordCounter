@@ -13,8 +13,8 @@
     <img src="https://img.shields.io/badge/Website-wordcounter.dev-1D335B?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v3.2.1">
-    <img src="https://img.shields.io/badge/Release-v3.2.1-8C96AC?style=for-the-badge" alt="Release v3.2.1" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v4.0.0">
+    <img src="https://img.shields.io/badge/Release-v4.0.0-8C96AC?style=for-the-badge" alt="Release v4.0.0" />
   </a>
 </p>
 
