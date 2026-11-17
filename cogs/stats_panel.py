@@ -53,6 +53,19 @@ def latency_text(latency_ms: Optional[int]) -> str:
     return f"{latency_ms} ms" if latency_ms is not None else "offline"
 
 
+def up_for(seconds: int) -> str:
+    """How long, to the minute: "12 minutes", "3 hours 4 minutes". Written here at every update instead of by Discord's relative time, which the app only redraws now and then."""
+    seconds = max(60, round(seconds / 60) * 60)
+    parts = []
+    for size, name in ((604800, "week"), (86400, "day"), (3600, "hour"), (60, "minute")):
+        count, seconds = divmod(seconds, size)
+        if count:
+            parts.append(f"{count} {name}{'s' if count != 1 else ''}")
+        if len(parts) == 2:
+            break
+    return " ".join(parts)
+
+
 def missing_in(channel: discord.abc.GuildChannel) -> Tuple[str, ...]:
     """The names of what the bot lacks in `channel` to post the panel, or nothing."""
     permissions = channel.permissions_for(channel.guild.me)
@@ -83,7 +96,7 @@ def panel_view(figures: Figures, updated_at: int) -> discord.ui.LayoutView:
         f"**Latency:** {latency_text(figures.latency_ms)}",
     ]
     if figures.started_at:
-        lines.append(f"**Online since:** <t:{figures.started_at}:F> (<t:{figures.started_at}:R>)")
+        lines.append(f"**Online for:** {up_for(updated_at - figures.started_at)}, since <t:{figures.started_at}:F>")
     description = f"WordCounter's live numbers: {short(figures.servers)} servers, {short(figures.people)} unique users, {short(figures.words)} words counted. The flip counter floats above Earth beside six lit plaques."
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(discord.ui.Container(
