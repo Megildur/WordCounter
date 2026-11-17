@@ -1,6 +1,6 @@
 """The /owner commands, registered only in the servers listed in `ALLOWED_GUILD_IDS`.
 
-Syncing or clearing the slash command tree, loading and reloading extensions, and the data commands (delete_data, export_data, kept_data, blacklist). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, and ban through `cogs/utils/blacklist.py`. Every command checks for the Administrator permission itself, on top of the group's Administrator default, because only members of the servers in `ALLOWED_GUILDS` can see the group at all.
+Syncing or clearing the slash command tree, loading and reloading extensions, the data commands (delete_data, export_data, kept_data, blacklist), and the live stats panel (stats_panel, which hands its work to cogs/stats_panel.py). The data commands find everything stored about a Discord user or server through `cogs/utils/stored_data.py`, and ban through `cogs/utils/blacklist.py`. Every command checks for the Administrator permission itself, on top of the group's Administrator default, because only members of the servers in `ALLOWED_GUILDS` can see the group at all.
 """
 
 from __future__ import annotations
@@ -345,6 +345,17 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             )
         )
 
+
+    @app_commands.command(name="stats_panel", description="Post WordCounter's live stats in a channel, move it, or take it down")
+    @app_commands.describe(channel="Where to post the panel (moves it if this server already has one). Leave empty to see where it is", remove="Take the panel down")
+    async def stats_panel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None, remove: bool = False) -> None:
+        if not await self._admin_only(interaction):
+            return
+        cog = self.bot.get_cog("StatsPanel")
+        if cog is None:
+            await interaction.response.send_message(view=error_view("The StatsPanel module isn't loaded.", title="The stats panel isn't running"), ephemeral=True)
+            return
+        await cog.owner_panel(interaction, channel, remove)
 
     async def _admin_only(self, interaction: discord.Interaction) -> bool:
         """Returns True for a member with the Administrator permission. Otherwise it answers with an "Administrators only" notice and returns False, so call it before anything else replies."""

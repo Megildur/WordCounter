@@ -1,6 +1,6 @@
 """Puts avatars, names and numbers onto the pre-drawn card art in `assets/cards/` with Pillow.
 
-Draws the leaderboard podium, the /stats card and the swear jar card, and returns PNG bytes. The art itself is drawn by a script in the Botzilla project, and the layout constants below (PODIUM_BLOCKS, STATS_*, JAR_PANEL) are pixel positions on that art, so changing the art means updating them. Drawing is synchronous, so callers run it in a thread with `asyncio.to_thread`.
+Draws the leaderboard podium, the /stats card, the swear jar card and the live stats panel's card, and returns PNG bytes. The art itself is drawn by a script in the Botzilla project, and the layout constants below (PODIUM_BLOCKS, STATS_*, JAR_PANEL, BOT_STATS_*) are pixel positions on that art, so changing the art means updating them. Drawing is synchronous, so callers run it in a thread with `asyncio.to_thread`.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ AVATAR_WAIT = 1.5
 PODIUM_FILE = "wordcounter_podium.png"
 STATS_FILE = "wordcounter_stats.png"
 JAR_FILE = "wordcounter_jar.png"
+BOT_STATS_FILE = "wordcounter_bot_stats.png"
 
 # Place to (left edge, top edge, right edge, frame colour) of that block on the podium art.
 PODIUM_BLOCKS = {1: (96, 58, 144, (245, 184, 46)), 2: (44, 64, 92, (201, 211, 224)), 3: (148, 70, 196, (217, 131, 58))}
@@ -47,6 +48,12 @@ STATS_CHIPS = ((60, 80), (120, 80), (180, 80))
 JAR_LEVELS = 9
 # The panel on the jar art that holds the text, as (left, top, right, bottom).
 JAR_PANEL = (70, 8, 232, 92)
+# On the live stats panel's art: the glass panel (left, top, right, bottom), the plaques' width, height and gap, the first plaque's corner, and where the title sits.
+BOT_STATS_PANEL = (84, 3, 237, 101)
+BOT_STATS_TILE = (47, 37, 3)
+BOT_STATS_TILES_AT = (87, 23)
+BOT_STATS_TITLE = (89, 5)
+LIVE_GREEN = (34, 197, 94)
 
 # Whether the font has a glyph for a character, per (bold, character). Stops growing at 5000 entries.
 _glyphs: Dict[Tuple[bool, str], bool] = {}
@@ -209,6 +216,34 @@ def stats_card(name: str, server: str, face: Optional[bytes], words: int, messag
     for (ix, iy), value in zip(STATS_CHIPS, (messages, attachments, emojis)):
         number_font, number = fit_font(f"{value:,}", True, 36, 20, 38 * SCALE)
         _label(draw, ((ix + 21) * SCALE, (iy + 9) * SCALE), number, number_font, WHITE, "lm")
+    return png_bytes(card)
+
+
+def bot_stats_card(tiles: Sequence[Tuple[str, str, str]]) -> bytes:
+    """Draws the live stats panel's card and returns PNG bytes: the title with its LIVE tag and, on each of the six plaques, a label, a big number and a short caption. `tiles` is (label, value, caption) in reading order."""
+    card = scaled("bot_stats.png")
+    draw = ImageDraw.Draw(card)
+    title_font = font(True, 40)
+    tx, ty = BOT_STATS_TITLE
+    left, top = tx * SCALE, ty * SCALE
+    draw.text((left, top), "WordCounter", font=title_font, fill=WHITE, stroke_width=3, stroke_fill=INK)
+    tag_font = font(True, 22)
+    pill_x = left + int(title_font.getlength("WordCounter")) + 22
+    pill_top = 7 * SCALE + 2
+    draw.rounded_rectangle([pill_x, pill_top, pill_x + int(tag_font.getlength("LIVE")) + 50, pill_top + 36], radius=18, fill=LIVE_GREEN, outline=INK, width=3)
+    draw.ellipse([pill_x + 13, pill_top + 12, pill_x + 25, pill_top + 24], fill=WHITE)
+    draw.text((pill_x + 34, pill_top + 18), "LIVE", font=tag_font, fill=WHITE, anchor="lm")
+    width, height, gap = BOT_STATS_TILE
+    room = (width - 6) * SCALE
+    for index, (label, value, caption) in enumerate(tiles[:6]):
+        x = BOT_STATS_TILES_AT[0] + (index % 3) * (width + gap)
+        y = BOT_STATS_TILES_AT[1] + (index // 3) * (height + gap)
+        label_font, label = fit_font(drawable(label, False) or "?", False, 22, 14, (width - 20) * SCALE)
+        _label(draw, ((x + 17) * SCALE, (y + 9) * SCALE + 2), label, label_font, SOFT, "lm")
+        value_font, value = fit_font(value, True, 48, 22, room)
+        _label(draw, ((x + 3) * SCALE, (y + 27) * SCALE), value, value_font, WHITE, "ls")
+        caption_font, caption = fit_font(drawable(caption, False), False, 18, 12, room)
+        _label(draw, ((x + 3) * SCALE, (y + 34) * SCALE), caption, caption_font, SOFT, "ls")
     return png_bytes(card)
 
 
