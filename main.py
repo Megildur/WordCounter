@@ -56,6 +56,8 @@ class MyBot(commands.Bot):
             command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none(), http_trace=nettrace.trace_config(),
         )
         self.db = WordCounterDatabase(self)
+        # When this process started, in Unix seconds, for the stats panel's "Online since".
+        self.started_at = time.time()
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
         self._told_ready = False

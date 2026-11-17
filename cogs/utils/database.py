@@ -20,6 +20,7 @@ from cogs.utils.activity_buffer import ActivityBuffer, Taken
 from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
+from cogs.utils.stats_panel_store import STATS_PANEL_SCHEMA, StatsPanelQueries
 from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
 from cogs.utils.web_sessions import WEB_SESSION_SCHEMA, WebSessionQueries
 
@@ -194,7 +195,7 @@ COUNT_DATA_TABLES = (
 
 ANALYSIS_RUN_TABLES = ("analysis_runs", "analysis_run_members", "analysis_run_channels")
 
-# Every table of the tracking side with a guild_id, apart from a saved analysis. `reset_entire_server` deletes one server's rows from these and from JAR_TABLES (the swear jar), so a new per-server table must be added to one of the two.
+# Every table of the tracking side with a guild_id, apart from a saved analysis. `reset_entire_server` deletes one server's rows from these and from JAR_TABLES (the swear jar), so a new per-server table must be added to one of the two. The one exception is `stats_panels`, the bot owner's own panel, which isn't the server's data and stays.
 TRACKING_TABLES = (
     *COUNT_DATA_TABLES, "analyzed_users", "channels", "ignore", "keyword", "tracking_periods", "count_resets",
 )
@@ -265,7 +266,7 @@ class NotMigrated(RuntimeError):
     pass
 
 
-class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries):
+class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries, StatsPanelQueries):
     """The bot's database, available as `bot.db`.
 
     `self.db` is the open `Session` and exists only inside `async with self.db_lock:`, which commits when the block ends. Public methods that read or write open their own block, so they can't be called from inside one: the lock is not re-entrant and the task would wait on itself.
@@ -333,7 +334,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries)
             # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
             cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
             existing = {name.lower() for name, in await cursor.fetchall()}
-            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA):
+            for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA, *STATS_PANEL_SCHEMA):
                 named = CREATED_TABLE.match(statement)
                 if named is None or named.group(1).lower() not in existing:
                     await self.db.execute(statement)
