@@ -12,7 +12,7 @@ from typing import Any, Set
 import aiohttp
 import discord
 from discord.ext import commands
-from cogs.utils import blacklist, expired, nettrace, startup
+from cogs.utils import blacklist, expired, nettrace, people, startup
 from cogs.utils.config import API_TOKEN, daily_log_handler
 from cogs.utils.database import NotMigrated, WordCounterDatabase
 from cogs.utils.http import close_session
@@ -85,7 +85,7 @@ class MyBot(commands.Bot):
         if self._told_ready:
             return
         self._told_ready = True
-        log.info("Start-up: ready %.1f s after launch, with %d servers and %s members in memory", time.monotonic() - LAUNCHED, len(self.guilds), f"{sum(len(guild.members) for guild in self.guilds):,}")
+        log.info("Start-up: ready %.1f s after launch, with %d servers and %s unique users in memory", time.monotonic() - LAUNCHED, len(self.guilds), f"{people.unique_users(self)[0]:,}")
 
     async def setup_hook(self) -> None:
         began = time.monotonic()

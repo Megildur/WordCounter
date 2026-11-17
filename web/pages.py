@@ -8,6 +8,7 @@ import logging
 from typing import Any, Dict, List
 from aiohttp import web
 from discord import AppCommandOptionType, AppCommandType, app_commands
+from cogs.utils import people
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
 from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
@@ -156,11 +157,11 @@ def command_filters(request: web.Request, reference: Dict[str, List[Dict[str, An
 async def home(request: web.Request) -> web.Response:
     bot = request.app["bot"]
     messages, words = await bot.db.get_global_totals()
-    members = sum(guild.member_count or 0 for guild in bot.guilds)
+    users, _ = people.unique_users(bot)
     # A count of 0 becomes None, which the `num` filter shows as a dash.
     stats = {
         "servers": len(bot.guilds) or None,
-        "members": members or None,
+        "users": users or None,
         "messages": messages or None,
         "words": words or None,
     }
