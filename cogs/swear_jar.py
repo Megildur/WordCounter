@@ -592,7 +592,8 @@ class JarSettingsView(SectionMenu):
 
     async def _open_currency_modal(self, interaction: discord.Interaction) -> None:
         s = self.settings
-        if s["currency"] == "money":
+        mode = s["currency"]
+        if mode == "money":
             fields = [("Value of one unit, in dollars", f"{s['unit_cents'] / 100:.2f}", "0.25", 10)]
         else:
             fields = [
@@ -601,18 +602,20 @@ class JarSettingsView(SectionMenu):
                 ("Tokens per unit", str(s["tokens_per_unit"]), "5", 6),
             ]
         # A modal has to be the first response to the click, so these openers can't defer first.
-        await interaction.response.send_modal(FormModal("Fine currency", fields, self._save_currency))
+        await interaction.response.send_modal(
+            FormModal("Fine currency", fields, lambda inter, values, expected=mode: self._save_currency(inter, values, expected))
+        )
 
-    async def _save_currency(self, interaction: discord.Interaction, values: List[str]) -> None:
-        if self.settings["currency"] == "money":
-            cents = parse_unit_cents(values[0])
+    async def _save_currency(self, interaction: discord.Interaction, values: List[str], mode: str) -> None:
+        if mode == "money":
+            cents = parse_unit_cents(values[0]) if values else None
             if cents is None:
                 self._done("Enter a value from 0.01 to 1000, like 0.25.", WARNING_COLOR)
             else:
                 await self.bot.db.jar_update(self.guild.id, unit_cents=cents)
                 self._done(f"One unit is now worth ${cents / 100:,.2f}.")
         else:
-            tokens = parse_tokens(*values)
+            tokens = parse_tokens(*values[:3]) if len(values) >= 3 else None
             if tokens is None:
                 self._done("Give both names and a whole number of tokens from 1 to 10000.", WARNING_COLOR)
             else:
