@@ -574,4 +574,6 @@ async def settings_action(request: web.Request) -> web.Response:
                     cog = request.app["bot"].get_cog("SwearJar")
                     if cog is not None:
                         cog.forget(guild.id)
+        # Drops the swear jar cog's cached tracking config so changes take effect in Discord at once.
+        refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")

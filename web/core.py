@@ -311,15 +311,15 @@ async def static_file(request: web.Request) -> web.StreamResponse:
 
 
 def _other_domain(host: str) -> bool:
-    """Whether a host name is a domain other than SITE_URL's. localhost and raw IP addresses don't count, so a request made by the server's address isn't redirected. With ORIGIN_SECRET enforced, one that lacks the secret is refused before this runs."""
+    """Whether a host name is not SITE_URL's, localhost, or a loopback/private IP literal."""
     host = host.lower().rstrip(".")
     if not host or host in (SITE_HOST, "localhost"):
         return False
     try:
-        ipaddress.ip_address(host.strip("[]"))
+        ip = ipaddress.ip_address(host.strip("[]"))
     except ValueError:
         return True
-    return False
+    return not (ip.is_loopback or ip.is_private)
 
 
 # Requests are limited by the visitor's address. The login pages are limited harder than the rest because each one costs a round trip to Discord or a database write, and 30 in 5 minutes is far more than a person needs. Static files aren't counted, and the dashboard has its own limit for each signed-in person on top of this.
