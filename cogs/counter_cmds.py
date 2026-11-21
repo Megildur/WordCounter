@@ -673,7 +673,7 @@ class LeaderboardPaginator(ButtonPaginator):
             for keyword, users in chunk:
                 top = users[:10]
                 fields.append((
-                    f'"{safe_name(keyword)}"',
+                    code_span(keyword),
                     "\n".join(f"{rank_prefix(rank)} **{names[uid]}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"
