@@ -957,7 +957,7 @@ class SwearJar(commands.Cog):
             self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
         tiers = state.matcher.find(message.content)
         if tiers:
-            await self._fine(message, channel_id, state, tiers, None)
+            await self._fine(message, channel_id, state, tiers)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
@@ -973,8 +973,7 @@ class SwearJar(commands.Cog):
             return
         tiers = state.matcher.find(after.content)
         if tiers:
-            # The message's earlier fine goes along, so only the increase is charged.
-            await self._fine(after, channel_id, state, tiers, await self.bot.db.jar_message_fine(after.id))
+            await self._fine(after, channel_id, state, tiers)
 
     def _register_fine(self, key: Tuple[int, int], now: float) -> bool:
         """Adds a fined message to the member's recent list and returns True if this fine is doubled. More than SPAM_LIMIT fines within SPAM_WINDOW seconds starts a penalty of SPAM_PENALTY seconds, and the message that trips it is already doubled."""
@@ -992,36 +991,26 @@ class SwearJar(commands.Cog):
         channel_id: int,
         state: JarState,
         tiers: List[int],
-        previous: Optional[Dict[str, Any]],
     ) -> None:
-        """Charges a swearing message and replies to it.
-
-        `previous` is the message's earlier fine when this is an edit. Only the increase is charged, and nothing is refunded if swears were removed. Nothing happens if nothing new is owed.
-        """
+        """Charges a swearing message (or the increase from an edit) atomically and replies to it."""
         swears, amount = fine_for(tiers, prices(state.settings))
-        before_swears, before_amount = (previous["swears"], previous["amount"]) if previous else (0, 0)
-        added_swears, added_amount = max(0, swears - before_swears), max(0, amount - before_amount)
-        if not added_amount:
+        if not amount:
             return
-        now = time.time()
         key = (message.guild.id, message.author.id)
-        spam = self._register_fine(key, now)
-        # The doubled amount is what is charged, and what jar_fines keeps in the message's total.
-        if spam:
-            added_amount *= SPAM_MULTIPLIER
-        # Saved before anything is sent to Discord, so a failed reply can't lose the fine.
-        member, reached = await self.bot.db.jar_record_fine(
+        # Prior-fine dedup and delta calculation run inside db_lock, so concurrent edits can't double-charge.
+        member, reached, added_amount, spam = await self.bot.db.jar_record_fine(
             message.guild.id,
             message.author.id,
             channel_id,
             message.id,
-            swears=added_swears,
-            amount=added_amount,
-            total_swears=before_swears + added_swears,
-            total_amount=before_amount + added_amount,
-            day=utc_day(now),
-            spam_until=self.spam_until.get(key, 0.0),
+            swears=swears,
+            amount=amount,
+            day=utc_day(time.time()),
+            spam_multiplier=SPAM_MULTIPLIER,
+            on_fine=lambda now: (self._register_fine(key, now), self.spam_until.get(key, 0.0)),
         )
+        if member is None or added_amount <= 0:
+            return
         await self._answer(message, state.settings, added_amount, member["balance"], spam)
         # A fine ends the clean streak, so that role is taken away. Only a Member has roles, and the author can be a plain User.
         if hasattr(message.author, "roles"):
