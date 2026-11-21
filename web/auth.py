@@ -65,6 +65,19 @@ def sign_session(user: User, session_id: str) -> str:
     return f"{payload}.{_sign(payload)}"
 
 
+def _whole(value: Any, limit: int) -> Optional[int]:
+    """Returns `value` as an int from 0 up to `limit` - 1, when it is an int or a string of ASCII digits, otherwise None. A bool, a float (which can be infinity or not a number), a minus sign or digits like the Arabic ones are all refused, because Discord sends none of them and int() on some of them raises."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not (value.isascii() and value.isdigit()) or len(value) > 20:
+            return None
+        value = int(value)
+    if not isinstance(value, int) or not 0 <= value < limit:
+        return None
+    return value
+
+
 def read_session(token: Optional[str]) -> Optional[User]:
     """Returns the user from a session cookie whose signature matches, which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `check_session` also asks whether the session still exists."""
     if not token or "." not in token:
@@ -77,7 +90,7 @@ def read_session(token: Optional[str]) -> Optional[User]:
         data = json.loads(base64.urlsafe_b64decode(payload.encode()))
     except ValueError:
         return None
-    if not isinstance(data, dict) or not str(data.get("id", "")).isdigit():
+    if not isinstance(data, dict) or not _whole(data.get("id"), 2 ** 63):
         return None
     session_id = data.get("sid")
     if not isinstance(session_id, str) or not 16 <= len(session_id) <= 64:
@@ -151,24 +164,13 @@ def login_url(client_id: int, state: str, prompt: str = "none") -> str:
 
 
 def avatar_url(raw: Dict[str, Any]) -> str:
-    user_id, avatar = raw.get("id"), raw.get("avatar")
-    if avatar:
+    user_id = _whole(raw.get("id"), 2 ** 63)
+    avatar = raw.get("avatar")
+    if user_id and isinstance(avatar, str) and ICON_HASH.fullmatch(avatar):
         return f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.{'gif' if avatar.startswith('a_') else 'png'}?size=128"
     # No custom avatar: Discord's default pictures are numbered 0 to 5, picked from the id.
-    return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
-
-
-def _whole(value: Any, limit: int) -> Optional[int]:
-    """Returns `value` as an int from 0 up to `limit` - 1, when it is an int or a string of ASCII digits, otherwise None. A bool, a float (which can be infinity or not a number), a minus sign or digits like the Arabic ones are all refused, because Discord sends none of them and int() on some of them raises."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, str):
-        if not (value.isascii() and value.isdigit()) or len(value) > 20:
-            return None
-        value = int(value)
-    if not isinstance(value, int) or not 0 <= value < limit:
-        return None
-    return value
+    idx = (user_id >> 22) % 6 if user_id else 0
+    return f"https://cdn.discordapp.com/embed/avatars/{idx}.png"
 
 
 def managed_servers(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -217,7 +219,12 @@ async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -
             if resp.status != 200:
                 log.warning("Discord token exchange failed with status %s", resp.status)
                 return None, None
-            headers = {"Authorization": f"Bearer {(await resp.json()).get('access_token')}"}
+            token_data = await resp.json()
+            token = token_data.get("access_token") if isinstance(token_data, dict) else None
+            if not isinstance(token, str) or not token:
+                log.warning("Discord token exchange returned no access token")
+                return None, None
+            headers = {"Authorization": f"Bearer {token}"}
         async with session.get(f"{API}/users/@me", headers=headers) as resp:
             if resp.status != 200:
                 log.warning("Discord /users/@me failed with status %s", resp.status)
@@ -226,10 +233,16 @@ async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
         log.warning("Discord login failed: %s", error)
         return None, None
+    user_id = _whole(raw.get("id"), 2 ** 63) if isinstance(raw, dict) else None
+    if not user_id:
+        log.warning("Discord /users/@me returned an invalid user id")
+        return None, None
+    username = raw.get("username") if isinstance(raw.get("username"), str) else ""
+    global_name = raw.get("global_name")
     user = {
-        "id": str(raw["id"]),
-        "username": raw.get("username") or "",
-        "name": raw.get("global_name") or raw.get("username") or "",
+        "id": str(user_id),
+        "username": username,
+        "name": global_name if isinstance(global_name, str) and global_name else username,
         "avatar_url": avatar_url(raw),
     }
     if int(user["id"]) in banned:

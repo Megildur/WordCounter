@@ -21,6 +21,8 @@ STREAK_BONUSES = {7: 3, 30: 10}
 REPEAT_BONUS_EVERY = 30
 REPEAT_BONUS = 10
 CLEAN_ROLE_STREAK = 14
+# Maximum members an existing role may have when picked or rotated as the single-holder Potty Mouth role, stopping mass role stripping.
+POTTY_ROLE_MAX_HOLDERS = 10
 # More than SPAM_LIMIT fined messages within SPAM_WINDOW seconds multiplies that member's fines by SPAM_MULTIPLIER for SPAM_PENALTY seconds, starting with that message.
 SPAM_WINDOW = 60.0
 SPAM_LIMIT = 3
@@ -305,8 +307,24 @@ def word_changes(
     return changes, forget, skipped
 
 
-def role_problem(guild: discord.Guild, role: Optional[discord.Role]) -> Optional[str]:
-    """Returns why the bot can't hand out `role`, in words for the person setting it up, or None if it can."""
+def staff_powers(role: discord.Role) -> List[str]:
+    """The moderator permissions a role carries (Administrator, Ban Members, Manage Server...), by name. Roles SwearJar gives out must have none."""
+    elevated = discord.Permissions.elevated()
+    return [
+        perm.replace("_", " ").title().replace("Guild", "Server")
+        for perm, value in role.permissions
+        if value and getattr(elevated, perm, False)
+    ]
+
+
+def role_problem(
+    guild: discord.Guild,
+    role: Optional[discord.Role],
+    member: Optional[discord.Member] = None,
+    *,
+    single_holder: bool = False,
+) -> Optional[str]:
+    """Returns why WordCounter shouldn't hand out `role` (or why `member` can't pick it), in words for the person setting it up, or None if allowed."""
     me = guild.me
     if role is None:
         return "That role no longer exists."
@@ -316,4 +334,14 @@ def role_problem(guild: discord.Guild, role: Optional[discord.Role]) -> Optional
         return "WordCounter needs the Manage Roles permission to hand out roles."
     if role >= me.top_role:
         return f"Move WordCounter's role above {role.mention} so it can give that role out."
+    powers = staff_powers(role)
+    if powers:
+        shown = ", ".join(powers[:3])
+        return f"{role.mention} has moderator permissions ({shown}), so WordCounter can't give it out automatically."
+    if member is not None and getattr(member, "id", None) != guild.owner_id:
+        top = getattr(member, "top_role", None)
+        if top is None or role >= top:
+            return f"{role.mention} is at or above your highest role, so you can't pick it."
+    if single_holder and len(getattr(role, "members", ())) > POTTY_ROLE_MAX_HOLDERS:
+        return f"{role.mention} is held by too many members to use as the Potty Mouth role. Pick a dedicated role instead."
     return None

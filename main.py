@@ -3,11 +3,21 @@
 The website in `web/` is one of the extensions and serves from the same process. The database connects in `setup_hook`, before the bot receives any events. Run it from the repo root, because `cogs/`, `Data/` and the log files are found by relative path.
 """
 
-import asyncio
-import logging
 import os
-import sys
 import time
+
+# When this process began, so the start-up lines can say how long each phase took and how long the bot took to be ready.
+LAUNCHED = time.monotonic()
+
+# aiohttp's sendfile reads the disk on the event loop, which held everything up on the host's slow disk. Without it, the website's files are read in a worker thread. It has to be set before aiohttp's web module is imported.
+os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
+
+import asyncio
+import atexit
+import logging
+import logging.handlers
+import queue
+import sys
 from typing import Any, Set
 import aiohttp
 import discord
@@ -24,20 +34,24 @@ for stream in (sys.stdout, sys.stderr):
 
 formatter = logging.Formatter(fmt="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 file_handler = daily_log_handler("discord.log")
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.INFO)
 console_handler = logging.StreamHandler(sys.stdout)
-# Everything, discord.py included, logs through the root logger. bot.run is given log_handler=None below so discord.py doesn't add its own.
+console_handler.setFormatter(formatter)
+console_handler.setLevel(logging.INFO)
+# Everything, discord.py included, logs through a queue on the root logger so slow disk or console writes never block the event loop. bot.run is given log_handler=None below so discord.py doesn't add its own.
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 root_logger.handlers.clear()
-for handler in (file_handler, console_handler):
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
-    root_logger.addHandler(handler)
+log_queue: "queue.SimpleQueue[logging.LogRecord]" = queue.SimpleQueue()
+root_logger.addHandler(logging.handlers.QueueHandler(log_queue))
+log_listener = logging.handlers.QueueListener(log_queue, file_handler, console_handler, respect_handler_level=True)
+log_listener.start()
+# Writes what's still queued before Python exits.
+atexit.register(log_listener.stop)
 
 log = logging.getLogger("main")
 
-# When this process began, so the start-up lines can say how long each phase took and how long the bot took to be ready.
-LAUNCHED = time.monotonic()
 # An extension that loads faster than this isn't logged on its own line.
 SLOW_EXTENSION_SECONDS = 0.5
 
@@ -61,6 +75,7 @@ class MyBot(commands.Bot):
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
         self._told_ready = False
+        self._shutting_down = False
 
     def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
         """Drops an event that involves a banned user or server before any cog sees it. Cogs with `acts_on_blacklisted` still get a banned user's events, see `blacklist.screen`."""
@@ -121,10 +136,24 @@ class MyBot(commands.Bot):
         log.info("Start-up: setup finished %.1f s after launch (the database %.1f s, the extensions %.1f s)", time.monotonic() - LAUNCHED, connected - began, time.monotonic() - loading)
 
     async def close(self) -> None:
-        # The cogs unload inside super().close(), so the HTTP session and the database stay open until they have finished.
-        await super().close()
-        await close_session()
-        await self.db.close()
+        if self._shutting_down:
+            await super().close()
+            return
+        self._shutting_down = True
+        began = time.monotonic()
+        # Stop the website first so incoming requests don't race cog unloads, then unload cogs in super().close(), and finally close the HTTP session and database pool together.
+        try:
+            runner = getattr(self, "web_runner", None)
+            if runner is not None:
+                self.web_runner = None
+                try:
+                    await runner.cleanup()
+                except Exception:
+                    log.exception("Error closing web server")
+            await super().close()
+        finally:
+            await asyncio.gather(close_session(), self.db.close())
+            log.info("Shut down cleanly in %.1f s", time.monotonic() - began)
 
 
 bot = MyBot()

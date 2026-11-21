@@ -244,9 +244,10 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="roles">
-    {% set role_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + roles}] %}
-    {{ ui.checklist("potty_role_id", role_groups, "Potty Mouth role", kind="radio", selected=jar.potty_role_id or "") }}
-    {{ ui.checklist("clean_role_id", role_groups, "Clean streak role", kind="radio", selected=jar.clean_role_id or "", hint="Only roles below WordCounter's own role are listed.") }}
+    {% set potty_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + potty_roles}] %}
+    {% set clean_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + clean_roles}] %}
+    {{ ui.checklist("potty_role_id", potty_groups, "Potty Mouth role", kind="radio", selected=jar.potty_role_id or "", hint="Only dedicated roles (up to 10 holders) without moderator permissions that both WordCounter and you can assign are listed.") }}
+    {{ ui.checklist("clean_role_id", clean_groups, "Clean streak role", kind="radio", selected=jar.clean_role_id or "", hint="Only roles without moderator permissions that both WordCounter and you can assign are listed.") }}
     <div class="form-actions"><button type="submit" class="btn btn--primary">Save roles</button></div>
   </form>
 </section>

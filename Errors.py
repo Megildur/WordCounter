@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import ActionRow, Container, LayoutView, Modal, Separator, TextDisplay
 from discord.ui.view import BaseView
-from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, make_button
+from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, error_view, is_member_timed_out, make_button
 from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_EMAIL, SUPPORT_URL
 
 log = logging.getLogger("Errors")
@@ -57,6 +57,12 @@ class ErrorDisplayView(AuthorOnlyView):
         self.add_item(container)
 
     async def _on_show_traceback(self, interaction: discord.Interaction) -> None:
+        if not can_see_details(interaction):
+            await interaction.response.send_message(
+                view=error_view("Only an active administrator in an owner server can view tracebacks."),
+                ephemeral=True,
+            )
+            return
         if len(self.traceback_str) <= INLINE_TRACEBACK_LIMIT:
             await interaction.response.send_message(view=TracebackView(self.traceback_str), ephemeral=True)
             return
@@ -66,8 +72,12 @@ class ErrorDisplayView(AuthorOnlyView):
 
 
 def can_see_details(interaction: discord.Interaction) -> bool:
-    """Whether the person may see an error's exception text and traceback: an administrator in one of the servers the owner commands exist in."""
-    return interaction.guild_id in ALLOWED_GUILD_IDS and interaction.permissions.administrator
+    """Whether the person may see an error's exception text and traceback: an active administrator in one of the servers the owner commands exist in."""
+    return (
+        interaction.guild_id in ALLOWED_GUILD_IDS
+        and interaction.permissions.administrator
+        and not is_member_timed_out(interaction.user)
+    )
 
 
 def format_error_details(error: BaseException, detailed: bool = False) -> Tuple[str, str, str]:

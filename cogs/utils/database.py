@@ -26,6 +26,13 @@ from cogs.utils.web_sessions import WEB_SESSION_SCHEMA, WebSessionQueries
 
 log = logging.getLogger(__name__)
 
+
+def _error_summary(error: BaseException) -> str:
+    """Short database error label without embedded row values such as user IDs or keywords."""
+    if error.args and isinstance(error.args[0], int):
+        return f"{type(error).__name__} ({error.args[0]})"
+    return type(error).__name__
+
 # What an analysis hands over for one user: counts per (channel_id, year, month) as [words, messages, attachments, emojis], and keyword counts per (channel_id, keyword, year, month).
 MonthlyKey = Tuple[int, int, int]
 MonthlyKeywordKey = Tuple[int, str, int, int]
@@ -241,7 +248,9 @@ ACTIVITY_KEY_NAMES: Dict[str, Tuple[str, ...]] = {**{table: keys for table, (key
 # The most changes that may wait in memory. Past it new ones are dropped, so a database that stays down can't use up the bot's memory.
 ACTIVITY_LIMIT = 50_000
 # The longest a cancelled flush waits for the commit it had already sent.
-COMMIT_WAIT_SECONDS = 30.0
+# How long shutdown waits for an in-flight activity commit and for the database connection to close before forcing it closed.
+COMMIT_WAIT_SECONDS = 10.0
+POOL_CLOSE_SECONDS = 5.0
 # A change that couldn't be saved is logged at most this often.
 ACTIVITY_LOG_SECONDS = 60.0
 
@@ -317,11 +326,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             # Before the pool closes, or the counts that were still waiting would be lost.
             await self.flush_activity()
         except Exception as error:
-            log.error("Counts that were still waiting couldn't be saved at shutdown and are lost: %s", error)
+            log.error("Counts that were still waiting couldn't be saved at shutdown and are lost: %s", _error_summary(error))
         pool, self.pool = self.pool, None
         if pool is not None:
             pool.close()
-            await pool.wait_closed()
+            try:
+                await asyncio.wait_for(pool.wait_closed(), POOL_CLOSE_SECONDS)
+            except asyncio.TimeoutError:
+                log.warning("Database connection was still in use after %.0f s; closing it", POOL_CLOSE_SECONDS)
+                pool.terminate()
 
     def forget_kept(self) -> None:
         """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
@@ -331,20 +344,21 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
 
     async def create_tables(self) -> None:
         async with self.db_lock:
-            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
-            cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
-            existing = {name.lower() for name, in await cursor.fetchall()}
+            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query against information_schema.COLUMNS lists both existing tables and their columns, so existing tables need zero DDL statements and newly created tables already include ADDED_COLUMNS.
+            cursor = await self.db.execute(
+                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
+            )
+            rows = await cursor.fetchall()
+            existing = {table.lower() for table, _ in rows}
+            present = {(table.lower(), column.lower()) for table, column in rows}
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA, *STATS_PANEL_SCHEMA):
                 named = CREATED_TABLE.match(statement)
                 if named is None or named.group(1).lower() not in existing:
                     await self.db.execute(statement)
-            # MySQL has no ADD COLUMN IF NOT EXISTS, so look at information_schema before altering.
-            cursor = await self.db.execute(
-                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
-            )
-            present = {(table, column) for table, column in await cursor.fetchall()}
+            # MySQL has no ADD COLUMN IF NOT EXISTS; newly created tables already include these columns, so only pre-existing tables missing one need ALTER TABLE.
             for table, column, definition in ADDED_COLUMNS:
-                if (table, column) not in present:
+                table_key = table.lower()
+                if table_key in existing and (table_key, column.lower()) not in present:
                     await self.db.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
 
     async def sqlite_imported(self) -> bool:
@@ -374,7 +388,9 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         """Runs each (sql, rows) pair with executemany in one transaction and commits. It takes `db_lock` itself, so don't call it from inside a lock block. Pass `sync_tracking_for` when the statements change a server's channels, so its tracking period is opened or closed in the same transaction."""
         await self.ensure_connected()
         async with self.db_lock:
-            for sql, rows in statements:
+            for index, (sql, rows) in enumerate(statements):
+                if index:
+                    await asyncio.sleep(0)
                 await self.db.executemany(sql, list(rows))
             if sync_tracking_for is not None:
                 await self._sync_tracking_period(sync_tracking_for)
@@ -409,6 +425,23 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 await self.db.execute(
                     "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
                     (guild_id, started),
+                )
+                await self.db.commit()
+
+    async def ensure_tracking_periods(self, guild_starts: Dict[int, int]) -> None:
+        """Opens initial tracking periods in one query and batch insert for servers with tracking on and no open period."""
+        if not guild_starts:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT DISTINCT c.guild_id FROM channels c LEFT JOIN tracking_periods tp ON tp.guild_id = c.guild_id AND tp.ended IS NULL WHERE tp.guild_id IS NULL"
+            )
+            missing = [(guild_id, guild_starts[guild_id]) for (guild_id,) in await cursor.fetchall() if guild_id in guild_starts]
+            if missing:
+                await self.db.executemany(
+                    "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
+                    missing,
                 )
                 await self.db.commit()
 
@@ -463,12 +496,14 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             ],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def switch_to_specific_mode(self, guild_id: int) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id = 1", [(guild_id,)])],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def disable_server_tracking(self, guild_id: int) -> None:
         await self._write(
@@ -478,33 +513,40 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             ],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def add_watched_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write(
             [("INSERT IGNORE INTO channels (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def remove_watched_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def clear_watched_channels(self, guild_id: int) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id != 1", [(guild_id,)])],
             sync_tracking_for=guild_id,
         )
+        self.forget_kept()
 
     async def add_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write([("INSERT IGNORE INTO `ignore` (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])])
+        self.forget_kept()
 
     async def remove_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write([("DELETE FROM `ignore` WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])])
+        self.forget_kept()
 
     async def clear_ignored_channels(self, guild_id: int) -> None:
         await self._write([("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)])])
+        self.forget_kept()
 
     @staticmethod
     def _plan_activity(
@@ -615,7 +657,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                     now = time.monotonic()
                     if now - self._activity_logged >= ACTIVITY_LOG_SECONDS:
                         self._activity_logged = now
-                        log.warning("Couldn't save %s waiting counts, will try again: %s", f"{self._activity.count:,}", error)
+                        log.warning("Couldn't save %s waiting counts, will try again: %s", f"{self._activity.count:,}", _error_summary(error))
         finally:
             if self._flusher is asyncio.current_task():
                 self._flusher = None
@@ -643,7 +685,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             if committing:
                 # Whether the server had already committed when this failed can't be known, and putting the batch back could count it twice. Writing each message on its own never wrote one twice either, so it is dropped and said so.
                 if isinstance(error, Exception):
-                    log.error("Waiting counts may not have been saved: the commit failed and its outcome isn't known, so they are not written again: %s", error)
+                    log.error("Waiting counts may not have been saved: the commit failed and its outcome isn't known, so they are not written again: %s", _error_summary(error))
                 raise
             if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
                 # A lost connection, or a task that was cancelled: nothing is wrong with the counts, so they all wait for the next try.
@@ -678,7 +720,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                     # A second cancel doesn't let go of the connection while its commit is still running.
                     continue
             if commit.done() and not commit.cancelled() and commit.exception() is not None:
-                log.error("Waiting counts couldn't be saved when the bot was stopping: %s", commit.exception())
+                log.error("Waiting counts couldn't be saved when the bot was stopping: %s", _error_summary(commit.exception()))
             raise
 
     @staticmethod
@@ -702,13 +744,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                     # As in flush_before_block: the rows after this one wait, this one isn't written twice.
                     self._activity.restore(dict(rows[position + 1:]))
                     if isinstance(error, Exception):
-                        log.error("Waiting counts for one row of %s may not have been saved: the commit failed and its outcome isn't known, so it is not written again: %s", key[0], error)
+                        log.error("Waiting counts for one row of %s may not have been saved: the commit failed and its outcome isn't known, so it is not written again: %s", key[0], _error_summary(error))
                     raise
                 if not isinstance(error, Exception) or isinstance(error, BROKEN_CONNECTION):
                     self._activity.restore(dict(rows[position:]))
                     raise
-                # Only the table is logged, never the IDs in the row.
-                log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], error)
+                # Only the table and sanitized error label are logged, never the IDs or keywords in the row.
+                log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], _error_summary(error))
 
     async def _write_activity(self, session, taken: Taken) -> None:
         """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk. Any other row gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
@@ -793,13 +835,17 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         guild_id: int,
         results: Mapping[int, UserActivity],
         analyzed_user_ids: Iterable[int],
-    ) -> None:
-        """Saves a finished search for one member, and marks them analyzed, in one transaction. A search has no checkpoints, so nothing is saved until it is done."""
+        should_skip: Optional[Callable[[], bool]] = None,
+    ) -> bool:
+        """Saves a finished search for one member, and marks them analyzed, in one transaction. Returns False without writing if `should_skip` reports True once the lock is held."""
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             await self._write_results(guild_id, results)
             await self._mark_analyzed(guild_id, analyzed_user_ids)
             await self.db.commit()
+            return True
 
     async def start_analysis_run(
         self,
@@ -873,15 +919,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         messages_read: int,
         totals: Callable[[], str],
         swears: Optional[SwearCounts] = None,
+        should_skip: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running totals JSON, and where each channel stands. `totals` is a function that returns the JSON and is called once the database lock is held, like the lazy `results` and `swears`, so the owner deleting a member's data while this write waited can't have the ID saved again. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
 
         Counts and cursors commit together, so after a restart the crawl continues from exactly where the saved counts stop and nothing is counted twice.
 
-        Returns False, with nothing written, when the run row is gone because the server was reset. The crawl treats that as a cancel.
+        Returns False, with nothing written, when the run row is gone because the server was reset or `should_skip` reports True. The crawl treats that as a cancel.
         """
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             # Updated first on purpose. The reset deletes this row, so a rowcount of 0 means the run was cancelled and none of the writes below should happen.
             cursor = await self.db.execute(
                 "UPDATE analysis_runs SET messages_read = ?, totals = ? WHERE guild_id = ?",
@@ -907,10 +956,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         user_ids: Iterable[int],
         swears: Optional[SwearCounts] = None,
         swear_history_before: Optional[int] = None,
+        should_skip: Optional[Callable[[], bool]] = None,
     ) -> bool:
-        """Saves the last results, marks the members analyzed and removes the run, all in one transaction. Returns False without writing anything when the run row is already gone. For a swear run, `swear_history_before` is the snowflake the crawl read back from, and everything older than it is recorded as covered."""
+        """Saves the last results, marks the members analyzed and removes the run, all in one transaction. Returns False without writing anything when the run row is already gone or `should_skip` reports True. For a swear run, `swear_history_before` is the snowflake the crawl read back from, and everything older than it is recorded as covered."""
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             # Deleting the run row first doubles as the cancel check, like the update in a checkpoint.
             cursor = await self.db.execute("DELETE FROM analysis_runs WHERE guild_id = ?", (guild_id,))
             if cursor.rowcount == 0:
@@ -1025,6 +1077,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 existing.add(cleaned)
                 added.append(cleaned)
             await self.db.commit()
+        self.forget_kept()
         return added, skipped
 
     async def replace_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
@@ -1035,12 +1088,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 [(guild_id, k.strip().lower()) for k in keywords if k.strip() and len(k.strip()) <= KEYWORD_LIMIT],
             ),
         ])
+        self.forget_kept()
 
     async def remove_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
         await self._write([("DELETE FROM keyword WHERE guild_id = ? AND keyword = ?", [(guild_id, k) for k in keywords])])
+        self.forget_kept()
 
     async def clear_keywords(self, guild_id: int) -> None:
         await self._write([("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)])])
+        self.forget_kept()
 
     async def get_user_full_stats(self, guild_id: int, user_id: int) -> Tuple[int, int, int, int, List[Tuple[str, int]]]:
         """Returns (words, messages, attachments, emojis, [(keyword, count)]). A member with no rows gets zeros and an empty list."""
@@ -1127,6 +1183,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             statements.append((f"DELETE FROM `{table}` WHERE guild_id IN (SELECT guild_id FROM analysis_runs WHERE guild_id = ?{kind})", [(guild_id,)]))
         statements.append((f"DELETE FROM analysis_runs WHERE guild_id = ?{kind}", [(guild_id,)]))
         await self._write(statements)
+        if counts:
+            self.forget_kept()
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()

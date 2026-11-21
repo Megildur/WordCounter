@@ -4,6 +4,7 @@ Everyone sees their own stats in the servers they share with the bot, and the se
 """
 
 from __future__ import annotations
+import logging
 import math
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from web import auth
 from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, post_form, redirect, render, sent_from_other_site
 
 routes = web.RouteTableDef()
+log = logging.getLogger(__name__)
 
 # The only page under /dashboard/{guild_id} that a member without Manage Server may open: their own stats. `dashboard_guard` closes every other page under a server to non-managers, so a page added later is for managers until it is listed here.
 MEMBER_PAGES = {"/dashboard/{guild_id}"}
@@ -100,14 +102,15 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
             if len(_asked) >= ASKED_LIMIT:
                 _asked.clear()
             _asked[key] = time.monotonic()
-        except discord.HTTPException:
-            return None
+        except discord.HTTPException as error:
+            log.warning("Discord didn't answer a server member lookup (status %s)", error.status)
+            raise web.HTTPServiceUnavailable() from error
     return member
 
 
 def manages(member: discord.Member) -> bool:
-    """Whether a member may use the manager pages. discord.py already leaves a timed-out member's permissions out of `guild_permissions` (Discord takes them away until the timeout ends, and the owner and administrators can't be timed out), so this is only the Manage Server check."""
-    return member.guild_permissions.manage_guild
+    """Whether a member may use the manager pages: requires Manage Server while not timed out."""
+    return not member.is_timed_out() and member.guild_permissions.manage_guild
 
 
 async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:
@@ -143,7 +146,7 @@ def manager_only(request: web.Request) -> web.Response:
 
 @web.middleware
 async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
-    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a form posted from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a POST carries their CSRF token. A form with a bad token is sent back to its page with the "form expired" message and changes nothing.
+    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a mutating request sent from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a mutating request carries their CSRF token. One with a bad token is sent back to its page with the "form expired" message and changes nothing.
 
     It goes by the route's pattern, not by each handler, so a new page is covered the moment it is added.
     """
@@ -155,14 +158,14 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
     if pattern != "/dashboard" and "guild_id" not in request.match_info:
         # A page under /dashboard with no server in its address is one the guard doesn't know how to protect, so it is closed to everyone until the guard is taught about it.
         raise web.HTTPNotFound()
-    posting = request.method == "POST"
-    if posting and sent_from_other_site(request):
+    mutating = request.method not in ("GET", "HEAD", "OPTIONS")
+    if mutating and sent_from_other_site(request):
         raise Refused(text="That form was sent from another site, so it was refused.")
     if "guild_id" in request.match_info:
         _, _, manager = await member_access(request)
         if not manager and pattern not in MEMBER_PAGES:
             return manager_only(request)
-    if posting and not auth.check_csrf(user, (await post_form(request)).get("csrf")):
+    if mutating and not auth.check_csrf(user, (await post_form(request)).get("csrf")):
         raise web.HTTPFound(f"{request.path}?msg=expired_form")
     return await handler(request)
 
@@ -476,6 +479,9 @@ async def member_action(request: web.Request) -> web.Response:
             result = "reanalysis_ready"
         elif result is None and action == "reset_jar":
             await db.jar_reset_members(guild.id, member_id)
+            cog = request.app["bot"].get_cog("SwearJar")
+            if cog is not None:
+                cog.forget_member(guild.id, member_id)
             refresh_jar(request, guild.id)
             result = "jar_reset"
     return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
@@ -568,4 +574,6 @@ async def settings_action(request: web.Request) -> web.Response:
                     cog = request.app["bot"].get_cog("SwearJar")
                     if cog is not None:
                         cog.forget(guild.id)
+        # Drops the swear jar cog's cached tracking config so changes take effect in Discord at once.
+        refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")

@@ -41,6 +41,7 @@ from cogs.utils.jar import (
     CLEAN_ROLE_STREAK,
     DAY_SECONDS,
     JAR_OFF_MESSAGE,
+    POTTY_ROLE_MAX_HOLDERS,
     SPAM_LIMIT,
     SPAM_MULTIPLIER,
     SPAM_NOTE,
@@ -137,6 +138,11 @@ def role_mention(role_id: Optional[int], empty: str) -> str:
     return f"<@&{role_id}>" if role_id else empty
 
 
+def safe_money(settings: Dict[str, Any], units: int) -> str:
+    """Formats a jar amount for Discord text with any masked links or markdown in custom token names escaped."""
+    return safe_name(money(settings, units))
+
+
 def word_list(words: Sequence[str], limit: int = 25) -> str:
     shown = ", ".join(discord.utils.escape_markdown(word) for word in words[:limit])
     if len(words) > limit:
@@ -147,9 +153,9 @@ def word_list(words: Sequence[str], limit: int = 25) -> str:
 def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[str, str]]:
     balance = data["balance"]
     fields = [
-        ("Debt" if balance < 0 else "Wallet", f"**{money(settings, balance)}**"),
+        ("Debt" if balance < 0 else "Wallet", f"**{safe_money(settings, balance)}**"),
         ("Clean streak", f"{data['streak']:,} day(s) · best {data['best_streak']:,}"),
-        ("Swears", f"{data['swears']:,} counted · {money(settings, data['week_fines'])} fined this week"),
+        ("Swears", f"{data['swears']:,} counted · {safe_money(settings, data['week_fines'])} fined this week"),
     ]
     if balance < 0:
         fields.append(("Paying it off", f"About {days_to_clear(-balance, data['streak']):,} more clean active day(s)."))
@@ -159,7 +165,7 @@ def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[
 
 
 def earning_footer(settings: Dict[str, Any]) -> str:
-    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. Streak bonuses at 7 and 30 days."
+    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {safe_name(unit_label(settings))}. Streak bonuses at 7 and 30 days."
 
 
 class FormModal(discord.ui.Modal):
@@ -183,6 +189,13 @@ class FormModal(discord.ui.Modal):
             self.add_item(item)
             self.inputs.append(item)
         self.handler = handler
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # Every form here belongs to the settings menu, and a modal stays open for a while after the button that opened it, so Manage Server is checked again when it is sent.
@@ -217,7 +230,7 @@ class JarTopPaginator(ButtonPaginator):
             return f"{value:,} swears"
         if self.kind == "streak":
             return f"{value:,} day(s)"
-        return money(self.settings, value)
+        return safe_money(self.settings, value)
 
     async def format_page(self, chunk: List[Tuple[int, int]]) -> discord.ui.Container:
         names = await member_names(self.bot, self.guild, [uid for uid, _ in chunk])
@@ -280,7 +293,7 @@ class JarSettingsView(SectionMenu):
         return f"Fines for swearing in **{safe_name(self.guild.name)}**, paid back with clean streaks."
 
     def _money(self, units: int) -> str:
-        return money(self.settings, units)
+        return safe_money(self.settings, units)
 
     def _rule_ids(self, rule: str) -> List[int]:
         return sorted(cid for cid, value in self.rules.items() if value == rule)
@@ -289,9 +302,10 @@ class JarSettingsView(SectionMenu):
         goal = self.goal
         if goal is None:
             return "None"
+        label = safe_name(goal["label"])
         if goal["completed_at"]:
-            return f"{goal['label']}, reached <t:{int(goal['completed_at'])}:D>"
-        return f"{goal['label']}: {self._money(goal['progress'])} of {self._money(goal['target'])}"
+            return f"{label}, reached <t:{int(goal['completed_at'])}:D>"
+        return f"{label}: {self._money(goal['progress'])} of {self._money(goal['target'])}"
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         s = self.settings
@@ -341,7 +355,7 @@ class JarSettingsView(SectionMenu):
         if s["currency"] == "money":
             currency = f"Money, {self._money(1)} per unit"
         else:
-            currency = f"Tokens called {s['token_name']} / {s['token_plural']}, {s['tokens_per_unit']:,} per unit"
+            currency = f"Tokens called {safe_name(s['token_name'])} / {safe_name(s['token_plural'])}, {s['tokens_per_unit']:,} per unit"
         tiers = "\n".join(
             f"- **{TIER_NAMES[tier]}:** {price:,} unit(s) = {self._money(price)}" for tier, price in prices(s).items()
         )
@@ -467,7 +481,7 @@ class JarSettingsView(SectionMenu):
                 "-# Goes to the member fined the most each week. It moves every Monday (UTC).\n"
                 f"**Clean streak:** {role_mention(s['clean_role_id'], 'Not set')}\n"
                 f"-# Given at a {CLEAN_ROLE_STREAK}-day clean streak and taken away when they swear.\n\n"
-                "WordCounter needs Manage Roles, and its own role has to be above these roles."
+                "WordCounter needs Manage Roles, and roles must be below both WordCounter's and your highest role with no moderator permissions."
             )
         )
         for name, column in (("Potty Mouth", "potty_role_id"), ("clean streak", "clean_role_id")):
@@ -492,7 +506,7 @@ class JarSettingsView(SectionMenu):
         if goal is None or goal["completed_at"]:
             text = "### Goal\nNo goal right now. Set one, like **$50 for a movie night**, and the jar posts once when it's reached."
             if goal is not None:
-                text += f"\n\n**Last goal:** {goal['label']}, reached <t:{int(goal['completed_at'])}:D>."
+                text += f"\n\n**Last goal:** {safe_name(goal['label'])}, reached <t:{int(goal['completed_at'])}:D>."
             container.add_item(discord.ui.TextDisplay(text))
             container.add_item(discord.ui.ActionRow(make_button("Set a goal", discord.ButtonStyle.success, self._open_goal_modal)))
             return
@@ -500,7 +514,7 @@ class JarSettingsView(SectionMenu):
         channel = f"<#{goal['channel_id']}>" if goal["channel_id"] else "Nowhere yet. Pick a channel below."
         container.add_item(
             discord.ui.TextDisplay(
-                f"### Goal\n**Saving up for:** {goal['label']}\n"
+                f"### Goal\n**Saving up for:** {safe_name(goal['label'])}\n"
                 f"**Progress:** {self._money(goal['progress'])} of {self._money(goal['target'])} ({percent}%)\n"
                 f"**Announced in:** {channel}\n**Pings @everyone:** {'Yes' if goal['ping'] else 'No'}\n\n"
                 "-# Fines fill the jar. Paying debt back with clean days doesn't take money out of it."
@@ -591,7 +605,8 @@ class JarSettingsView(SectionMenu):
 
     async def _open_currency_modal(self, interaction: discord.Interaction) -> None:
         s = self.settings
-        if s["currency"] == "money":
+        mode = s["currency"]
+        if mode == "money":
             fields = [("Value of one unit, in dollars", f"{s['unit_cents'] / 100:.2f}", "0.25", 10)]
         else:
             fields = [
@@ -600,18 +615,20 @@ class JarSettingsView(SectionMenu):
                 ("Tokens per unit", str(s["tokens_per_unit"]), "5", 6),
             ]
         # A modal has to be the first response to the click, so these openers can't defer first.
-        await interaction.response.send_modal(FormModal("Fine currency", fields, self._save_currency))
+        await interaction.response.send_modal(
+            FormModal("Fine currency", fields, lambda inter, values, expected=mode: self._save_currency(inter, values, expected))
+        )
 
-    async def _save_currency(self, interaction: discord.Interaction, values: List[str]) -> None:
-        if self.settings["currency"] == "money":
-            cents = parse_unit_cents(values[0])
+    async def _save_currency(self, interaction: discord.Interaction, values: List[str], mode: str) -> None:
+        if mode == "money":
+            cents = parse_unit_cents(values[0]) if values else None
             if cents is None:
                 self._done("Enter a value from 0.01 to 1000, like 0.25.", WARNING_COLOR)
             else:
                 await self.bot.db.jar_update(self.guild.id, unit_cents=cents)
                 self._done(f"One unit is now worth ${cents / 100:,.2f}.")
         else:
-            tokens = parse_tokens(*values)
+            tokens = parse_tokens(*values[:3]) if len(values) >= 3 else None
             if tokens is None:
                 self._done("Give both names and a whole number of tokens from 1 to 10000.", WARNING_COLOR)
             else:
@@ -680,10 +697,10 @@ class JarSettingsView(SectionMenu):
             column = LANGUAGE_COLUMNS[code]
             turning_on = not self.settings.get(column)
             name = LANGUAGES[code][0]
-            if not turning_on and not any(self.settings.get(other) for other in LANGUAGE_COLUMNS.values() if other != column):
+            changed = await self.bot.db.jar_set_language(self.guild.id, column, turning_on)
+            if not changed:
                 self._done(f"Keep at least one language on. Turn the other one on before turning {name} off.", WARNING_COLOR)
             else:
-                await self.bot.db.jar_update(self.guild.id, **{column: int(turning_on)})
                 self._done(f"{name} swears are fined now." if turning_on else f"{name} swears aren't fined any more.")
             await self.refresh_and_edit(interaction)
 
@@ -739,7 +756,7 @@ class JarSettingsView(SectionMenu):
                 self._done("Role cleared.")
             else:
                 role = self.guild.get_role(ids[0])
-                problem = role_problem(self.guild, role)
+                problem = role_problem(self.guild, role, interaction.user, single_holder=(column == "potty_role_id"))
                 if problem:
                     self._done(problem, WARNING_COLOR)
                 else:
@@ -779,14 +796,15 @@ class JarSettingsView(SectionMenu):
             channel_id = current["channel_id"] if current and current["channel_id"] else interaction.channel_id
             # Saving starts the goal again from zero progress, even when an admin only changes one that is running.
             await self.bot.db.jar_set_goal(self.guild.id, label[:100], target, channel_id, bool(current and current["ping"]))
-            self._done(f"Goal set: {label[:100]}, {money(self.settings, target)}. It's announced in <#{channel_id}>.")
+            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. It's announced in <#{channel_id}>.")
         await self.refresh_and_edit(interaction)
 
     async def _on_goal_channel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         ids = self._selected_ids(interaction)
         channel = self.guild.get_channel(ids[0]) if ids else None
-        if channel is None or not channel.permissions_for(self.guild.me).send_messages:
+        perms = channel.permissions_for(self.guild.me) if isinstance(channel, discord.TextChannel) and self.guild.me is not None else None
+        if perms is None or not (perms.view_channel and perms.send_messages):
             self._done("WordCounter can't send messages there. Pick another channel.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update_goal(self.guild.id, channel_id=channel.id)
@@ -819,13 +837,18 @@ class JarSettingsView(SectionMenu):
         async def callback(interaction: discord.Interaction) -> None:
             await interaction.response.defer()
             running, _ = await analysis_state(self.bot, self.guild.id)
+            jar = self.bot.get_cog("SwearJar")
             if running:
                 self._done(ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             elif member_only and self.reset_user_id is not None:
                 await self.bot.db.jar_reset_members(self.guild.id, self.reset_user_id)
+                if jar is not None:
+                    jar.forget_member(self.guild.id, self.reset_user_id)
                 self._done(f"Reset <@{self.reset_user_id}>'s jar.")
             else:
                 await self.bot.db.jar_reset_members(self.guild.id)
+                if jar is not None:
+                    jar.forget(self.guild.id)
                 self._done("The whole jar was reset.")
             await self.refresh_and_edit(interaction)
 
@@ -848,7 +871,10 @@ class SwearJar(commands.Cog):
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
         # IDs whose data was just deleted by the owner commands, with the monotonic time their refusal ends.
         self._forgotten: Dict[int, float] = {}
+        # (guild_id, user_id) pairs whose jar was just reset for that member in one server, with the monotonic time their refusal ends.
+        self._forgotten_pairs: Dict[Tuple[int, int], float] = {}
         self.last_daily = 0.0
+        self._pruned_day = 0
         # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
         self.fine_menu = app_commands.ContextMenu(
             name="Swear Jar",
@@ -869,7 +895,10 @@ class SwearJar(commands.Cog):
             # Waited for: a flush that is cancelled in the middle of its write puts its counts back, and that has to happen before the last flush below takes them.
             await asyncio.gather(loop_task, return_exceptions=True)
         self.bot.tree.remove_command(self.fine_menu.name, type=self.fine_menu.type)
-        await self._flush_days()
+        try:
+            await self._flush_days()
+        except Exception:
+            log.exception("Could not flush swear jar day counts on unload")
 
     def invalidate(self, guild_id: int) -> None:
         """Drops a server's cached state so the next message rebuilds it from the database. Called after settings change, including from the dashboard."""
@@ -884,13 +913,24 @@ class SwearJar(commands.Cog):
         # For the next FORGET_SECONDS this ID's day counts are refused, including a flush that has taken its counts and is waiting for the database lock, which checks again when it gets it.
         self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
 
+    def forget_member(self, guild_id: int, user_id: int) -> None:
+        """Drops unsaved spam tracking and day counts for one member in one server after a per-member jar reset."""
+        pair = (guild_id, user_id)
+        self.recent.pop(pair, None)
+        self.spam_until.pop(pair, None)
+        for key in [k for k in self.day_counts if k[0] == guild_id and k[1] == user_id]:
+            del self.day_counts[key]
+        self._forgotten_pairs[pair] = time.monotonic() + FORGET_SECONDS
+
     def _is_forgotten(self, guild_id: int, user_id: int) -> bool:
-        if not self._forgotten:
-            return False
         now = time.monotonic()
-        for target_id in [target_id for target_id, until in self._forgotten.items() if until <= now]:
-            del self._forgotten[target_id]
-        return guild_id in self._forgotten or user_id in self._forgotten
+        if self._forgotten:
+            for target_id in [target_id for target_id, until in self._forgotten.items() if until <= now]:
+                del self._forgotten[target_id]
+        if self._forgotten_pairs:
+            for pair in [pair for pair, until in self._forgotten_pairs.items() if until <= now]:
+                del self._forgotten_pairs[pair]
+        return guild_id in self._forgotten or user_id in self._forgotten or (guild_id, user_id) in self._forgotten_pairs
 
     async def state(self, guild_id: int) -> JarState:
         """Returns the server's JarState, reused for STATE_TTL seconds. With the jar off the state has no matcher, which tells the listeners to stop early."""
@@ -937,7 +977,7 @@ class SwearJar(commands.Cog):
             self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
         tiers = state.matcher.find(message.content)
         if tiers:
-            await self._fine(message, channel_id, state, tiers, None)
+            await self._fine(message, channel_id, state, tiers)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
@@ -953,8 +993,7 @@ class SwearJar(commands.Cog):
             return
         tiers = state.matcher.find(after.content)
         if tiers:
-            # The message's earlier fine goes along, so only the increase is charged.
-            await self._fine(after, channel_id, state, tiers, await self.bot.db.jar_message_fine(after.id))
+            await self._fine(after, channel_id, state, tiers)
 
     def _register_fine(self, key: Tuple[int, int], now: float) -> bool:
         """Adds a fined message to the member's recent list and returns True if this fine is doubled. More than SPAM_LIMIT fines within SPAM_WINDOW seconds starts a penalty of SPAM_PENALTY seconds, and the message that trips it is already doubled."""
@@ -972,36 +1011,26 @@ class SwearJar(commands.Cog):
         channel_id: int,
         state: JarState,
         tiers: List[int],
-        previous: Optional[Dict[str, Any]],
     ) -> None:
-        """Charges a swearing message and replies to it.
-
-        `previous` is the message's earlier fine when this is an edit. Only the increase is charged, and nothing is refunded if swears were removed. Nothing happens if nothing new is owed.
-        """
+        """Charges a swearing message (or the increase from an edit) atomically and replies to it."""
         swears, amount = fine_for(tiers, prices(state.settings))
-        before_swears, before_amount = (previous["swears"], previous["amount"]) if previous else (0, 0)
-        added_swears, added_amount = max(0, swears - before_swears), max(0, amount - before_amount)
-        if not added_amount:
+        if not amount:
             return
-        now = time.time()
         key = (message.guild.id, message.author.id)
-        spam = self._register_fine(key, now)
-        # The doubled amount is what is charged, and what jar_fines keeps in the message's total.
-        if spam:
-            added_amount *= SPAM_MULTIPLIER
-        # Saved before anything is sent to Discord, so a failed reply can't lose the fine.
-        member, reached = await self.bot.db.jar_record_fine(
+        # Prior-fine dedup and delta calculation run inside db_lock, so concurrent edits can't double-charge.
+        member, reached, added_amount, spam = await self.bot.db.jar_record_fine(
             message.guild.id,
             message.author.id,
             channel_id,
             message.id,
-            swears=added_swears,
-            amount=added_amount,
-            total_swears=before_swears + added_swears,
-            total_amount=before_amount + added_amount,
-            day=utc_day(now),
-            spam_until=self.spam_until.get(key, 0.0),
+            swears=swears,
+            amount=amount,
+            day=utc_day(time.time()),
+            spam_multiplier=SPAM_MULTIPLIER,
+            on_fine=lambda now: (self._register_fine(key, now), self.spam_until.get(key, 0.0)),
         )
+        if member is None or added_amount <= 0:
+            return
         await self._answer(message, state.settings, added_amount, member["balance"], spam)
         # A fine ends the clean streak, so that role is taken away. Only a Member has roles, and the author can be a plain User.
         if hasattr(message.author, "roles"):
@@ -1033,8 +1062,8 @@ class SwearJar(commands.Cog):
         if settings["delete_mode"]:
             doubled = f" That's doubled: {SPAM_NOTE}" if spam else ""
             description = (
-                f"{message.author.mention}'s message was removed for swearing and fined **{money(settings, amount)}**.{doubled}\n"
-                f"Wallet: **{money(settings, balance)}**"
+                f"{message.author.mention}'s message was removed for swearing and fined **{safe_money(settings, amount)}**.{doubled}\n"
+                f"Wallet: **{safe_money(settings, balance)}**"
             )
             if await self._remove(message, description):
                 return
@@ -1066,16 +1095,16 @@ class SwearJar(commands.Cog):
     async def _announce_goal(self, guild: discord.Guild, settings: Dict[str, Any], goal: Dict[str, Any]) -> None:
         """Posts the goal reached message in the goal's channel. It stays quiet if there is no channel or the bot can't send in it."""
         channel = guild.get_channel(goal["channel_id"] or 0)
-        if channel is None or guild.me is None:
+        if not isinstance(channel, discord.TextChannel) or guild.me is None:
             return
         permissions = channel.permissions_for(guild.me)
-        if not permissions.send_messages:
+        if not (permissions.view_channel and permissions.send_messages):
             return
         # The bot pings nobody by default, so this message passes its own allowed_mentions: @everyone only if the goal asks for it and the bot may.
         ping = bool(goal["ping"]) and permissions.mention_everyone
         view = create_v2_view(
             "Swear jar goal reached",
-            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, so it's time for: **{goal['label']}**",
+            f"{'@everyone ' if ping else ''}The jar collected **{safe_money(settings, goal['target'])}**, so it's time for: **{safe_name(goal['label'])}**",
             footer="Admins can set the next goal in /swearjar settings.",
             color=SUCCESS_COLOR,
         )
@@ -1132,7 +1161,9 @@ class SwearJar(commands.Cog):
         db = self.bot.db
         # Save the pending message counts first, so a day that just ended is credited with all its messages.
         await self._flush_days()
-        for guild_id in await db.jar_enabled_guilds():
+        week = week_index(today)
+        guild_ids = await db.jar_due_guilds(today, week) if hasattr(db, "jar_due_guilds") else await db.jar_enabled_guilds()
+        for guild_id in guild_ids:
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue
@@ -1143,11 +1174,13 @@ class SwearJar(commands.Cog):
                 # Anyone credited with a streak of CLEAN_ROLE_STREAK days or more gets the clean streak role.
                 clean = [guild.get_member(uid) for uid, streak in credited if streak >= CLEAN_ROLE_STREAK]
                 await self._set_role(guild, settings["clean_role_id"], add=[member for member in clean if member])
-            if settings["rotated_week"] < week_index(today):
+            if settings["rotated_week"] < week:
                 await self._rotate_potty_role(guild, settings, today)
                 # Saved even when no role is set, so each new week is only looked at once.
-                await db.jar_update(guild_id, rotated_week=week_index(today))
-        await db.jar_prune_fines()
+                await db.jar_update(guild_id, rotated_week=week)
+        if self._pruned_day != today:
+            await db.jar_prune_fines()
+            self._pruned_day = today
 
     async def _rotate_potty_role(self, guild: discord.Guild, settings: Dict[str, Any], today: int) -> None:
         """Gives the Potty Mouth role to whoever was fined the most last week (Monday to Sunday, UTC) and takes it from everyone else who has it. If nobody was fined, nobody holds it."""
@@ -1157,11 +1190,21 @@ class SwearJar(commands.Cog):
         start = week_start(today)
         winner_id = await self.bot.db.jar_top_fined(guild.id, start - 7 * DAY_SECONDS, start)
         winner = guild.get_member(winner_id) if winner_id else None
+        remove = [member for member in role.members if winner is None or member.id != winner.id]
+        if len(remove) > POTTY_ROLE_MAX_HOLDERS:
+            log.warning(
+                "Skipping Potty Mouth rotation in guild %s: role %s has %s extra holders (limit %s)",
+                guild.id,
+                role.id,
+                len(remove),
+                POTTY_ROLE_MAX_HOLDERS,
+            )
+            return
         await self._set_role(
             guild,
             role.id,
             add=[winner] if winner else [],
-            remove=[member for member in role.members if winner is None or member.id != winner.id],
+            remove=remove,
         )
 
     async def _enabled_settings(self, interaction: discord.Interaction, deferred: Optional[bool] = None) -> Optional[Dict[str, Any]]:
@@ -1279,7 +1322,7 @@ class SwearJar(commands.Cog):
         elif goal["completed_at"]:
             view = create_v2_view(
                 "Swear jar goal",
-                f"The last goal, **{goal['label']}**, was reached <t:{int(goal['completed_at'])}:D> at {money(settings, goal['target'])}.",
+                f"The last goal, **{safe_name(goal['label'])}**, was reached <t:{int(goal['completed_at'])}:D> at {safe_money(settings, goal['target'])}.",
                 color=SUCCESS_COLOR,
             )
         else:
@@ -1287,8 +1330,8 @@ class SwearJar(commands.Cog):
             filled = percent // 10
             view = create_v2_view(
                 "Swear jar goal",
-                f"Saving up for **{goal['label']}**.\n\n`{'█' * filled}{'░' * (10 - filled)}` {percent}%\n"
-                f"**{money(settings, goal['progress'])}** of **{money(settings, goal['target'])}**",
+                f"Saving up for **{safe_name(goal['label'])}**.\n\n`{'█' * filled}{'░' * (10 - filled)}` {percent}%\n"
+                f"**{safe_money(settings, goal['progress'])}** of **{safe_money(settings, goal['target'])}**",
                 footer="Every fine goes into the jar.",
                 color=BRAND_COLOR,
             )

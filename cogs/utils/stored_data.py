@@ -4,6 +4,7 @@
 """
 
 from __future__ import annotations
+import asyncio
 import datetime
 import io
 import json
@@ -264,6 +265,7 @@ class StoredDataQueries:
                     cursor = await self.db.execute(f"DELETE FROM `{name}` WHERE {where}", (target_id,) * len(columns))
                     if cursor.rowcount and cursor.rowcount > 0:
                         deleted.removed[name] = cursor.rowcount
+                    await asyncio.sleep(0)
                 # After the deletes, so a server's own run is gone and not rewritten. An interrupted run isn't running in memory for `AnalyzeChat.forget` to clean, and a resume reads its members back from this row.
                 for entry in ID_LISTS:
                     if entry.table in id_columns:
@@ -272,8 +274,12 @@ class StoredDataQueries:
                             deleted.cleared[entry.table] = changed
                 await self.db.commit()
         finally:
-            # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory, and the in-memory server lists go too. This runs even when the deletion fails part-way, because a ban has already been recorded by then and the logins and lists of a banned person must not outlive it.
-            self.forget_web_sessions()
+            forget_kept = getattr(self, "forget_kept", None)
+            if forget_kept is not None:
+                forget_kept()
+            # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory, and a deleted server leaves everyone's server list too. This runs even when the deletion fails part-way, because a ban has already been recorded by then and the logins and lists of a banned person must not outlive it.
+            self.forget_web_sessions(target_id)
+            self.drop_web_server(target_id)
         return deleted
 
     async def blacklisted_ids(self) -> Set[int]:
@@ -307,6 +313,11 @@ class StoredDataQueries:
             ON DUPLICATE KEY UPDATE reason = VALUES(reason)""",
             [(target_id, kind, reason, added_by, time.time())],
         )])
+        # Drop cached website sessions or server lists right away instead of waiting for ALIVE_SECONDS to pass.
+        if kind == "user":
+            self.forget_web_sessions(target_id)
+        else:
+            self.drop_web_server(target_id)
 
     async def remove_from_blacklist(self, target_id: int) -> bool:
         """Lifts a ban. Returns True if the id was on the list."""

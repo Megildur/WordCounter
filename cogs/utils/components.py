@@ -6,7 +6,7 @@ The accent colours, the container and view builders every reply uses, button and
 from __future__ import annotations
 import asyncio
 import time
-from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import discord
 
 # Accent colours for container stripes, taken from the bot avatar's palette.
@@ -161,10 +161,23 @@ def keyword_summary(counts: Iterable[Tuple[str, int]]) -> str:
     return " · ".join(f"{code_span(keyword)} {count:,}" for keyword, count in counts)
 
 
+def is_member_timed_out(member: Any) -> bool:
+    """Whether `member` is currently timed out (False for non-members or partial test doubles without `timed_out_until`)."""
+    timed_out = getattr(member, "is_timed_out", None)
+    if not callable(timed_out):
+        return False
+    try:
+        return timed_out() is True
+    except AttributeError:
+        return False
+
+
 def manager_check_error(interaction: discord.Interaction) -> Optional[str]:
-    """Returns why the user can't manage this server's settings (not in a server, or no Manage Server permission), or None when they can."""
+    """Returns why the user can't manage this server's settings (not in a server, timed out, or no Manage Server permission), or None when they can."""
     if interaction.guild is None:
         return SERVER_ONLY_MESSAGE
+    if is_member_timed_out(interaction.user):
+        return "You can't change server settings while you're timed out."
     if not interaction.user.guild_permissions.manage_guild:
         return "You need the Manage Server permission to do this."
     return None

@@ -108,6 +108,22 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
     async def _indicator_callback(self, interaction: Interaction) -> None:
         await interaction.response.defer()
 
+    async def on_timeout(self) -> None:
+        message, self.message = self.message, None
+        if message is None:
+            return
+        changed = False
+        for item in self.walk_children():
+            if isinstance(item, discord.ui.Button) and item.style != discord.ButtonStyle.link and not item.disabled:
+                item.disabled = True
+                changed = True
+        if not changed:
+            return
+        try:
+            await message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
     def stop(self) -> None:
         self.message = None
         super().stop()

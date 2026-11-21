@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncio
 import calendar
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -37,6 +37,22 @@ from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
 
+OVERVIEW_CHANNEL_LIMIT = 25
+CHANNELS_TAB_LIMIT = 40
+
+
+def _summarize_channels(
+    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
+) -> str:
+    sorted_ids = sorted(channel_ids)
+    if not sorted_ids:
+        return empty
+    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
+    remaining = len(sorted_ids) - limit
+    if remaining > 0:
+        shown.append(f"{prefix}and {remaining} more")
+    return sep.join(shown)
+
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
 SECTIONS = (
     ("overview", "Overview", "Turn tracking on or off and pick a mode"),
@@ -57,6 +73,13 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
     def __init__(self, menu_view: SettingsMenuView) -> None:
         super().__init__()
         self.menu_view = menu_view
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # A modal stays open for a while after the button that opened it was pressed, so Manage Server is checked again when it is sent.
@@ -96,6 +119,13 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
         self.menu_view = menu_view
         # Cut to the input's 2000 character limit. Saving a list longer than that loses the keywords that were cut off, and a keyword cut in half is saved as a new one.
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)
@@ -148,16 +178,16 @@ class SettingsMenuView(SectionMenu):
         elif self.is_whole_server:
             mode = "Whole server. Every channel is counted except ignored ones."
             scope_title = "Ignored"
-            scope_value = (
-                ", ".join(format_channel_or_category(self.guild, cid) for cid in sorted(self.ignored_ids))
-                if self.ignored_ids
-                else "Nothing ignored"
+            scope_value = _summarize_channels(
+                self.guild, self.ignored_ids, limit=OVERVIEW_CHANNEL_LIMIT, sep=", ", empty="Nothing ignored"
             )
         else:
             mode = "Specific channels. Only the channels and categories you pick are counted."
             scope_title = "Tracked channels and categories"
-            specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
-            scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids) or "None picked yet"
+            specific_ids = [cid for cid in self.watched_ids if cid != 1]
+            scope_value = _summarize_channels(
+                self.guild, specific_ids, limit=OVERVIEW_CHANNEL_LIMIT, sep=", ", empty="None picked yet"
+            )
 
         keyword_preview = ", ".join(code_span(k) for k in self.keywords[:20]) or "None"
         if len(self.keywords) > 20:
@@ -228,7 +258,9 @@ class SettingsMenuView(SectionMenu):
             add_placeholder = "Add channels or categories to track"
             remove_placeholder = "Remove from the tracked list"
 
-        listed = "\n".join(f"- {format_channel_or_category(self.guild, cid)}" for cid in active_list) or "None yet."
+        listed = _summarize_channels(
+            self.guild, active_list, limit=CHANNELS_TAB_LIMIT, sep="\n", prefix="- ", empty="None yet."
+        )
         container.add_item(discord.ui.TextDisplay(f"{header}\n\n**{list_label} ({len(active_list)}):**\n{listed}"))
 
         channel_select = discord.ui.ChannelSelect(
@@ -283,11 +315,12 @@ class SettingsMenuView(SectionMenu):
         if self.keywords:
             # At most 25 options, and a label or value is cut at 100 characters, so a longer keyword is left out: its cut-off value would match nothing when removed. Edit list and Remove all handle those and the rest.
             options = [discord.SelectOption(label=kw, value=kw) for kw in self.keywords if len(kw) <= 100][:25]
-            remove_select = discord.ui.Select(
-                placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
-            )
-            remove_select.callback = self._on_keywords_removed
-            container.add_item(discord.ui.ActionRow(remove_select))
+            if options:
+                remove_select = discord.ui.Select(
+                    placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
+                )
+                remove_select.callback = self._on_keywords_removed
+                container.add_item(discord.ui.ActionRow(remove_select))
 
         container.add_item(
             discord.ui.ActionRow(
@@ -381,9 +414,15 @@ class SettingsMenuView(SectionMenu):
         else:
             await self._confirm_whole_server(interaction)
 
+    def _invalidate_jar(self) -> None:
+        swear_jar = self.bot.get_cog("SwearJar")
+        if swear_jar is not None:
+            swear_jar.invalidate(self.guild.id)
+
     async def _confirm_whole_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.bot.db.enable_whole_server(self.guild.id)
+        self._invalidate_jar()
         self.pending_confirmation = None
         self.status_banner = ("Whole server mode is on. Every channel is counted now.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
@@ -392,12 +431,14 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.defer()
         # This only removes the whole-server row, so with no channels picked yet nothing is counted until some are added.
         await self.bot.db.switch_to_specific_mode(self.guild.id)
+        self._invalidate_jar()
         self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _confirm_disable_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.bot.db.disable_server_tracking(self.guild.id)
+        self._invalidate_jar()
         self.pending_confirmation = None
         self.status_banner = ("Tracking is off.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
@@ -413,6 +454,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.add_watched_channels(self.guild.id, selected)
             self.status_banner = (f"Now tracking: {listed}", SUCCESS_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_removed(self, interaction: discord.Interaction) -> None:
@@ -425,6 +467,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.remove_watched_channels(self.guild.id, selected)
             self.status_banner = (f"No longer tracking: {listed}", SUCCESS_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_channels(self, interaction: discord.Interaction) -> None:
@@ -435,6 +478,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.clear_watched_channels(self.guild.id)
             self.status_banner = ("Tracked list cleared.", WARNING_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _open_add_keyword_modal(self, interaction: discord.Interaction) -> None:
@@ -528,6 +572,8 @@ class SettingsMenuView(SectionMenu):
                 swear_jar = self.bot.get_cog("SwearJar")
                 if swear_jar is not None:
                     swear_jar.forget(self.guild.id)
+            elif counts:
+                self._invalidate_jar()
             if counts:
                 self.selected_reset_user_id = None
                 self.selected_reset_channel_id = None
@@ -559,21 +605,26 @@ class LeaderboardPaginator(ButtonPaginator):
         self.entry_count = 0
         self.podium: Optional[bytes] = None
         self.history: List[Tuple[str, str]] = []
+        self._history_loaded = False
+        self._history_channel_id: Optional[int] = None
 
     async def load(self, category: str) -> None:
         self.category = category
         self.current_page = 0
         channel_id = self.channel.id if self.channel else None
 
-        self.history = []
-        if self.channel is not None:
-            rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
-            if rows:
-                lines = [
-                    f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
-                    for year, month, words, messages, attachments, emojis in rows
-                ]
-                self.history = [("Monthly history, newest first", "\n".join(lines))]
+        if not self._history_loaded or self._history_channel_id != channel_id:
+            self.history = []
+            if self.channel is not None:
+                rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
+                if rows:
+                    lines = [
+                        f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
+                        for year, month, words, messages, attachments, emojis in rows
+                    ]
+                    self.history = [("Monthly history, newest first", "\n".join(lines))]
+            self._history_loaded = True
+            self._history_channel_id = channel_id
 
         if category == "keywords":
             entries: List = await self.bot.db.get_keyword_leaders(self.guild.id, channel_id)
@@ -622,7 +673,7 @@ class LeaderboardPaginator(ButtonPaginator):
             for keyword, users in chunk:
                 top = users[:10]
                 fields.append((
-                    f'"{safe_name(keyword)}"',
+                    code_span(keyword),
                     "\n".join(f"{rank_prefix(rank)} **{names[uid]}** · {count:,}" for rank, (uid, count) in enumerate(top, start=1)),
                 ))
             footer = f"{self.entry_count} keyword(s)"

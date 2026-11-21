@@ -3,7 +3,7 @@
 from __future__ import annotations
 import discord
 from discord.ext import commands
-from cogs.utils.components import SUCCESS_COLOR, WARNING_COLOR, create_v2_view, error_view
+from cogs.utils.components import SUCCESS_COLOR, WARNING_COLOR, create_v2_view, error_view, is_member_timed_out
 from cogs.utils.config import ALLOWED_GUILD_IDS
 
 
@@ -13,14 +13,14 @@ class QuickSync(commands.Cog):
 
     @commands.command(name="quicksync", hidden=True)
     async def quicksync(self, ctx: commands.Context) -> None:
-        # A hidden command stays quiet unless the member has the Administrator permission.
-        if not (isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator):
+        # A hidden command stays quiet unless the member is an active Administrator in an allowed server.
+        if not (
+            isinstance(ctx.author, discord.Member)
+            and ctx.author.guild_permissions.administrator
+            and not is_member_timed_out(ctx.author)
+        ):
             return
-        if not ALLOWED_GUILD_IDS:
-            await ctx.send(view=error_view("`ALLOWED_GUILDS` isn't set in the .env file."))
-            return
-        if ctx.guild is None or ctx.guild.id not in ALLOWED_GUILD_IDS:
-            await ctx.send(view=error_view("Quicksync only works in a server listed in `ALLOWED_GUILDS`."))
+        if not ALLOWED_GUILD_IDS or ctx.guild is None or ctx.guild.id not in ALLOWED_GUILD_IDS:
             return
 
         count = len(ALLOWED_GUILD_IDS)

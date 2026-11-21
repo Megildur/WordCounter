@@ -35,6 +35,7 @@ JAR_DEFAULTS: Dict[str, Any] = {
     "rotated_week": 0,
     "lifetime_fines": 0,
 }
+LANGUAGE_SETTING_COLUMNS = ("english", "polish")
 
 # english and polish are also listed in ADDED_COLUMNS (database.py), which adds them to a jar_settings table made without them.
 JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
@@ -136,6 +137,27 @@ class SwearJarQueries:
             [(guild_id, *fields.values())],
         )])
 
+    async def jar_set_language(self, guild_id: int, column: str, enabled: bool) -> bool:
+        """Toggles a swear jar language inside db_lock, returning False if turning it off would leave none enabled."""
+        if column not in LANGUAGE_SETTING_COLUMNS:
+            raise ValueError(f"unknown swear jar language setting: {column}")
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                f"SELECT {', '.join(LANGUAGE_SETTING_COLUMNS)} FROM jar_settings WHERE guild_id = ?",
+                (guild_id,),
+            )
+            row = await cursor.fetchone()
+            current = dict(zip(LANGUAGE_SETTING_COLUMNS, row)) if row else {c: JAR_DEFAULTS[c] for c in LANGUAGE_SETTING_COLUMNS}
+            if not enabled and not any(current[other] for other in LANGUAGE_SETTING_COLUMNS if other != column):
+                return False
+            await self.db.execute(
+                f"INSERT INTO jar_settings (guild_id, {column}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {column} = VALUES({column})",
+                (guild_id, int(enabled)),
+            )
+            await self.db.commit()
+        return True
+
     async def jar_set_enabled(self, guild_id: int, enabled: bool, today: int, week: int) -> None:
         """Turns a server's jar on or off, and opens or closes its coverage period. `today` and `week` are only used when turning it on."""
         stamp = now_snowflake()
@@ -167,6 +189,16 @@ class SwearJarQueries:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT guild_id FROM jar_settings WHERE enabled = 1")
+            return [row[0] for row in await cursor.fetchall()]
+
+    async def jar_due_guilds(self, today: int, current_week: int) -> List[int]:
+        """Returns enabled servers that still have a finished day to credit or this week's Potty Mouth role to move."""
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT guild_id FROM jar_settings WHERE enabled = 1 AND (processed_day < ? OR rotated_week < ?)",
+                (today - 1, current_week),
+            )
             return [row[0] for row in await cursor.fetchall()]
 
     async def jar_word_overrides(self, guild_id: int) -> List[Tuple[str, int, bool]]:
@@ -257,20 +289,33 @@ class SwearJarQueries:
         *,
         swears: int,
         amount: int,
-        total_swears: int,
-        total_amount: int,
         day: int,
-        spam_until: float,
-    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-        """Saves a fine in one transaction. Returns (the member's row, the goal if this fine completed it).
+        spam_multiplier: int = 1,
+        on_fine: Optional[Callable[[float], Tuple[bool, float]]] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], int, bool]:
+        """Atomically checks any prior fine for `message_id` and records the increase in one transaction.
 
-        `swears` and `amount` are what this call adds. `total_swears` and `total_amount` are the message's totals after it, which jar_fines keeps so an edited message is only fined for the increase. The member's balance drops by `amount` and their streak goes back to zero.
+        `swears` and `amount` are the message's total swears and unmultiplied fine units. When an increase is owed, `on_fine(now)` (if given) supplies `(spam, spam_until)` while `db_lock` is held. Returns `(member_row, completed_goal, delta_amount, spam)`, or `(None, None, 0, False)` when nothing new is owed.
         """
         now = time.time()
         # Everything below is one transaction and uses execute rather than _write, so the update parts can take placeholders of their own.
         member = (guild_id, user_id)
         await self.ensure_connected()
         async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT swears, amount FROM jar_fines WHERE message_id = ?",
+                (message_id,),
+            )
+            existing = await cursor.fetchone()
+            prev_swears, prev_amount = (existing[0], existing[1]) if existing else (0, 0)
+            delta_swears = max(0, swears - prev_swears)
+            raw_delta = max(0, amount - prev_amount)
+            if raw_delta <= 0:
+                return None, None, 0, False
+            spam, spam_until = on_fine(now) if on_fine is not None else (False, 0.0)
+            delta_amount = raw_delta * (spam_multiplier if spam else 1)
+            total_swears = prev_swears + delta_swears
+            total_amount = prev_amount + delta_amount
             # On an edit only swears and amount change. fined_at keeps the time of the first fine, which the weekly totals use.
             await self.db.execute(
                 """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, fined_at)
@@ -284,7 +329,7 @@ class SwearJarQueries:
                 VALUES (?, ?, ?, 0, 0, ?, ?)
                 ON DUPLICATE KEY UPDATE balance = balance - ?, streak = 0,
                 fines = fines + ?, spam_until = GREATEST(spam_until, VALUES(spam_until))""",
-                (*member, -amount, amount, spam_until, amount, amount),
+                (*member, -delta_amount, delta_amount, spam_until, delta_amount, delta_amount),
             )
             # Marks the day as fined so it isn't paid back, and leaves its message count alone.
             await self.db.execute(
@@ -292,28 +337,28 @@ class SwearJarQueries:
                 ON DUPLICATE KEY UPDATE fined = 1""",
                 (*member, day),
             )
-            # swears is 0 when an edit only raised the price, for example by swapping a mild word for a pricier one.
-            if swears:
-                await self.db.execute(SWEAR_CHANNEL_UPSERT, (guild_id, channel_id, user_id, swears))
-                await self.db.execute(SWEAR_USER_UPSERT, (*member, swears))
+            # delta_swears is 0 when an edit only raised the price, for example by swapping a mild word for a pricier one.
+            if delta_swears:
+                await self.db.execute(SWEAR_CHANNEL_UPSERT, (guild_id, channel_id, user_id, delta_swears))
+                await self.db.execute(SWEAR_USER_UPSERT, (*member, delta_swears))
             await self.db.execute(
                 """INSERT INTO jar_settings (guild_id, lifetime_fines) VALUES (?, ?)
                 ON DUPLICATE KEY UPDATE lifetime_fines = lifetime_fines + VALUES(lifetime_fines)""",
-                (guild_id, amount),
+                (guild_id, delta_amount),
             )
             # MySQL applies SET assignments from left to right, so completed_at has to come before progress to be compared with the old progress. Only an open goal is touched.
             cursor = await self.db.execute(
                 """UPDATE jar_goals SET completed_at = CASE WHEN progress + ? >= target THEN ? ELSE NULL END,
                 progress = progress + ?
                 WHERE guild_id = ? AND completed_at IS NULL""",
-                (amount, now, amount, guild_id),
+                (delta_amount, now, delta_amount, guild_id),
             )
             reached = None
             # The connection uses the FOUND_ROWS flag, so rowcount counts matched rows and is non-zero whenever a goal was open.
             if cursor.rowcount:
                 reached = await self._goal_row(guild_id)
-                # The goal is returned only if this very fine completed it, so it is announced once.
-                if reached is None or reached["completed_at"] != now:
+                # `completed_at` is non-None iff this very update reached `target` (checking `is None` avoids float/DOUBLE rounding mismatches).
+                if reached is None or reached["completed_at"] is None:
                     reached = None
             cursor = await self.db.execute(
                 "SELECT balance, streak, best_streak, fines, spam_until FROM jar_members WHERE guild_id = ? AND user_id = ?",
@@ -321,7 +366,7 @@ class SwearJarQueries:
             )
             row = await cursor.fetchone()
             await self.db.commit()
-        return dict(zip(("balance", "streak", "best_streak", "fines", "spam_until"), row)), reached
+        return dict(zip(("balance", "streak", "best_streak", "fines", "spam_until"), row)), reached, delta_amount, spam
 
     async def jar_add_day_messages(self, rows: Iterable[Tuple[int, int, int, int]]) -> None:
         """Adds message counts to jar_days. `rows` are (guild_id, user_id, day, messages). A new row starts unfined, and an existing row keeps its fined flag."""

@@ -13,6 +13,8 @@ from web import dashboard, pages, swearjar
 from web.core import load_templates, origin_status, site_middleware, static_file
 
 log = logging.getLogger("web")
+# Bound how long shutdown waits for open HTTP connections before closing them.
+WEB_SHUTDOWN_SECONDS = 5.0
 
 
 class ErrorAccessLogger(AbstractAccessLogger):
@@ -51,7 +53,7 @@ async def setup(bot) -> None:
     # Matched by class name, because reloading this extension makes a new ProbeFilter class and isinstance would no longer see the filter the first load added.
     if not any(type(existing).__name__ == "ProbeFilter" for existing in server_log.filters):
         server_log.addFilter(ProbeFilter())
-    runner = web.AppRunner(create_app(bot), access_log_class=ErrorAccessLogger)
+    runner = web.AppRunner(create_app(bot), access_log_class=ErrorAccessLogger, shutdown_timeout=WEB_SHUTDOWN_SECONDS)
     await runner.setup()
     try:
         await web.TCPSite(runner, WEB_HOST, WEB_PORT).start()

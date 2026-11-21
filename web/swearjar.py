@@ -81,16 +81,28 @@ def word_lists(settings: Dict[str, Any], overrides: List[Override], tab: str) ->
     }
 
 
-def role_options(guild: discord.Guild) -> List[Dict[str, Any]]:
-    roles = sorted((role for role in guild.roles if role_problem(guild, role) is None), key=lambda role: -role.position)
+def role_options(
+    guild: discord.Guild,
+    member: Optional[discord.Member] = None,
+    *,
+    single_holder: bool = False,
+) -> List[Dict[str, Any]]:
+    roles = sorted(
+        (role for role in guild.roles if role_problem(guild, role, member, single_holder=single_holder) is None),
+        key=lambda role: -role.position,
+    )
     return [{"id": role.id, "label": f"@{role.name}"} for role in roles]
 
 
+def _can_post(guild: discord.Guild, channel: Any) -> bool:
+    if not isinstance(channel, discord.TextChannel) or guild.me is None:
+        return False
+    perms = channel.permissions_for(guild.me)
+    return perms.view_channel and perms.send_messages
+
+
 def goal_channels(guild: discord.Guild) -> List[Dict[str, Any]]:
-    channels = [
-        channel for channel in guild.text_channels
-        if guild.me is not None and channel.permissions_for(guild.me).send_messages
-    ]
+    channels = [channel for channel in guild.text_channels if _can_post(guild, channel)]
     return [{"id": channel.id, "label": f"#{channel.name}"} for channel in channels]
 
 
@@ -109,7 +121,7 @@ def goal_view(settings: Dict[str, Any], goal: Optional[Dict[str, Any]]) -> Optio
 
 @routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/swearjar")
 async def swearjar(request: web.Request) -> web.Response:
-    guild, _, can_manage = await member_access(request)
+    guild, member, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     db = request.app["bot"].db
@@ -129,7 +141,8 @@ async def swearjar(request: web.Request) -> web.Response:
         has_overrides=bool(overrides),
         rules=[{"id": cid, "label": channel_label(guild, cid), "rule": rule} for cid, rule in sorted(rules.items())],
         add_groups=channel_groups(guild, include_categories=True, exclude=tuple(rules)),
-        roles=role_options(guild),
+        potty_roles=role_options(guild, member, single_holder=True),
+        clean_roles=role_options(guild, member),
         goal=goal_view(settings, await db.jar_goal(guild.id)),
         goal_channels=goal_channels(guild),
         can_delete=bool(me and me.guild_permissions.manage_messages),
@@ -180,12 +193,12 @@ async def _words(db, guild: discord.Guild, action: str, form) -> str:
     return "words_skipped" if skipped else WORD_RESULTS[action]
 
 
-async def _roles(db, guild: discord.Guild, form) -> str:
+async def _roles(db, guild: discord.Guild, form, member: Optional[discord.Member] = None) -> str:
     updates: Dict[str, Optional[int]] = {}
     for column in ROLE_COLUMNS:
         role_id = whole_number(form.get(column))
         if role_id:
-            if role_problem(guild, guild.get_role(role_id)):
+            if role_problem(guild, guild.get_role(role_id), member, single_holder=(column == "potty_role_id")):
                 return "role_problem"
             updates[column] = role_id
         else:
@@ -202,9 +215,9 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
     ping = form.get("ping") == "yes"
     if ping and not (guild.me and guild.me.guild_permissions.mention_everyone):
         return "need_mention_everyone"
-    # A channel that is missing, or that the bot can't send in, is dropped and the goal is saved without one.
+    # A channel that is missing, isn't a text channel, or that the bot can't view or send in, is dropped and the goal is saved without one.
     channel = guild.get_channel(whole_number(form.get("channel")) or 0)
-    if channel is not None and not channel.permissions_for(guild.me).send_messages:
+    if not _can_post(guild, channel):
         channel = None
     # Saving starts the goal again from zero progress, even when one is already running.
     await db.jar_set_goal(guild.id, label, target, channel.id if channel else None, ping)
@@ -217,7 +230,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
 
     The _fines, _words, _roles and _goal helpers each return their code. A form with a bad CSRF token changes nothing and gets "expired_form".
     """
-    guild, _, can_manage = await member_access(request)
+    guild, member, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     db = request.app["bot"].db
@@ -242,12 +255,10 @@ async def swearjar_action(request: web.Request) -> web.Response:
         elif action == "language" and form.get("lang") in LANGUAGE_COLUMNS:
             column = LANGUAGE_COLUMNS[form.get("lang")]
             turning_on = form.get("state") == "on"
-            others = [name for name in LANGUAGE_COLUMNS.values() if name != column and settings.get(name)]
-            # At least one language has to stay on, as in the Discord menu.
-            if not turning_on and not others:
+            # At least one language has to stay on, checked atomically inside db_lock as in the Discord menu.
+            if not await db.jar_set_language(guild.id, column, turning_on):
                 result = "need_language"
             else:
-                await db.jar_update(guild.id, **{column: int(turning_on)})
                 result = "language_on" if turning_on else "language_off"
         elif action in WORD_ACTIONS:
             result = await _words(db, guild, WORD_ACTIONS[action], form)
@@ -267,7 +278,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
             await db.jar_update(guild.id, skip_age_restricted=int(not settings["skip_age_restricted"]))
             result = "rules_saved"
         elif action == "roles":
-            result = await _roles(db, guild, form)
+            result = await _roles(db, guild, form, member)
         elif action == "goal_set":
             result = await _goal(db, guild, settings, form)
         elif action == "goal_end":
@@ -279,6 +290,10 @@ async def swearjar_action(request: web.Request) -> web.Response:
             result = await confirmed_and_free(request, form, guild, running_only=True) or "jar_reset"
             if result == "jar_reset":
                 await db.jar_reset_members(guild.id)
+                # Drop unsaved day counts and spam tracking too, so upkeep can't flush wiped counts back.
+                cog = request.app["bot"].get_cog("SwearJar")
+                if cog is not None:
+                    cog.forget(guild.id)
         # Drops the bot's cached jar state so the listeners use the change straight away.
         refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}&lang={word_tab(form.get('tab') if csrf_ok else None)}")
