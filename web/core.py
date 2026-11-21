@@ -50,6 +50,16 @@ if SECURE_COOKIES:
 # Pages that belong to a signed-in person, or start the login. They are never stored (so Back after signing out doesn't show them) and never indexed.
 PRIVATE_PATHS = ("/dashboard", "/login", "/callback", "/logout")
 
+
+def _under(path: str, *folders: str) -> bool:
+    """Whether `path` is one of `folders` or underneath one, so `/dashboard-info` never matches `/dashboard`."""
+    return any(path == folder or path.startswith(folder + "/") for folder in folders)
+
+
+def is_private(path: str) -> bool:
+    """Whether `path` belongs to PRIVATE_PATHS."""
+    return _under(path, *PRIVATE_PATHS)
+
 # Flash messages. After a form POST the site redirects to a page with `?msg=<code>`, and `render` shows the matching (kind, text). An unknown code shows nothing.
 MESSAGES = {
     "logged_out": ("success", "You're signed out."),
@@ -287,10 +297,16 @@ STATIC_DIR = (ROOT / "static").resolve()
 
 
 async def static_file(request: web.Request) -> web.StreamResponse:
-    """Serves a file from web/static, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
-    target = (STATIC_DIR / request.match_info["filename"]).resolve()
-    if not target.is_relative_to(STATIC_DIR) or not target.is_file():
+    """Serves a file from web/static, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a dotfile segment, an invalid path, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
+    raw = request.match_info["filename"]
+    if "\x00" in raw or any(part.startswith(".") for part in Path(raw.replace("\\", "/")).parts):
         raise web.HTTPNotFound()
+    try:
+        target = (STATIC_DIR / raw).resolve()
+        if not target.is_relative_to(STATIC_DIR) or not target.is_file():
+            raise web.HTTPNotFound()
+    except (OSError, ValueError):
+        raise web.HTTPNotFound() from None
     return web.FileResponse(target)
 
 
@@ -430,12 +446,29 @@ def sent_from_other_site(request: web.Request) -> bool:
 
 
 async def post_form(request: web.Request) -> MultiDictProxy:
-    """Returns the POSTed form, keeping only its text fields, so a handler never meets an uploaded file or raw bytes where it expects a string. A body that can't be read, such as a raw byte that isn't UTF-8, an unknown charset or a broken multipart upload, gives an empty form, so the CSRF check fails and the request is refused like a forged one instead of ending in a server error."""
+    """Returns the POSTed form, keeping only its text fields and caching the result on the request so middleware and handlers parse the body once. A body that can't be read, such as a raw byte that isn't UTF-8, an unknown charset or a broken multipart upload, gives an empty form, so the CSRF check fails and the request is refused like a forged one instead of ending in a server error."""
+    if "post_form" in request:
+        return request["post_form"]
     try:
         form = await request.post()
     except (ValueError, LookupError, RuntimeError, HttpProcessingError):
-        return MultiDictProxy(MultiDict())
-    return MultiDictProxy(MultiDict((key, value) for key, value in form.items() if isinstance(value, str)))
+        parsed: MultiDictProxy = MultiDictProxy(MultiDict())
+        request["post_form"] = parsed
+        return parsed
+    fields = []
+    for key, value in form.items():
+        if isinstance(value, str):
+            fields.append((key, value))
+        else:
+            upload = getattr(value, "file", None)
+            if upload is not None:
+                try:
+                    upload.close()
+                except Exception:
+                    pass
+    parsed = MultiDictProxy(MultiDict(fields))
+    request["post_form"] = parsed
+    return parsed
 
 
 def origin_status() -> str:
@@ -491,7 +524,7 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         return response
-    if request.path.startswith(PRIVATE_PATHS):
+    if is_private(request.path):
         # These pages act for the signed-in person, so their session has to still exist (it is ended by logging out, by "sign out everywhere", by a data deletion and by a ban). It is kept in memory for a little while, so this isn't a database read on every click.
         request["user"], request["session_ended"] = await auth.check_session(request.app["bot"].db, request.cookies.get(auth.SESSION_COOKIE))
     # Handlers raise these exceptions, for example the dashboard's ban check, and they become themed pages here. A raised redirect becomes a plain redirect response, so it gets the headers below. Anything else aiohttp raises on its own, such as a 405, gets a themed page, and a 405 keeps its Allow header.
@@ -509,6 +542,8 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     except web.HTTPTooManyRequests as slow:
         response = error_page(request, 429, "Slow down", "That's a lot of requests in a short time. Wait a few seconds and try again.")
         response.headers["Retry-After"] = slow.headers.get("Retry-After", "10")
+    except web.HTTPServiceUnavailable:
+        response = error_page(request, 503, "Try again in a moment", "Discord didn't answer in time, so we couldn't check your server access. Try refreshing the page.")
     except web.HTTPRedirection as moved:
         # Built again instead of returning the exception, which aiohttp has deprecated. It keeps the headers the exception carries (Location on a redirect), but not its text body.
         response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() not in ("content-type", "content-length")})
@@ -520,7 +555,7 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     if request.get("session_ended") and auth.SESSION_COOKIE not in response.cookies:
         response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
     # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
-    if request.path.startswith(PRIVATE_PATHS):
+    if is_private(request.path):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
