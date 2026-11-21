@@ -874,6 +874,7 @@ class SwearJar(commands.Cog):
         # (guild_id, user_id) pairs whose jar was just reset for that member in one server, with the monotonic time their refusal ends.
         self._forgotten_pairs: Dict[Tuple[int, int], float] = {}
         self.last_daily = 0.0
+        self._pruned_day = 0
         # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
         self.fine_menu = app_commands.ContextMenu(
             name="Swear Jar",
@@ -894,7 +895,10 @@ class SwearJar(commands.Cog):
             # Waited for: a flush that is cancelled in the middle of its write puts its counts back, and that has to happen before the last flush below takes them.
             await asyncio.gather(loop_task, return_exceptions=True)
         self.bot.tree.remove_command(self.fine_menu.name, type=self.fine_menu.type)
-        await self._flush_days()
+        try:
+            await self._flush_days()
+        except Exception:
+            log.exception("Could not flush swear jar day counts on unload")
 
     def invalidate(self, guild_id: int) -> None:
         """Drops a server's cached state so the next message rebuilds it from the database. Called after settings change, including from the dashboard."""
@@ -1157,7 +1161,9 @@ class SwearJar(commands.Cog):
         db = self.bot.db
         # Save the pending message counts first, so a day that just ended is credited with all its messages.
         await self._flush_days()
-        for guild_id in await db.jar_enabled_guilds():
+        week = week_index(today)
+        guild_ids = await db.jar_due_guilds(today, week) if hasattr(db, "jar_due_guilds") else await db.jar_enabled_guilds()
+        for guild_id in guild_ids:
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue
@@ -1168,11 +1174,13 @@ class SwearJar(commands.Cog):
                 # Anyone credited with a streak of CLEAN_ROLE_STREAK days or more gets the clean streak role.
                 clean = [guild.get_member(uid) for uid, streak in credited if streak >= CLEAN_ROLE_STREAK]
                 await self._set_role(guild, settings["clean_role_id"], add=[member for member in clean if member])
-            if settings["rotated_week"] < week_index(today):
+            if settings["rotated_week"] < week:
                 await self._rotate_potty_role(guild, settings, today)
                 # Saved even when no role is set, so each new week is only looked at once.
-                await db.jar_update(guild_id, rotated_week=week_index(today))
-        await db.jar_prune_fines()
+                await db.jar_update(guild_id, rotated_week=week)
+        if self._pruned_day != today:
+            await db.jar_prune_fines()
+            self._pruned_day = today
 
     async def _rotate_potty_role(self, guild: discord.Guild, settings: Dict[str, Any], today: int) -> None:
         """Gives the Potty Mouth role to whoever was fined the most last week (Monday to Sunday, UTC) and takes it from everyone else who has it. If nobody was fined, nobody holds it."""

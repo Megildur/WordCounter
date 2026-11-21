@@ -191,6 +191,16 @@ class SwearJarQueries:
             cursor = await self.db.execute("SELECT guild_id FROM jar_settings WHERE enabled = 1")
             return [row[0] for row in await cursor.fetchall()]
 
+    async def jar_due_guilds(self, today: int, current_week: int) -> List[int]:
+        """Returns enabled servers that still have a finished day to credit or this week's Potty Mouth role to move."""
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT guild_id FROM jar_settings WHERE enabled = 1 AND (processed_day < ? OR rotated_week < ?)",
+                (today - 1, current_week),
+            )
+            return [row[0] for row in await cursor.fetchall()]
+
     async def jar_word_overrides(self, guild_id: int) -> List[Tuple[str, int, bool]]:
         """Returns a server's changes to the default word list as (key, tier, removed) rows."""
         await self.ensure_connected()
