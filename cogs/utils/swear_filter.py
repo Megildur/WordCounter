@@ -37,7 +37,7 @@ Override = Tuple[str, int, bool]
 class Entry:
     """One word on the list.
 
-    `key` is the word as typed, with its marker, and is what jar_words stores. `word` is the key without the marker, `kind` is exact, prefix, anywhere or spelling, and `letters` is what gets matched (folded, except for spelling entries).
+    `key` is the word as typed, with its marker, and is what jar_words stores. `word` is the key without the marker, `kind` is exact, prefix, anywhere or spelling, and `letters` is what gets matched (folded with leetspeak normalized, except for spelling entries).
     """
     key: str
     word: str
@@ -53,6 +53,16 @@ def fold(text: str) -> str:
     return "".join(char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char))
 
 
+def _apply_leet(text: str) -> str:
+    """Maps leetspeak characters in words that contain ASCII letters, keeping plain numbers untouched."""
+    words = []
+    for token in text.split():
+        if any("a" <= char <= "z" for char in token):
+            token = "".join(LEET.get(char, char) for char in token)
+        words.append(token)
+    return " ".join(words)
+
+
 def normalize(text: str) -> str:
     """Cleans message text for matching and returns its words joined by single spaces.
 
@@ -61,12 +71,9 @@ def normalize(text: str) -> str:
     words = []
     for token in fold(NOISE.sub(" ", text)).split():
         token = token.strip(EDGE)
-        # A token with no letters in it, like a price or a number, is left alone so its digits aren't turned into letters.
-        if any("a" <= char <= "z" for char in token):
-            token = "".join(LEET.get(char, char) for char in token)
         if token:
             words.append(token)
-    return " ".join(words)
+    return _apply_leet(" ".join(words))
 
 
 def parse_entry(raw: str, tier: int) -> Entry:
@@ -86,7 +93,7 @@ def parse_entry(raw: str, tier: int) -> Entry:
         kind, word = "prefix", key[:-1]
     else:
         kind, word = "exact", key
-    letters = word if kind == "spelling" else " ".join(fold(word).split())
+    letters = word if kind == "spelling" else _apply_leet(fold(word))
     return Entry(key, word, kind, letters, tier)
 
 
@@ -244,9 +251,9 @@ def matcher_for(overrides: Tuple[Override, ...], languages: Tuple[str, ...] = AL
 
 
 def default_keys_for(word: str) -> List[str]:
-    """Returns the keys of the default entries that spell the same as `word`, ignoring accents and the ~ = * markers. Empty if it isn't a default word."""
-    folded = " ".join(fold(word.strip().lstrip("~=").rstrip("*")).split())
-    return [entry.key for entry in DEFAULT_ENTRIES if " ".join(fold(entry.word).split()) == folded]
+    """Returns the keys of the default entries that spell the same as `word`, ignoring accents, leetspeak and the ~ = * markers. Empty if it isn't a default word."""
+    folded = _apply_leet(fold(word.strip().lstrip("~=").rstrip("*")))
+    return [entry.key for entry in DEFAULT_ENTRIES if _apply_leet(fold(entry.word)) == folded]
 
 
 def custom_key(word: str) -> Optional[str]:
