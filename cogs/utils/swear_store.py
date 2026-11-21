@@ -35,6 +35,7 @@ JAR_DEFAULTS: Dict[str, Any] = {
     "rotated_week": 0,
     "lifetime_fines": 0,
 }
+LANGUAGE_SETTING_COLUMNS = ("english", "polish")
 
 # english and polish are also listed in ADDED_COLUMNS (database.py), which adds them to a jar_settings table made without them.
 JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
@@ -135,6 +136,27 @@ class SwearJarQueries:
             f"INSERT INTO jar_settings (guild_id, {columns}) VALUES (?, {marks}) ON DUPLICATE KEY UPDATE {updates}",
             [(guild_id, *fields.values())],
         )])
+
+    async def jar_set_language(self, guild_id: int, column: str, enabled: bool) -> bool:
+        """Toggles a swear jar language inside db_lock, returning False if turning it off would leave none enabled."""
+        if column not in LANGUAGE_SETTING_COLUMNS:
+            raise ValueError(f"unknown swear jar language setting: {column}")
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                f"SELECT {', '.join(LANGUAGE_SETTING_COLUMNS)} FROM jar_settings WHERE guild_id = ?",
+                (guild_id,),
+            )
+            row = await cursor.fetchone()
+            current = dict(zip(LANGUAGE_SETTING_COLUMNS, row)) if row else {c: JAR_DEFAULTS[c] for c in LANGUAGE_SETTING_COLUMNS}
+            if not enabled and not any(current[other] for other in LANGUAGE_SETTING_COLUMNS if other != column):
+                return False
+            await self.db.execute(
+                f"INSERT INTO jar_settings (guild_id, {column}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {column} = VALUES({column})",
+                (guild_id, int(enabled)),
+            )
+            await self.db.commit()
+        return True
 
     async def jar_set_enabled(self, guild_id: int, enabled: bool, today: int, week: int) -> None:
         """Turns a server's jar on or off, and opens or closes its coverage period. `today` and `week` are only used when turning it on."""

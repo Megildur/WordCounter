@@ -680,10 +680,10 @@ class JarSettingsView(SectionMenu):
             column = LANGUAGE_COLUMNS[code]
             turning_on = not self.settings.get(column)
             name = LANGUAGES[code][0]
-            if not turning_on and not any(self.settings.get(other) for other in LANGUAGE_COLUMNS.values() if other != column):
+            changed = await self.bot.db.jar_set_language(self.guild.id, column, turning_on)
+            if not changed:
                 self._done(f"Keep at least one language on. Turn the other one on before turning {name} off.", WARNING_COLOR)
             else:
-                await self.bot.db.jar_update(self.guild.id, **{column: int(turning_on)})
                 self._done(f"{name} swears are fined now." if turning_on else f"{name} swears aren't fined any more.")
             await self.refresh_and_edit(interaction)
 

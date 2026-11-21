@@ -381,9 +381,15 @@ class SettingsMenuView(SectionMenu):
         else:
             await self._confirm_whole_server(interaction)
 
+    def _invalidate_jar(self) -> None:
+        swear_jar = self.bot.get_cog("SwearJar")
+        if swear_jar is not None:
+            swear_jar.invalidate(self.guild.id)
+
     async def _confirm_whole_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.bot.db.enable_whole_server(self.guild.id)
+        self._invalidate_jar()
         self.pending_confirmation = None
         self.status_banner = ("Whole server mode is on. Every channel is counted now.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
@@ -392,12 +398,14 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.defer()
         # This only removes the whole-server row, so with no channels picked yet nothing is counted until some are added.
         await self.bot.db.switch_to_specific_mode(self.guild.id)
+        self._invalidate_jar()
         self.status_banner = ("Switched to specific channels. Pick what to track below.", SUCCESS_COLOR)
         await self.refresh_and_edit(interaction)
 
     async def _confirm_disable_server(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.bot.db.disable_server_tracking(self.guild.id)
+        self._invalidate_jar()
         self.pending_confirmation = None
         self.status_banner = ("Tracking is off.", WARNING_COLOR)
         await self.refresh_and_edit(interaction)
@@ -413,6 +421,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.add_watched_channels(self.guild.id, selected)
             self.status_banner = (f"Now tracking: {listed}", SUCCESS_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _on_channels_removed(self, interaction: discord.Interaction) -> None:
@@ -425,6 +434,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.remove_watched_channels(self.guild.id, selected)
             self.status_banner = (f"No longer tracking: {listed}", SUCCESS_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _clear_all_channels(self, interaction: discord.Interaction) -> None:
@@ -435,6 +445,7 @@ class SettingsMenuView(SectionMenu):
         else:
             await self.bot.db.clear_watched_channels(self.guild.id)
             self.status_banner = ("Tracked list cleared.", WARNING_COLOR)
+        self._invalidate_jar()
         await self.refresh_and_edit(interaction)
 
     async def _open_add_keyword_modal(self, interaction: discord.Interaction) -> None:
@@ -528,6 +539,8 @@ class SettingsMenuView(SectionMenu):
                 swear_jar = self.bot.get_cog("SwearJar")
                 if swear_jar is not None:
                     swear_jar.forget(self.guild.id)
+            elif counts:
+                self._invalidate_jar()
             if counts:
                 self.selected_reset_user_id = None
                 self.selected_reset_channel_id = None

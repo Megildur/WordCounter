@@ -961,6 +961,13 @@ class AnalyzeChat(commands.Cog):
                     run.finished[channel.id] = outcome
                     progress.channels_done += 1
 
+    async def _load_jar_matcher(self, guild_id: int) -> SwearMatcher:
+        """Builds or fetches the cached swear matcher for a server's current word list and languages."""
+        overrides = tuple(await self.bot.db.jar_word_overrides(guild_id))
+        languages = languages_for(await self.bot.db.jar_settings(guild_id))
+        # Built in a thread so it can't hold up the event loop.
+        return await asyncio.to_thread(matcher_for, overrides, languages)
+
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
         """Saves the crawl's progress. Raises AnalysisCancelled when the run was deleted, which stops the crawl."""
         # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them. `state` is passed as a function so the write reads it when it has the database lock, as it does for the counts, and a member forgotten while it waited isn't saved in the totals either.
@@ -971,6 +978,8 @@ class AnalyzeChat(commands.Cog):
         )
         if not saved:
             raise AnalysisCancelled
+        if run.counts_swears:
+            run.matcher = await self._load_jar_matcher(run.guild_id)
 
     async def _crawl(
         self,
@@ -1130,10 +1139,7 @@ class AnalyzeChat(commands.Cog):
                 coverage = await self._coverage(guild.id, record["cutoff"])
             run = CrawlRun(guild.id, record, coverage, self.forgotten)
             if run.counts_swears:
-                overrides = tuple(await self.bot.db.jar_word_overrides(guild.id))
-                languages = languages_for(await self.bot.db.jar_settings(guild.id))
-                # Built in a thread so it can't hold up the event loop.
-                run.matcher = await asyncio.to_thread(matcher_for, overrides, languages)
+                run.matcher = await self._load_jar_matcher(guild.id)
             # The clock starts where the run first began, so a resumed run shows its full running time.
             progress = Progress(
                 started=time.monotonic() - max(0.0, time.time() - record["started_at"]),
