@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import ActionRow, Container, LayoutView, Modal, Separator, TextDisplay
 from discord.ui.view import BaseView
-from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, make_button
+from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, is_member_timed_out, make_button
 from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_EMAIL, SUPPORT_URL
 
 log = logging.getLogger("Errors")
@@ -66,8 +66,12 @@ class ErrorDisplayView(AuthorOnlyView):
 
 
 def can_see_details(interaction: discord.Interaction) -> bool:
-    """Whether the person may see an error's exception text and traceback: an administrator in one of the servers the owner commands exist in."""
-    return interaction.guild_id in ALLOWED_GUILD_IDS and interaction.permissions.administrator
+    """Whether the person may see an error's exception text and traceback: an active administrator in one of the servers the owner commands exist in."""
+    return (
+        interaction.guild_id in ALLOWED_GUILD_IDS
+        and interaction.permissions.administrator
+        and not is_member_timed_out(interaction.user)
+    )
 
 
 def format_error_details(error: BaseException, detailed: bool = False) -> Tuple[str, str, str]:

@@ -58,6 +58,13 @@ class AddKeywordModal(discord.ui.Modal, title="Add keywords"):
         super().__init__()
         self.menu_view = menu_view
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # A modal stays open for a while after the button that opened it was pressed, so Manage Server is checked again when it is sent.
         reason = manager_check_error(interaction)
@@ -96,6 +103,13 @@ class BulkEditKeywordsModal(discord.ui.Modal, title="Edit keyword list"):
         self.menu_view = menu_view
         # Cut to the input's 2000 character limit. Saving a list longer than that loses the keywords that were cut off, and a keyword cut in half is saved as a new one.
         self.keywords_input.default = ", ".join(current_keywords)[:2000]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         reason = manager_check_error(interaction)

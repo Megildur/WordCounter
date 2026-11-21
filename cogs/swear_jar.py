@@ -185,6 +185,13 @@ class FormModal(discord.ui.Modal):
             self.inputs.append(item)
         self.handler = handler
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        reason = manager_check_error(interaction)
+        if reason:
+            await interaction.response.send_message(view=error_view(reason), ephemeral=True)
+            return False
+        return True
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # Every form here belongs to the settings menu, and a modal stays open for a while after the button that opened it, so Manage Server is checked again when it is sent.
         reason = manager_check_error(interaction)
