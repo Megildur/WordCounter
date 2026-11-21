@@ -31,6 +31,8 @@ GONE_SECONDS = 300.0
 KEPT_LIMIT = 5000
 # Someone who signs in on more browsers than this loses the oldest sessions.
 SESSIONS_PER_USER = 10
+# Clears at most this many ended rows on each login, so a big backlog never stalls the database.
+EXPIRED_BATCH = 500
 # How long a person's server list from Discord is kept, and how many people's lists at most. The oldest is dropped first when the limit is reached.
 SERVERS_SECONDS = 3600.0
 SERVERS_LIMIT = 2000
@@ -40,10 +42,10 @@ class WebSessionQueries:
     """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers, the timer that drops them)}."""
 
     async def create_web_session(self, token_hash: str, user_id: int, lifetime: int) -> None:
-        """Records a new session that ends `lifetime` seconds from now, and clears out the sessions that have ended. Raises when the session couldn't be saved. Someone's oldest sessions beyond SESSIONS_PER_USER are then dropped, which is only tidying: if it fails the login still stands."""
+        """Records a new session that ends `lifetime` seconds from now, and clears out up to EXPIRED_BATCH sessions that have ended. Raises when the session couldn't be saved. Someone's oldest sessions beyond SESSIONS_PER_USER are then dropped, which is only tidying: if it fails the login still stands."""
         now = int(time.time())
         await self._write([
-            ("DELETE FROM web_sessions WHERE expires < ?", [(now,)]),
+            ("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", [(now, EXPIRED_BATCH)]),
             ("INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)", [(token_hash, user_id, now, now + lifetime)]),
         ])
         try:
@@ -87,7 +89,7 @@ class WebSessionQueries:
         self.forget_web_sessions(user_id)
 
     def forget_web_sessions(self, user_id: Optional[int] = None) -> None:
-        """Drops what is kept in memory about sessions and server lists, for one person or for everyone. The data deletion calls it, so a login doesn't outlive the rows `delete_by_id` removed, and neither does a server list, including a deleted server in everyone else's list."""
+        """Drops what is kept in memory about sessions and server lists, for one person or for everyone, so a login doesn't outlive the rows `delete_by_id` or a ban removed."""
         self._web_epoch += 1
         self.forget_web_servers(user_id)
         if user_id is None:
@@ -95,6 +97,13 @@ class WebSessionQueries:
             return
         for token_hash in [key for key, (_, owner) in self._web_kept.items() if owner == user_id]:
             del self._web_kept[token_hash]
+
+    def drop_web_server(self, guild_id: int) -> None:
+        """Removes a deleted or banned server from every kept server list without dropping other users' lists."""
+        for user_id, (stamp, servers, timer) in list(self._web_servers.items()):
+            kept = [server for server in servers if server.get("id") != guild_id]
+            if len(kept) != len(servers):
+                self._web_servers[user_id] = (stamp, kept, timer)
 
     def remember_web_servers(self, user_id: int, servers: List[Dict[str, Any]]) -> None:
         """Keeps the servers `user_id` owns or manages (what `auth.managed_servers` returns) for SERVERS_SECONDS, and drops them when the time is up even if nobody opens the dashboard again, since the Privacy Policy says an hour. Only the dashboard's "Add WordCounter" list reads it: it decides nothing about who may open or change a server."""

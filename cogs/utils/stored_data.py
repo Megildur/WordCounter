@@ -272,8 +272,9 @@ class StoredDataQueries:
                             deleted.cleared[entry.table] = changed
                 await self.db.commit()
         finally:
-            # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory, and the in-memory server lists go too. This runs even when the deletion fails part-way, because a ban has already been recorded by then and the logins and lists of a banned person must not outlive it.
-            self.forget_web_sessions()
+            # A website login whose rows were just deleted must stop working now, not when its look-up expires from memory, and a deleted server leaves everyone's server list too. This runs even when the deletion fails part-way, because a ban has already been recorded by then and the logins and lists of a banned person must not outlive it.
+            self.forget_web_sessions(target_id)
+            self.drop_web_server(target_id)
         return deleted
 
     async def blacklisted_ids(self) -> Set[int]:
@@ -307,6 +308,11 @@ class StoredDataQueries:
             ON DUPLICATE KEY UPDATE reason = VALUES(reason)""",
             [(target_id, kind, reason, added_by, time.time())],
         )])
+        # Drop cached website sessions or server lists right away instead of waiting for ALIVE_SECONDS to pass.
+        if kind == "user":
+            self.forget_web_sessions(target_id)
+        else:
+            self.drop_web_server(target_id)
 
     async def remove_from_blacklist(self, target_id: int) -> bool:
         """Lifts a ban. Returns True if the id was on the list."""
