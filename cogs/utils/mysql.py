@@ -31,6 +31,7 @@ LOCK_SLOW_SECONDS = 1.0
 log = logging.getLogger(__name__)
 
 # The database layer keeps the rows of channels, ignore and keyword in memory, because every message reads them. A statement that changes one of those tables is spotted here, whoever wrote it, and the layer is told to forget what it kept when the block ends, however it ends. The table's name has to follow INTO, UPDATE, FROM, JOIN or TABLE, so keyword_channel, a column called keyword and INSERT IGNORE don't count.
+_LEADING_COMMENTS = re.compile(r"^(?:\s|--[^\n]*\n|/\*.*?\*/)+", re.DOTALL)
 _WRITES = re.compile(r"^\s*(?:INSERT|REPLACE|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b", re.IGNORECASE)
 _KEPT_TABLE = re.compile(r"\b(?:INTO|UPDATE|FROM|JOIN|TABLE)\s+`?(?:channels|ignore|keyword)`?(?!\w)", re.IGNORECASE)
 
@@ -85,9 +86,10 @@ class Session:
         self.touches_kept = False
 
     def _note(self, sql: str) -> None:
+        cleaned = _LEADING_COMMENTS.sub("", sql)
         if self.first_sql is None:
-            self.first_sql = " ".join(sql.split())[:80]
-        if not self.touches_kept and _WRITES.match(sql) and _KEPT_TABLE.search(sql):
+            self.first_sql = " ".join(cleaned.split())[:80]
+        if not self.touches_kept and _WRITES.match(cleaned) and _KEPT_TABLE.search(cleaned):
             self.touches_kept = True
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
@@ -127,6 +129,7 @@ class SessionLock:
         self.owner = owner
         self.lock = asyncio.Lock()
         self.connection: Optional[aiomysql.Connection] = None
+        self._owner: Optional[asyncio.Task] = None
         self._held_since = 0.0
         # The connection the last block used, when that block ended, and whether it ended in an error that says the connection broke.
         # The pool the connection came from, so it goes back there even if `owner.pool` was set to None by `close` while the block ran. aiomysql's `wait_closed` waits for every connection to be given back.
@@ -136,8 +139,12 @@ class SessionLock:
         self._needs_ping = True
 
     async def __aenter__(self) -> Session:
+        current = asyncio.current_task()
+        if current is not None and self._owner is current:
+            raise RuntimeError("db_lock is not re-entrant")
         asked = time.monotonic()
         await self.lock.acquire()
+        self._owner = current
         self._held_since = time.monotonic()
         try:
             if self._held_since - asked > LOCK_SLOW_SECONDS:
@@ -200,6 +207,7 @@ class SessionLock:
             if connection is not None and self._pool is not None:
                 self._pool.release(connection)
         finally:
+            self._owner = None
             self.lock.release()
 
 
