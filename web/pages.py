@@ -12,7 +12,7 @@ from cogs.utils import people
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
 from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
-from web.core import SECURE_COOKIES, client_id, current_user, post_form, redirect, render
+from web.core import SECURE_COOKIES, Refused, client_id, current_user, post_form, redirect, render, sent_from_other_site
 from web.developer import developer_profile
 
 log = logging.getLogger("web.pages")
@@ -303,6 +303,8 @@ async def callback(request: web.Request) -> web.Response:
 @routes.post("/logout")
 async def logout(request: web.Request) -> web.Response:
     # A POST with the CSRF token, so another site can't sign someone out with a link or an image. The cookie is read, not checked against the table: logging out has to work when the session has already ended or the database can't be read.
+    if sent_from_other_site(request):
+        raise Refused(text="That form was sent from another site, so it was refused.")
     live = current_user(request)
     user = live or auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
     form = await post_form(request)
