@@ -283,11 +283,12 @@ class SettingsMenuView(SectionMenu):
         if self.keywords:
             # At most 25 options, and a label or value is cut at 100 characters, so a longer keyword is left out: its cut-off value would match nothing when removed. Edit list and Remove all handle those and the rest.
             options = [discord.SelectOption(label=kw, value=kw) for kw in self.keywords if len(kw) <= 100][:25]
-            remove_select = discord.ui.Select(
-                placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
-            )
-            remove_select.callback = self._on_keywords_removed
-            container.add_item(discord.ui.ActionRow(remove_select))
+            if options:
+                remove_select = discord.ui.Select(
+                    placeholder="Remove keywords", options=options, min_values=1, max_values=len(options)
+                )
+                remove_select.callback = self._on_keywords_removed
+                container.add_item(discord.ui.ActionRow(remove_select))
 
         container.add_item(
             discord.ui.ActionRow(
