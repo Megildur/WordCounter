@@ -8,6 +8,7 @@ import calendar
 import hashlib
 import ipaddress
 import logging
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -227,23 +228,39 @@ ENV = jinja2.Environment(
     auto_reload=False,
 )
 ENV.filters["num"] = _number
-# These globals are worked out once when the module loads, so changed static files and new showcase images appear after a restart.
+# Static globals are fixed; asset hashes and the showcase scan load lazily in load_templates() (a worker thread) or on first render(), so changed static files and new showcase images appear after a restart without stalling import time.
 ENV.globals.update(
     site_url=SITE_URL,
     support_url=SUPPORT_URL,
     support_email=SUPPORT_EMAIL,
     source_url=SOURCE_URL,
     botzilla_url=BOTZILLA_URL,
-    asset_version=_asset_version(),
-    icon_version=_icon_version(),
-    pixel_version=_files_version([*(IMG / "pixel").glob("*.png"), IMG / "game-title.png"]),
-    social_version=_files_version((IMG / "social").glob("*.png")),
-    showcase=_showcase(),
     month_name=lambda month: calendar.month_name[month],
 )
+_assets_lock = threading.Lock()
+_assets_loaded = False
+
+
+def _ensure_assets() -> None:
+    """Computes static asset hashes and showcase dimensions once, deferred out of module import time."""
+    global _assets_loaded
+    if _assets_loaded:
+        return
+    with _assets_lock:
+        if _assets_loaded:
+            return
+        ENV.globals.update(
+            asset_version=_asset_version(),
+            icon_version=_icon_version(),
+            pixel_version=_files_version([*(IMG / "pixel").glob("*.png"), IMG / "game-title.png"]),
+            social_version=_files_version((IMG / "social").glob("*.png")),
+            showcase=_showcase(),
+        )
+        _assets_loaded = True
 
 
 def load_templates() -> None:
+    _ensure_assets()
     for name in ENV.list_templates():
         ENV.get_template(name)
 
@@ -276,6 +293,7 @@ def _alert(code: Optional[str], user: Optional[auth.User]) -> Optional[Dict[str,
 
 def render(request: web.Request, template: str, active_page: str = "", status: int = 200, **context: Any) -> web.Response:
     """Renders a template into an HTML response. Every template also gets the signed-in user (or None), their CSRF token, the `?msg=` flash message, the invite link and the page's URL."""
+    _ensure_assets()
     user = current_user(request)
     page = ENV.get_template(template).render(
         user=user,

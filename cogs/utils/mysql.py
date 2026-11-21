@@ -22,7 +22,14 @@ from cogs.utils import config
 DatabaseError = pymysql.err.MySQLError
 # Added to every CREATE TABLE. utf8mb4_bin makes text comparisons case-sensitive.
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
-RECYCLE_SECONDS = 120
+# Idle pool recycle interval in seconds: stays well under MySQL's default 8-hour wait_timeout while avoiding frequent reconnects under db_lock.
+RECYCLE_SECONDS = 1800
+# Retries pool creation on transient startup blips while bounding TCP handshake wait and failing fast on refused logins or missing databases.
+DATABASE_TRIES = 6
+DATABASE_RETRY_SECONDS = 2.0
+DATABASE_RETRY_MAX_SECONDS = 30.0
+DATABASE_CONNECT_SECONDS = 10
+DATABASE_NOT_RETRIED = (1044, 1045, 1049, 1130)
 # The connection is checked with a ping (one round trip to the server) only when it has sat unused for this long, or after an error that means the connection broke. Pinging before every block cost a round trip each, and the server doesn't close a connection that was used a moment ago.
 PING_IDLE_SECONDS = 15.0
 # A database block that waited for the lock, or held it, longer than this is logged, because every other answer that needs the database waits behind it.
@@ -212,20 +219,37 @@ class SessionLock:
 
 
 async def create_pool() -> aiomysql.Pool:
+    """Opens the single-connection MySQL pool with a bounded connect timeout and exponential backoff on transient errors."""
     if not (config.MYSQL_HOST and config.MYSQL_USER):
         raise RuntimeError("MySQL isn't set up. Add MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD and MYSQL_DB to .env.")
-    return await aiomysql.create_pool(
-        host=config.MYSQL_HOST,
-        port=config.MYSQL_PORT,
-        user=config.MYSQL_USER,
-        password=config.MYSQL_PASSWORD,
-        db=config.MYSQL_DB,
-        charset="utf8mb4",
-        autocommit=False,
-        # Makes an UPDATE's rowcount count matched rows, so 0 means the row isn't there even when no value changed.
-        client_flag=CLIENT.FOUND_ROWS,
-        # A single connection: the session lock already runs database blocks one at a time.
-        minsize=1,
-        maxsize=1,
-        pool_recycle=RECYCLE_SECONDS,
-    )
+    wait = DATABASE_RETRY_SECONDS
+    for attempt in range(1, DATABASE_TRIES + 1):
+        try:
+            return await aiomysql.create_pool(
+                host=config.MYSQL_HOST,
+                port=config.MYSQL_PORT,
+                user=config.MYSQL_USER,
+                password=config.MYSQL_PASSWORD,
+                db=config.MYSQL_DB,
+                charset="utf8mb4",
+                autocommit=False,
+                # Makes an UPDATE's rowcount count matched rows, so 0 means the row isn't there even when no value changed.
+                client_flag=CLIENT.FOUND_ROWS,
+                # A single connection: the session lock already runs database blocks one at a time.
+                minsize=1,
+                maxsize=1,
+                connect_timeout=DATABASE_CONNECT_SECONDS,
+                pool_recycle=RECYCLE_SECONDS,
+            )
+        except pymysql.err.OperationalError as error:
+            if attempt == DATABASE_TRIES or (error.args and error.args[0] in DATABASE_NOT_RETRIED):
+                raise
+            log.warning(
+                "Start-up: the database didn't connect (try %d of %d: %s); trying again in %.0f s",
+                attempt,
+                DATABASE_TRIES,
+                error,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            wait = min(wait * 2, DATABASE_RETRY_MAX_SECONDS)

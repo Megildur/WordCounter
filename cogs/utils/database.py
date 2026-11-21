@@ -344,20 +344,21 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
 
     async def create_tables(self) -> None:
         async with self.db_lock:
-            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query lists the tables, and only the missing ones are created.
-            cursor = await self.db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
-            existing = {name.lower() for name, in await cursor.fetchall()}
+            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query against information_schema.COLUMNS lists both existing tables and their columns, so existing tables need zero DDL statements and newly created tables already include ADDED_COLUMNS.
+            cursor = await self.db.execute(
+                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
+            )
+            rows = await cursor.fetchall()
+            existing = {table.lower() for table, _ in rows}
+            present = {(table.lower(), column.lower()) for table, column in rows}
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA, *STATS_PANEL_SCHEMA):
                 named = CREATED_TABLE.match(statement)
                 if named is None or named.group(1).lower() not in existing:
                     await self.db.execute(statement)
-            # MySQL has no ADD COLUMN IF NOT EXISTS, so look at information_schema before altering.
-            cursor = await self.db.execute(
-                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
-            )
-            present = {(table, column) for table, column in await cursor.fetchall()}
+            # MySQL has no ADD COLUMN IF NOT EXISTS; newly created tables already include these columns, so only pre-existing tables missing one need ALTER TABLE.
             for table, column, definition in ADDED_COLUMNS:
-                if (table, column) not in present:
+                table_key = table.lower()
+                if table_key in existing and (table_key, column.lower()) not in present:
                     await self.db.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
 
     async def sqlite_imported(self) -> bool:
@@ -424,6 +425,23 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 await self.db.execute(
                     "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
                     (guild_id, started),
+                )
+                await self.db.commit()
+
+    async def ensure_tracking_periods(self, guild_starts: Dict[int, int]) -> None:
+        """Opens initial tracking periods in one query and batch insert for servers with tracking on and no open period."""
+        if not guild_starts:
+            return
+        await self.ensure_connected()
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT DISTINCT c.guild_id FROM channels c LEFT JOIN tracking_periods tp ON tp.guild_id = c.guild_id AND tp.ended IS NULL WHERE tp.guild_id IS NULL"
+            )
+            missing = [(guild_id, guild_starts[guild_id]) for (guild_id,) in await cursor.fetchall() if guild_id in guild_starts]
+            if missing:
+                await self.db.executemany(
+                    "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
+                    missing,
                 )
                 await self.db.commit()
 

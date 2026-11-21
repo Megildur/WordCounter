@@ -619,16 +619,28 @@ class AnalyzeChat(commands.Cog):
         if self._started_up:
             return
         self._started_up = True
-        # A server with tracking on needs an open tracking period, because the crawl skips messages inside one as already counted live. One is opened here, starting when the bot joined, if it has none.
-        for guild in self.bot.guilds:
-            if guild.me is not None and guild.me.joined_at is not None:
-                await self.bot.db.ensure_tracking_period(guild.id, discord.utils.time_snowflake(guild.me.joined_at))
+        # A server with tracking on needs an open tracking period, because the crawl skips messages inside one as already counted live. Checked in bulk here at launch, starting when the bot joined, for any server that has none.
+        began = time.monotonic()
+        guild_starts = {
+            guild.id: discord.utils.time_snowflake(guild.me.joined_at)
+            for guild in self.bot.guilds
+            if guild.me is not None and guild.me.joined_at is not None
+        }
+        await self.bot.db.ensure_tracking_periods(guild_starts)
+        resumed = 0
         for guild_id in await self.bot.db.list_analysis_runs():
             guild = self.bot.get_guild(guild_id)
             if guild is not None and self._reserve(guild_id):
+                resumed += 1
                 log.info("Resuming interrupted analysis in guild %s", guild_id)
                 # Spawned instead of awaited: a crawl can run for hours, and each server's run must go on alongside the others.
                 self._spawn(self._resume(guild))
+        log.info(
+            "AnalyzeChat start-up checked %d servers and resumed %d runs in %.1f s",
+            len(guild_starts),
+            resumed,
+            time.monotonic() - began,
+        )
 
     def _reserve(self, guild_id: int) -> bool:
         """Synchronously claims `guild_id` in `running_guilds` before any await, returning False if already running."""

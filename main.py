@@ -3,11 +3,21 @@
 The website in `web/` is one of the extensions and serves from the same process. The database connects in `setup_hook`, before the bot receives any events. Run it from the repo root, because `cogs/`, `Data/` and the log files are found by relative path.
 """
 
-import asyncio
-import logging
 import os
-import sys
 import time
+
+# When this process began, so the start-up lines can say how long each phase took and how long the bot took to be ready.
+LAUNCHED = time.monotonic()
+
+# aiohttp's sendfile reads the disk on the event loop, which held everything up on the host's slow disk. Without it, the website's files are read in a worker thread. It has to be set before aiohttp's web module is imported.
+os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
+
+import asyncio
+import atexit
+import logging
+import logging.handlers
+import queue
+import sys
 from typing import Any, Set
 import aiohttp
 import discord
@@ -24,20 +34,24 @@ for stream in (sys.stdout, sys.stderr):
 
 formatter = logging.Formatter(fmt="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 file_handler = daily_log_handler("discord.log")
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.INFO)
 console_handler = logging.StreamHandler(sys.stdout)
-# Everything, discord.py included, logs through the root logger. bot.run is given log_handler=None below so discord.py doesn't add its own.
+console_handler.setFormatter(formatter)
+console_handler.setLevel(logging.INFO)
+# Everything, discord.py included, logs through a queue on the root logger so slow disk or console writes never block the event loop. bot.run is given log_handler=None below so discord.py doesn't add its own.
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 root_logger.handlers.clear()
-for handler in (file_handler, console_handler):
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
-    root_logger.addHandler(handler)
+log_queue: "queue.SimpleQueue[logging.LogRecord]" = queue.SimpleQueue()
+root_logger.addHandler(logging.handlers.QueueHandler(log_queue))
+log_listener = logging.handlers.QueueListener(log_queue, file_handler, console_handler, respect_handler_level=True)
+log_listener.start()
+# Writes what's still queued before Python exits.
+atexit.register(log_listener.stop)
 
 log = logging.getLogger("main")
 
-# When this process began, so the start-up lines can say how long each phase took and how long the bot took to be ready.
-LAUNCHED = time.monotonic()
 # An extension that loads faster than this isn't logged on its own line.
 SLOW_EXTENSION_SECONDS = 0.5
 
