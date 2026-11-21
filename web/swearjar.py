@@ -246,12 +246,10 @@ async def swearjar_action(request: web.Request) -> web.Response:
         elif action == "language" and form.get("lang") in LANGUAGE_COLUMNS:
             column = LANGUAGE_COLUMNS[form.get("lang")]
             turning_on = form.get("state") == "on"
-            others = [name for name in LANGUAGE_COLUMNS.values() if name != column and settings.get(name)]
-            # At least one language has to stay on, as in the Discord menu.
-            if not turning_on and not others:
+            # At least one language has to stay on, checked atomically inside db_lock as in the Discord menu.
+            if not await db.jar_set_language(guild.id, column, turning_on):
                 result = "need_language"
             else:
-                await db.jar_update(guild.id, **{column: int(turning_on)})
                 result = "language_on" if turning_on else "language_off"
         elif action in WORD_ACTIONS:
             result = await _words(db, guild, WORD_ACTIONS[action], form)
