@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    code_span, create_v2_container, create_v2_view, error_view, make_button, private_followup, safe_name,
+    code_span, create_v2_container, create_v2_view, error_view, is_member_timed_out, make_button, private_followup, safe_name,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -146,6 +146,24 @@ class DataConfirmView(AuthorOnlyView):
             title, description, footer=footer, color=ERROR_COLOR,
             action_rows=[discord.ui.ActionRow(self.confirm_button, self.cancel_button)],
         ))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        guild, member = interaction.guild, interaction.user
+        if (
+            guild is not None
+            and guild.id in ALLOWED_GUILD_IDS
+            and isinstance(member, discord.Member)
+            and member.guild_permissions.administrator
+            and not is_member_timed_out(member)
+        ):
+            return True
+        await interaction.response.send_message(
+            view=error_view("Only active administrators in an allowed server can use this.", title="Administrators only"),
+            ephemeral=True,
+        )
+        return False
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
         # Defer first: the delete searches every table, which can take longer than the 3 seconds Discord gives for a reply.
@@ -307,7 +325,13 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
     @ext.autocomplete("extension")
     async def ext_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        if not interaction.permissions.administrator:
+        guild = interaction.guild
+        if (
+            guild is None
+            or guild.id not in ALLOWED_GUILD_IDS
+            or not interaction.permissions.administrator
+            or is_member_timed_out(interaction.user)
+        ):
             return []
         # Discord shows at most 25 autocomplete choices.
         return [
@@ -358,8 +382,14 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await cog.owner_panel(interaction, channel, remove)
 
     async def _admin_only(self, interaction: discord.Interaction) -> bool:
-        """Returns True for a member with the Administrator permission. Otherwise it answers with an "Administrators only" notice and returns False, so call it before anything else replies."""
-        if interaction.permissions.administrator:
+        """Returns True for an active administrator in an allowed server. Otherwise it answers with an "Administrators only" notice and returns False, so call it before anything else replies."""
+        guild = interaction.guild
+        if (
+            guild is not None
+            and guild.id in ALLOWED_GUILD_IDS
+            and interaction.permissions.administrator
+            and not is_member_timed_out(interaction.user)
+        ):
             return True
         await interaction.response.send_message(view=error_view("Only server administrators can use this.", title="Administrators only"), ephemeral=True)
         return False
