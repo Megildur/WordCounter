@@ -138,6 +138,11 @@ def role_mention(role_id: Optional[int], empty: str) -> str:
     return f"<@&{role_id}>" if role_id else empty
 
 
+def safe_money(settings: Dict[str, Any], units: int) -> str:
+    """Formats a jar amount for Discord text with any masked links or markdown in custom token names escaped."""
+    return safe_name(money(settings, units))
+
+
 def word_list(words: Sequence[str], limit: int = 25) -> str:
     shown = ", ".join(discord.utils.escape_markdown(word) for word in words[:limit])
     if len(words) > limit:
@@ -148,9 +153,9 @@ def word_list(words: Sequence[str], limit: int = 25) -> str:
 def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[str, str]]:
     balance = data["balance"]
     fields = [
-        ("Debt" if balance < 0 else "Wallet", f"**{money(settings, balance)}**"),
+        ("Debt" if balance < 0 else "Wallet", f"**{safe_money(settings, balance)}**"),
         ("Clean streak", f"{data['streak']:,} day(s) · best {data['best_streak']:,}"),
-        ("Swears", f"{data['swears']:,} counted · {money(settings, data['week_fines'])} fined this week"),
+        ("Swears", f"{data['swears']:,} counted · {safe_money(settings, data['week_fines'])} fined this week"),
     ]
     if balance < 0:
         fields.append(("Paying it off", f"About {days_to_clear(-balance, data['streak']):,} more clean active day(s)."))
@@ -160,7 +165,7 @@ def wallet_fields(settings: Dict[str, Any], data: Dict[str, Any]) -> List[Tuple[
 
 
 def earning_footer(settings: Dict[str, Any]) -> str:
-    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {unit_label(settings)}. Streak bonuses at 7 and 30 days."
+    return f"A clean active day ({ACTIVE_DAY_MESSAGES}+ messages, no swears) pays back {safe_name(unit_label(settings))}. Streak bonuses at 7 and 30 days."
 
 
 class FormModal(discord.ui.Modal):
@@ -225,7 +230,7 @@ class JarTopPaginator(ButtonPaginator):
             return f"{value:,} swears"
         if self.kind == "streak":
             return f"{value:,} day(s)"
-        return money(self.settings, value)
+        return safe_money(self.settings, value)
 
     async def format_page(self, chunk: List[Tuple[int, int]]) -> discord.ui.Container:
         names = await member_names(self.bot, self.guild, [uid for uid, _ in chunk])
@@ -288,7 +293,7 @@ class JarSettingsView(SectionMenu):
         return f"Fines for swearing in **{safe_name(self.guild.name)}**, paid back with clean streaks."
 
     def _money(self, units: int) -> str:
-        return money(self.settings, units)
+        return safe_money(self.settings, units)
 
     def _rule_ids(self, rule: str) -> List[int]:
         return sorted(cid for cid, value in self.rules.items() if value == rule)
@@ -297,9 +302,10 @@ class JarSettingsView(SectionMenu):
         goal = self.goal
         if goal is None:
             return "None"
+        label = safe_name(goal["label"])
         if goal["completed_at"]:
-            return f"{goal['label']}, reached <t:{int(goal['completed_at'])}:D>"
-        return f"{goal['label']}: {self._money(goal['progress'])} of {self._money(goal['target'])}"
+            return f"{label}, reached <t:{int(goal['completed_at'])}:D>"
+        return f"{label}: {self._money(goal['progress'])} of {self._money(goal['target'])}"
 
     def _populate_overview_tab(self, container: discord.ui.Container) -> None:
         s = self.settings
@@ -349,7 +355,7 @@ class JarSettingsView(SectionMenu):
         if s["currency"] == "money":
             currency = f"Money, {self._money(1)} per unit"
         else:
-            currency = f"Tokens called {s['token_name']} / {s['token_plural']}, {s['tokens_per_unit']:,} per unit"
+            currency = f"Tokens called {safe_name(s['token_name'])} / {safe_name(s['token_plural'])}, {s['tokens_per_unit']:,} per unit"
         tiers = "\n".join(
             f"- **{TIER_NAMES[tier]}:** {price:,} unit(s) = {self._money(price)}" for tier, price in prices(s).items()
         )
@@ -500,7 +506,7 @@ class JarSettingsView(SectionMenu):
         if goal is None or goal["completed_at"]:
             text = "### Goal\nNo goal right now. Set one, like **$50 for a movie night**, and the jar posts once when it's reached."
             if goal is not None:
-                text += f"\n\n**Last goal:** {goal['label']}, reached <t:{int(goal['completed_at'])}:D>."
+                text += f"\n\n**Last goal:** {safe_name(goal['label'])}, reached <t:{int(goal['completed_at'])}:D>."
             container.add_item(discord.ui.TextDisplay(text))
             container.add_item(discord.ui.ActionRow(make_button("Set a goal", discord.ButtonStyle.success, self._open_goal_modal)))
             return
@@ -508,7 +514,7 @@ class JarSettingsView(SectionMenu):
         channel = f"<#{goal['channel_id']}>" if goal["channel_id"] else "Nowhere yet. Pick a channel below."
         container.add_item(
             discord.ui.TextDisplay(
-                f"### Goal\n**Saving up for:** {goal['label']}\n"
+                f"### Goal\n**Saving up for:** {safe_name(goal['label'])}\n"
                 f"**Progress:** {self._money(goal['progress'])} of {self._money(goal['target'])} ({percent}%)\n"
                 f"**Announced in:** {channel}\n**Pings @everyone:** {'Yes' if goal['ping'] else 'No'}\n\n"
                 "-# Fines fill the jar. Paying debt back with clean days doesn't take money out of it."
@@ -790,7 +796,7 @@ class JarSettingsView(SectionMenu):
             channel_id = current["channel_id"] if current and current["channel_id"] else interaction.channel_id
             # Saving starts the goal again from zero progress, even when an admin only changes one that is running.
             await self.bot.db.jar_set_goal(self.guild.id, label[:100], target, channel_id, bool(current and current["ping"]))
-            self._done(f"Goal set: {label[:100]}, {money(self.settings, target)}. It's announced in <#{channel_id}>.")
+            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. It's announced in <#{channel_id}>.")
         await self.refresh_and_edit(interaction)
 
     async def _on_goal_channel(self, interaction: discord.Interaction) -> None:
@@ -1052,8 +1058,8 @@ class SwearJar(commands.Cog):
         if settings["delete_mode"]:
             doubled = f" That's doubled: {SPAM_NOTE}" if spam else ""
             description = (
-                f"{message.author.mention}'s message was removed for swearing and fined **{money(settings, amount)}**.{doubled}\n"
-                f"Wallet: **{money(settings, balance)}**"
+                f"{message.author.mention}'s message was removed for swearing and fined **{safe_money(settings, amount)}**.{doubled}\n"
+                f"Wallet: **{safe_money(settings, balance)}**"
             )
             if await self._remove(message, description):
                 return
@@ -1094,7 +1100,7 @@ class SwearJar(commands.Cog):
         ping = bool(goal["ping"]) and permissions.mention_everyone
         view = create_v2_view(
             "Swear jar goal reached",
-            f"{'@everyone ' if ping else ''}The jar collected **{money(settings, goal['target'])}**, so it's time for: **{goal['label']}**",
+            f"{'@everyone ' if ping else ''}The jar collected **{safe_money(settings, goal['target'])}**, so it's time for: **{safe_name(goal['label'])}**",
             footer="Admins can set the next goal in /swearjar settings.",
             color=SUCCESS_COLOR,
         )
@@ -1308,7 +1314,7 @@ class SwearJar(commands.Cog):
         elif goal["completed_at"]:
             view = create_v2_view(
                 "Swear jar goal",
-                f"The last goal, **{goal['label']}**, was reached <t:{int(goal['completed_at'])}:D> at {money(settings, goal['target'])}.",
+                f"The last goal, **{safe_name(goal['label'])}**, was reached <t:{int(goal['completed_at'])}:D> at {safe_money(settings, goal['target'])}.",
                 color=SUCCESS_COLOR,
             )
         else:
@@ -1316,8 +1322,8 @@ class SwearJar(commands.Cog):
             filled = percent // 10
             view = create_v2_view(
                 "Swear jar goal",
-                f"Saving up for **{goal['label']}**.\n\n`{'█' * filled}{'░' * (10 - filled)}` {percent}%\n"
-                f"**{money(settings, goal['progress'])}** of **{money(settings, goal['target'])}**",
+                f"Saving up for **{safe_name(goal['label'])}**.\n\n`{'█' * filled}{'░' * (10 - filled)}` {percent}%\n"
+                f"**{safe_money(settings, goal['progress'])}** of **{safe_money(settings, goal['target'])}**",
                 footer="Every fine goes into the jar.",
                 color=BRAND_COLOR,
             )
