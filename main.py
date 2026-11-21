@@ -61,6 +61,7 @@ class MyBot(commands.Bot):
         # Banned user and server IDs. Their events and interactions are stopped before the cogs, so cogs check it only for work they start themselves, or for events when they set acts_on_blacklisted.
         self.blacklisted: Set[int] = set()
         self._told_ready = False
+        self._shutting_down = False
 
     def dispatch(self, event_name: str, /, *args: Any, **kwargs: Any) -> None:
         """Drops an event that involves a banned user or server before any cog sees it. Cogs with `acts_on_blacklisted` still get a banned user's events, see `blacklist.screen`."""
@@ -121,10 +122,24 @@ class MyBot(commands.Bot):
         log.info("Start-up: setup finished %.1f s after launch (the database %.1f s, the extensions %.1f s)", time.monotonic() - LAUNCHED, connected - began, time.monotonic() - loading)
 
     async def close(self) -> None:
-        # The cogs unload inside super().close(), so the HTTP session and the database stay open until they have finished.
-        await super().close()
-        await close_session()
-        await self.db.close()
+        if self._shutting_down:
+            await super().close()
+            return
+        self._shutting_down = True
+        began = time.monotonic()
+        # Stop the website first so incoming requests don't race cog unloads, then unload cogs in super().close(), and finally close the HTTP session and database pool together.
+        try:
+            runner = getattr(self, "web_runner", None)
+            if runner is not None:
+                self.web_runner = None
+                try:
+                    await runner.cleanup()
+                except Exception:
+                    log.exception("Error closing web server")
+            await super().close()
+        finally:
+            await asyncio.gather(close_session(), self.db.close())
+            log.info("Shut down cleanly in %.1f s", time.monotonic() - began)
 
 
 bot = MyBot()

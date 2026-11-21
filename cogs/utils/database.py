@@ -248,7 +248,9 @@ ACTIVITY_KEY_NAMES: Dict[str, Tuple[str, ...]] = {**{table: keys for table, (key
 # The most changes that may wait in memory. Past it new ones are dropped, so a database that stays down can't use up the bot's memory.
 ACTIVITY_LIMIT = 50_000
 # The longest a cancelled flush waits for the commit it had already sent.
-COMMIT_WAIT_SECONDS = 30.0
+# How long shutdown waits for an in-flight activity commit and for the database connection to close before forcing it closed.
+COMMIT_WAIT_SECONDS = 10.0
+POOL_CLOSE_SECONDS = 5.0
 # A change that couldn't be saved is logged at most this often.
 ACTIVITY_LOG_SECONDS = 60.0
 
@@ -328,7 +330,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         pool, self.pool = self.pool, None
         if pool is not None:
             pool.close()
-            await pool.wait_closed()
+            try:
+                await asyncio.wait_for(pool.wait_closed(), POOL_CLOSE_SECONDS)
+            except asyncio.TimeoutError:
+                log.warning("Database connection was still in use after %.0f s; closing it", POOL_CLOSE_SECONDS)
+                pool.terminate()
 
     def forget_kept(self) -> None:
         """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
