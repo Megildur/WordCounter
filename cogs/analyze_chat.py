@@ -1320,6 +1320,19 @@ class AnalyzeChat(commands.Cog):
         finally:
             self._finished(guild.id)
 
+    async def _stop_if_blocked(self, status: StatusMessage, guild_id: int) -> bool:
+        """Shows a stopped card and returns True when the server was reset or banned."""
+        if not self._guild_blocked(guild_id):
+            return False
+        await status.show(
+            create_v2_view(
+                "Analysis stopped",
+                "This server's data was reset while the analysis was running, so it was cancelled.",
+                color=NEUTRAL_COLOR,
+            )
+        )
+        return True
+
     @tracked
     async def run_server(self, interaction: discord.Interaction, *, reserved: bool = False) -> None:
         guild = interaction.guild
@@ -1328,7 +1341,7 @@ class AnalyzeChat(commands.Cog):
             await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
             return
         try:
-            if self._guild_blocked(guild.id):
+            if await self._stop_if_blocked(status, guild.id):
                 return
             pending, _ = await self._pending_members(guild)
             if not pending:
@@ -1336,7 +1349,7 @@ class AnalyzeChat(commands.Cog):
                     create_v2_view("Nothing to do", "Every member here has already been analyzed.", color=NEUTRAL_COLOR)
                 )
                 return
-            if self._guild_blocked(guild.id):
+            if await self._stop_if_blocked(status, guild.id):
                 return
             coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
             # The members to count are saved with the run, so a resume after a restart covers the same people.
@@ -1355,12 +1368,12 @@ class AnalyzeChat(commands.Cog):
             await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
             return
         try:
-            if self._guild_blocked(guild.id):
+            if await self._stop_if_blocked(status, guild.id):
                 return
             coverage = LiveCoverage(
                 await self.bot.db.jar_coverage(guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
             )
-            if self._guild_blocked(guild.id):
+            if await self._stop_if_blocked(status, guild.id):
                 return
             await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
             await self._run_crawl(guild, status)

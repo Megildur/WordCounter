@@ -6,10 +6,12 @@ The home page, command reference, terms, privacy policy, invite and support redi
 from __future__ import annotations
 import logging
 from typing import Any, Dict, List
+from urllib.parse import parse_qs
 from aiohttp import web
 from discord import AppCommandOptionType, AppCommandType, app_commands
 from cogs.utils import people
 from cogs.utils.config import DISCORD_CLIENT_SECRET, SITE_URL, SUPPORT_URL, invite_url
+from cogs.utils.mysql import DatabaseError
 from cogs.utils.stored_data import KEPT_POLICY
 from web import auth
 from web.core import SECURE_COOKIES, Refused, client_id, current_user, post_form, redirect, render, sent_from_other_site
@@ -156,7 +158,11 @@ def command_filters(request: web.Request, reference: Dict[str, List[Dict[str, An
 @routes.get("/")
 async def home(request: web.Request) -> web.Response:
     bot = request.app["bot"]
-    messages, words = await bot.db.get_global_totals()
+    try:
+        messages, words = await bot.db.get_global_totals()
+    except (DatabaseError, OSError) as error:
+        log.warning("Could not load global totals for the home page: %s", error)
+        messages, words = 0, 0
     users, _ = people.unique_users(bot)
     # A count of 0 becomes None, which the `num` filter shows as a dash.
     stats = {
@@ -211,6 +217,7 @@ async def robots(request: web.Request) -> web.Response:
         "Disallow: /dashboard\n"
         "Disallow: /login\n"
         "Disallow: /callback\n"
+        "Disallow: /logout\n"
         f"Sitemap: {SITE_URL}/sitemap.xml\n"
     )
     return web.Response(text=body, content_type="text/plain")
@@ -285,8 +292,13 @@ async def callback(request: web.Request) -> web.Response:
         except Exception as error:
             log.warning("Couldn't end the login session this browser came with: %s", error)
 
-    separator = "&" if "?" in next_url else "?"
-    response = redirect(f"{next_url}{separator}msg=login_success")
+    base_next, hash_sep, fragment = next_url.partition("#")
+    if "msg" in parse_qs(base_next.partition("?")[2], keep_blank_values=True):
+        dest = next_url
+    else:
+        separator = "&" if "?" in base_next else "?"
+        dest = f"{base_next}{separator}msg=login_success{hash_sep}{fragment}"
+    response = redirect(dest)
     response.set_cookie(
         auth.SESSION_COOKIE,
         auth.sign_session(user, session_id),

@@ -57,6 +57,12 @@ class ErrorDisplayView(AuthorOnlyView):
         self.add_item(container)
 
     async def _on_show_traceback(self, interaction: discord.Interaction) -> None:
+        if not can_see_details(interaction):
+            await interaction.response.send_message(
+                "Only an active administrator in an owner server can view tracebacks.",
+                ephemeral=True,
+            )
+            return
         if len(self.traceback_str) <= INLINE_TRACEBACK_LIMIT:
             await interaction.response.send_message(view=TracebackView(self.traceback_str), ephemeral=True)
             return

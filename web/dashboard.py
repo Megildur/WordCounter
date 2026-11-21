@@ -109,8 +109,8 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
 
 
 def manages(member: discord.Member) -> bool:
-    """Whether a member may use the manager pages. discord.py already leaves a timed-out member's permissions out of `guild_permissions` (Discord takes them away until the timeout ends, and the owner and administrators can't be timed out), so this is only the Manage Server check."""
-    return member.guild_permissions.manage_guild
+    """Whether a member may use the manager pages: requires Manage Server while not timed out."""
+    return not member.is_timed_out() and member.guild_permissions.manage_guild
 
 
 async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Member, bool]:

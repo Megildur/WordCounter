@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncio
 import calendar
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -36,6 +36,22 @@ from cogs.utils import cards
 from cogs.utils.menus import SectionMenu
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from paginator import ButtonPaginator
+
+OVERVIEW_CHANNEL_LIMIT = 25
+CHANNELS_TAB_LIMIT = 40
+
+
+def _summarize_channels(
+    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
+) -> str:
+    sorted_ids = sorted(channel_ids)
+    if not sorted_ids:
+        return empty
+    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
+    remaining = len(sorted_ids) - limit
+    if remaining > 0:
+        shown.append(f"{prefix}and {remaining} more")
+    return sep.join(shown)
 
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
 SECTIONS = (
@@ -162,16 +178,16 @@ class SettingsMenuView(SectionMenu):
         elif self.is_whole_server:
             mode = "Whole server. Every channel is counted except ignored ones."
             scope_title = "Ignored"
-            scope_value = (
-                ", ".join(format_channel_or_category(self.guild, cid) for cid in sorted(self.ignored_ids))
-                if self.ignored_ids
-                else "Nothing ignored"
+            scope_value = _summarize_channels(
+                self.guild, self.ignored_ids, limit=OVERVIEW_CHANNEL_LIMIT, sep=", ", empty="Nothing ignored"
             )
         else:
             mode = "Specific channels. Only the channels and categories you pick are counted."
             scope_title = "Tracked channels and categories"
-            specific_ids = [cid for cid in sorted(self.watched_ids) if cid != 1]
-            scope_value = ", ".join(format_channel_or_category(self.guild, cid) for cid in specific_ids) or "None picked yet"
+            specific_ids = [cid for cid in self.watched_ids if cid != 1]
+            scope_value = _summarize_channels(
+                self.guild, specific_ids, limit=OVERVIEW_CHANNEL_LIMIT, sep=", ", empty="None picked yet"
+            )
 
         keyword_preview = ", ".join(code_span(k) for k in self.keywords[:20]) or "None"
         if len(self.keywords) > 20:
@@ -242,7 +258,9 @@ class SettingsMenuView(SectionMenu):
             add_placeholder = "Add channels or categories to track"
             remove_placeholder = "Remove from the tracked list"
 
-        listed = "\n".join(f"- {format_channel_or_category(self.guild, cid)}" for cid in active_list) or "None yet."
+        listed = _summarize_channels(
+            self.guild, active_list, limit=CHANNELS_TAB_LIMIT, sep="\n", prefix="- ", empty="None yet."
+        )
         container.add_item(discord.ui.TextDisplay(f"{header}\n\n**{list_label} ({len(active_list)}):**\n{listed}"))
 
         channel_select = discord.ui.ChannelSelect(
@@ -587,21 +605,26 @@ class LeaderboardPaginator(ButtonPaginator):
         self.entry_count = 0
         self.podium: Optional[bytes] = None
         self.history: List[Tuple[str, str]] = []
+        self._history_loaded = False
+        self._history_channel_id: Optional[int] = None
 
     async def load(self, category: str) -> None:
         self.category = category
         self.current_page = 0
         channel_id = self.channel.id if self.channel else None
 
-        self.history = []
-        if self.channel is not None:
-            rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
-            if rows:
-                lines = [
-                    f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
-                    for year, month, words, messages, attachments, emojis in rows
-                ]
-                self.history = [("Monthly history, newest first", "\n".join(lines))]
+        if not self._history_loaded or self._history_channel_id != channel_id:
+            self.history = []
+            if self.channel is not None:
+                rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
+                if rows:
+                    lines = [
+                        f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
+                        for year, month, words, messages, attachments, emojis in rows
+                    ]
+                    self.history = [("Monthly history, newest first", "\n".join(lines))]
+            self._history_loaded = True
+            self._history_channel_id = channel_id
 
         if category == "keywords":
             entries: List = await self.bot.db.get_keyword_leaders(self.guild.id, channel_id)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any, Dict, Optional, Tuple
+import aiohttp
 import discord
 from cogs.utils.config import DEVELOPER_ID, DEVELOPER_INVITE_URL
 
@@ -31,7 +32,7 @@ async def _profile_user(bot) -> Optional[discord.User]:
     _cache["at"] = time.monotonic()
     try:
         _cache["user"] = await asyncio.wait_for(fetch_user(DEVELOPER_ID), FETCH_TIMEOUT)
-    except (discord.HTTPException, asyncio.TimeoutError):
+    except (discord.HTTPException, asyncio.TimeoutError, aiohttp.ClientError, OSError):
         pass
     return _cache["user"]
 
