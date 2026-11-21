@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import ActionRow, Container, LayoutView, Modal, Separator, TextDisplay
 from discord.ui.view import BaseView
-from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, is_member_timed_out, make_button
+from cogs.utils.components import ERROR_COLOR, NEUTRAL_COLOR, AuthorOnlyView, error_view, is_member_timed_out, make_button
 from cogs.utils.config import ALLOWED_GUILD_IDS, SUPPORT_EMAIL, SUPPORT_URL
 
 log = logging.getLogger("Errors")
@@ -59,7 +59,7 @@ class ErrorDisplayView(AuthorOnlyView):
     async def _on_show_traceback(self, interaction: discord.Interaction) -> None:
         if not can_see_details(interaction):
             await interaction.response.send_message(
-                "Only an active administrator in an owner server can view tracebacks.",
+                view=error_view("Only an active administrator in an owner server can view tracebacks."),
                 ephemeral=True,
             )
             return
