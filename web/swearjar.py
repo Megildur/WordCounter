@@ -86,11 +86,15 @@ def role_options(guild: discord.Guild) -> List[Dict[str, Any]]:
     return [{"id": role.id, "label": f"@{role.name}"} for role in roles]
 
 
+def _can_post(guild: discord.Guild, channel: Any) -> bool:
+    if not isinstance(channel, discord.TextChannel) or guild.me is None:
+        return False
+    perms = channel.permissions_for(guild.me)
+    return perms.view_channel and perms.send_messages
+
+
 def goal_channels(guild: discord.Guild) -> List[Dict[str, Any]]:
-    channels = [
-        channel for channel in guild.text_channels
-        if guild.me is not None and channel.permissions_for(guild.me).send_messages
-    ]
+    channels = [channel for channel in guild.text_channels if _can_post(guild, channel)]
     return [{"id": channel.id, "label": f"#{channel.name}"} for channel in channels]
 
 
@@ -202,9 +206,9 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
     ping = form.get("ping") == "yes"
     if ping and not (guild.me and guild.me.guild_permissions.mention_everyone):
         return "need_mention_everyone"
-    # A channel that is missing, or that the bot can't send in, is dropped and the goal is saved without one.
+    # A channel that is missing, isn't a text channel, or that the bot can't view or send in, is dropped and the goal is saved without one.
     channel = guild.get_channel(whole_number(form.get("channel")) or 0)
-    if channel is not None and not channel.permissions_for(guild.me).send_messages:
+    if not _can_post(guild, channel):
         channel = None
     # Saving starts the goal again from zero progress, even when one is already running.
     await db.jar_set_goal(guild.id, label, target, channel.id if channel else None, ping)
@@ -279,6 +283,10 @@ async def swearjar_action(request: web.Request) -> web.Response:
             result = await confirmed_and_free(request, form, guild, running_only=True) or "jar_reset"
             if result == "jar_reset":
                 await db.jar_reset_members(guild.id)
+                # Drop unsaved day counts and spam tracking too, so upkeep can't flush wiped counts back.
+                cog = request.app["bot"].get_cog("SwearJar")
+                if cog is not None:
+                    cog.forget(guild.id)
         # Drops the bot's cached jar state so the listeners use the change straight away.
         refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}&lang={word_tab(form.get('tab') if csrf_ok else None)}")

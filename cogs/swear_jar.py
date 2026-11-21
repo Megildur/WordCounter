@@ -786,7 +786,8 @@ class JarSettingsView(SectionMenu):
         await interaction.response.defer()
         ids = self._selected_ids(interaction)
         channel = self.guild.get_channel(ids[0]) if ids else None
-        if channel is None or not channel.permissions_for(self.guild.me).send_messages:
+        perms = channel.permissions_for(self.guild.me) if isinstance(channel, discord.TextChannel) and self.guild.me is not None else None
+        if perms is None or not (perms.view_channel and perms.send_messages):
             self._done("WordCounter can't send messages there. Pick another channel.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update_goal(self.guild.id, channel_id=channel.id)
@@ -819,13 +820,18 @@ class JarSettingsView(SectionMenu):
         async def callback(interaction: discord.Interaction) -> None:
             await interaction.response.defer()
             running, _ = await analysis_state(self.bot, self.guild.id)
+            jar = self.bot.get_cog("SwearJar")
             if running:
                 self._done(ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             elif member_only and self.reset_user_id is not None:
                 await self.bot.db.jar_reset_members(self.guild.id, self.reset_user_id)
+                if jar is not None:
+                    jar.forget_member(self.guild.id, self.reset_user_id)
                 self._done(f"Reset <@{self.reset_user_id}>'s jar.")
             else:
                 await self.bot.db.jar_reset_members(self.guild.id)
+                if jar is not None:
+                    jar.forget(self.guild.id)
                 self._done("The whole jar was reset.")
             await self.refresh_and_edit(interaction)
 
@@ -848,6 +854,8 @@ class SwearJar(commands.Cog):
         self.day_counts: Dict[Tuple[int, int, int], int] = defaultdict(int)
         # IDs whose data was just deleted by the owner commands, with the monotonic time their refusal ends.
         self._forgotten: Dict[int, float] = {}
+        # (guild_id, user_id) pairs whose jar was just reset for that member in one server, with the monotonic time their refusal ends.
+        self._forgotten_pairs: Dict[Tuple[int, int], float] = {}
         self.last_daily = 0.0
         # The Swear Jar message menu is added to the command tree here and removed again in cog_unload.
         self.fine_menu = app_commands.ContextMenu(
@@ -884,13 +892,24 @@ class SwearJar(commands.Cog):
         # For the next FORGET_SECONDS this ID's day counts are refused, including a flush that has taken its counts and is waiting for the database lock, which checks again when it gets it.
         self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
 
+    def forget_member(self, guild_id: int, user_id: int) -> None:
+        """Drops unsaved spam tracking and day counts for one member in one server after a per-member jar reset."""
+        pair = (guild_id, user_id)
+        self.recent.pop(pair, None)
+        self.spam_until.pop(pair, None)
+        for key in [k for k in self.day_counts if k[0] == guild_id and k[1] == user_id]:
+            del self.day_counts[key]
+        self._forgotten_pairs[pair] = time.monotonic() + FORGET_SECONDS
+
     def _is_forgotten(self, guild_id: int, user_id: int) -> bool:
-        if not self._forgotten:
-            return False
         now = time.monotonic()
-        for target_id in [target_id for target_id, until in self._forgotten.items() if until <= now]:
-            del self._forgotten[target_id]
-        return guild_id in self._forgotten or user_id in self._forgotten
+        if self._forgotten:
+            for target_id in [target_id for target_id, until in self._forgotten.items() if until <= now]:
+                del self._forgotten[target_id]
+        if self._forgotten_pairs:
+            for pair in [pair for pair, until in self._forgotten_pairs.items() if until <= now]:
+                del self._forgotten_pairs[pair]
+        return guild_id in self._forgotten or user_id in self._forgotten or (guild_id, user_id) in self._forgotten_pairs
 
     async def state(self, guild_id: int) -> JarState:
         """Returns the server's JarState, reused for STATE_TTL seconds. With the jar off the state has no matcher, which tells the listeners to stop early."""
@@ -1066,10 +1085,10 @@ class SwearJar(commands.Cog):
     async def _announce_goal(self, guild: discord.Guild, settings: Dict[str, Any], goal: Dict[str, Any]) -> None:
         """Posts the goal reached message in the goal's channel. It stays quiet if there is no channel or the bot can't send in it."""
         channel = guild.get_channel(goal["channel_id"] or 0)
-        if channel is None or guild.me is None:
+        if not isinstance(channel, discord.TextChannel) or guild.me is None:
             return
         permissions = channel.permissions_for(guild.me)
-        if not permissions.send_messages:
+        if not (permissions.view_channel and permissions.send_messages):
             return
         # The bot pings nobody by default, so this message passes its own allowed_mentions: @everyone only if the goal asks for it and the bot may.
         ping = bool(goal["ping"]) and permissions.mention_everyone
