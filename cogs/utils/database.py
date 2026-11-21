@@ -811,13 +811,17 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         guild_id: int,
         results: Mapping[int, UserActivity],
         analyzed_user_ids: Iterable[int],
-    ) -> None:
-        """Saves a finished search for one member, and marks them analyzed, in one transaction. A search has no checkpoints, so nothing is saved until it is done."""
+        should_skip: Optional[Callable[[], bool]] = None,
+    ) -> bool:
+        """Saves a finished search for one member, and marks them analyzed, in one transaction. Returns False without writing if `should_skip` reports True once the lock is held."""
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             await self._write_results(guild_id, results)
             await self._mark_analyzed(guild_id, analyzed_user_ids)
             await self.db.commit()
+            return True
 
     async def start_analysis_run(
         self,
@@ -891,15 +895,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         messages_read: int,
         totals: Callable[[], str],
         swears: Optional[SwearCounts] = None,
+        should_skip: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Saves one checkpoint of a crawl in a single transaction: the counts read since the last checkpoint, the running totals JSON, and where each channel stands. `totals` is a function that returns the JSON and is called once the database lock is held, like the lazy `results` and `swears`, so the owner deleting a member's data while this write waited can't have the ID saved again. `cursors` maps channel_id to the oldest message read so far and `finished` maps channel_id to its final status.
 
         Counts and cursors commit together, so after a restart the crawl continues from exactly where the saved counts stop and nothing is counted twice.
 
-        Returns False, with nothing written, when the run row is gone because the server was reset. The crawl treats that as a cancel.
+        Returns False, with nothing written, when the run row is gone because the server was reset or `should_skip` reports True. The crawl treats that as a cancel.
         """
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             # Updated first on purpose. The reset deletes this row, so a rowcount of 0 means the run was cancelled and none of the writes below should happen.
             cursor = await self.db.execute(
                 "UPDATE analysis_runs SET messages_read = ?, totals = ? WHERE guild_id = ?",
@@ -925,10 +932,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         user_ids: Iterable[int],
         swears: Optional[SwearCounts] = None,
         swear_history_before: Optional[int] = None,
+        should_skip: Optional[Callable[[], bool]] = None,
     ) -> bool:
-        """Saves the last results, marks the members analyzed and removes the run, all in one transaction. Returns False without writing anything when the run row is already gone. For a swear run, `swear_history_before` is the snowflake the crawl read back from, and everything older than it is recorded as covered."""
+        """Saves the last results, marks the members analyzed and removes the run, all in one transaction. Returns False without writing anything when the run row is already gone or `should_skip` reports True. For a swear run, `swear_history_before` is the snowflake the crawl read back from, and everything older than it is recorded as covered."""
         await self.ensure_connected()
         async with self.db_lock:
+            if should_skip is not None and should_skip():
+                return False
             # Deleting the run row first doubles as the cancel check, like the update in a checkpoint.
             cursor = await self.db.execute("DELETE FROM analysis_runs WHERE guild_id = ?", (guild_id,))
             if cursor.rowcount == 0:

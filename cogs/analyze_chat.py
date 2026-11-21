@@ -22,6 +22,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.http import Route
+from cogs.utils import blacklist
 from cogs.utils.components import (
     NEUTRAL_COLOR,
     SUCCESS_COLOR,
@@ -499,18 +500,36 @@ class AnalyzeConfirmView(AuthorOnlyView):
         )
 
     async def _on_start(self, interaction: discord.Interaction) -> None:
-        # Stopping the view keeps on_timeout from firing later and overwriting the progress card.
-        self.stop()
-        # The button press must be answered within 3 seconds, and the run takes far longer, so edit the card first and start the run after.
-        await interaction.response.edit_message(
-            view=create_v2_view("Starting", "Getting the channel list ready.", color=WARNING_COLOR)
-        )
-        if self.swears:
-            await self.cog.run_swears(interaction)
-        elif self.target is not None:
-            await self.cog.run_member(interaction, self.target)
-        else:
-            await self.cog.run_server(interaction)
+        guild = interaction.guild
+        if guild is not None and self.cog._guild_blocked(guild.id):
+            await interaction.response.send_message(
+                view=error_view("This server can't run an analysis right now."),
+                ephemeral=True,
+            )
+            return
+        if guild is not None and not self.cog._reserve(guild.id):
+            await interaction.response.send_message(
+                view=error_view("An analysis is already running in this server. Wait for it to finish."),
+                ephemeral=True,
+            )
+            return
+        try:
+            # Stopping the view keeps on_timeout from firing later and overwriting the progress card.
+            self.stop()
+            # The button press must be answered within 3 seconds, and the run takes far longer, so edit the card first and start the run after.
+            await interaction.response.edit_message(
+                view=create_v2_view("Starting", "Getting the channel list ready.", color=WARNING_COLOR)
+            )
+            if self.swears:
+                await self.cog.run_swears(interaction, reserved=True)
+            elif self.target is not None:
+                await self.cog.run_member(interaction, self.target, reserved=True)
+            else:
+                await self.cog.run_server(interaction, reserved=True)
+        except BaseException:
+            if guild is not None:
+                self.cog._finished(guild.id)
+            raise
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:
         self.stop()
@@ -606,10 +625,21 @@ class AnalyzeChat(commands.Cog):
                 await self.bot.db.ensure_tracking_period(guild.id, discord.utils.time_snowflake(guild.me.joined_at))
         for guild_id in await self.bot.db.list_analysis_runs():
             guild = self.bot.get_guild(guild_id)
-            if guild is not None and guild_id not in self.running_guilds:
+            if guild is not None and self._reserve(guild_id):
                 log.info("Resuming interrupted analysis in guild %s", guild_id)
                 # Spawned instead of awaited: a crawl can run for hours, and each server's run must go on alongside the others.
                 self._spawn(self._resume(guild))
+
+    def _reserve(self, guild_id: int) -> bool:
+        """Synchronously claims `guild_id` in `running_guilds` before any await, returning False if already running."""
+        if guild_id in self.running_guilds:
+            return False
+        self.running_guilds.add(guild_id)
+        return True
+
+    def _guild_blocked(self, guild_id: int) -> bool:
+        """Whether this server's data was deleted during the run or the server is blacklisted."""
+        return guild_id in self.forgotten or guild_id in blacklist.ids(self.bot)
 
     async def is_busy(self, guild_id: int) -> bool:
         return guild_id in self.running_guilds or await self.bot.db.has_analysis_run(guild_id)
@@ -627,14 +657,18 @@ class AnalyzeChat(commands.Cog):
 
     async def _resume(self, guild: discord.Guild) -> None:
         """Continues an interrupted run after a restart. Only the saved message IDs survive a restart, so progress is shown by editing that message."""
-        record = await self.bot.db.get_analysis_run(guild.id)
-        if record is None:
-            return
-        channel = guild.get_channel_or_thread(record["status_channel_id"] or 0)
-        message = None
-        if channel is not None and record["status_message_id"] and hasattr(channel, "get_partial_message"):
-            message = channel.get_partial_message(record["status_message_id"])
-        await self._run_crawl(guild, StatusMessage(message))
+        self._reserve(guild.id)
+        try:
+            record = await self.bot.db.get_analysis_run(guild.id)
+            if record is None:
+                return
+            channel = guild.get_channel_or_thread(record["status_channel_id"] or 0)
+            message = None
+            if channel is not None and record["status_message_id"] and hasattr(channel, "get_partial_message"):
+                message = channel.get_partial_message(record["status_message_id"])
+            await self._run_crawl(guild, StatusMessage(message))
+        finally:
+            self._finished(guild.id)
 
     async def _blocked_reason(self, interaction: discord.Interaction) -> Optional[str]:
         """Returns why the command can't run (not a manager, tracking is off, or an analysis is already running), or None when it can."""
@@ -666,21 +700,30 @@ class AnalyzeChat(commands.Cog):
     @tracked
     async def _resume_interrupted(self, interaction: discord.Interaction) -> bool:
         """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
-        if not await self.bot.db.has_analysis_run(interaction.guild.id):
-            return False
-        sent = await self._send(
-            interaction,
-            create_v2_view(
-                "Resuming",
-                "An earlier analysis in this server was interrupted. Picking it up where it stopped.",
-                color=WARNING_COLOR,
-            ),
-        )
-        message = interaction.channel.get_partial_message(sent.id)
-        # Saved before the run starts, so a restart edits this message and not the old one.
-        await self.bot.db.set_analysis_run_message(interaction.guild.id, message.channel.id, message.id)
-        await self._run_crawl(interaction.guild, StatusMessage(message, interaction))
-        return True
+        if not self._reserve(interaction.guild.id):
+            await private_followup(
+                interaction,
+                error_view("An analysis is already running in this server. Wait for it to finish."),
+            )
+            return True
+        try:
+            if not await self.bot.db.has_analysis_run(interaction.guild.id):
+                return False
+            sent = await self._send(
+                interaction,
+                create_v2_view(
+                    "Resuming",
+                    "An earlier analysis in this server was interrupted. Picking it up where it stopped.",
+                    color=WARNING_COLOR,
+                ),
+            )
+            message = interaction.channel.get_partial_message(sent.id)
+            # Saved before the run starts, so a restart edits this message and not the old one.
+            await self.bot.db.set_analysis_run_message(interaction.guild.id, message.channel.id, message.id)
+            await self._run_crawl(interaction.guild, StatusMessage(message, interaction))
+            return True
+        finally:
+            self._finished(interaction.guild.id)
 
     async def _pending_members(self, guild: discord.Guild) -> Tuple[List[discord.Member], int]:
         """Returns the members still to analyze and how many humans were skipped as already analyzed. Bots and banned members are never counted."""
@@ -971,10 +1014,13 @@ class AnalyzeChat(commands.Cog):
     async def _checkpoint(self, run: CrawlRun, progress: Progress) -> None:
         """Saves the crawl's progress. Raises AnalysisCancelled when the run was deleted, which stops the crawl."""
         # flush() folds the unsaved counts into the totals, so it has to come before state() is read. The cursors and finished channels are copied in the same call, with no await in between, so they match the counts saved with them. `state` is passed as a function so the write reads it when it has the database lock, as it does for the counts, and a member forgotten while it waited isn't saved in the totals either.
+        if self._guild_blocked(run.guild_id):
+            raise AnalysisCancelled
         results = WithoutForgotten(run.flush(), self.forgotten)
         swears = WithoutForgotten(run.flush_swears(), self.forgotten)
         saved = await self.bot.db.checkpoint_analysis_run(
-            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state, swears
+            run.guild_id, results, dict(run.cursors), dict(run.finished), progress.read, run.state, swears,
+            should_skip=lambda: self._guild_blocked(run.guild_id),
         )
         if not saved:
             raise AnalysisCancelled
@@ -1130,6 +1176,8 @@ class AnalyzeChat(commands.Cog):
             record = await self.bot.db.get_analysis_run(guild.id)
             if record is None:
                 return
+            if self._guild_blocked(guild.id):
+                raise AnalysisCancelled
             if record["kind"] == "swears":
                 # A swear run skips spans whose swears are already counted, live or by an earlier run (jar_coverage), and has no reset markers.
                 scope, keywords = await self._load_jar_scope(guild), []
@@ -1159,6 +1207,8 @@ class AnalyzeChat(commands.Cog):
 
             async with self._live_status(status, render):
                 await self._crawl(guild, run, scope, keywords, progress)
+                if self._guild_blocked(guild.id):
+                    raise AnalysisCancelled
                 # Whatever is still unsaved goes in with the final write, which also marks the members analyzed. A swear run records the span it read as covered too, so later runs skip it.
                 results = WithoutForgotten(run.flush(), self.forgotten)
                 swear_counts = WithoutForgotten(run.flush_swears(), self.forgotten)
@@ -1169,6 +1219,7 @@ class AnalyzeChat(commands.Cog):
                     (user_id for user_id in run.authors if user_id not in self.forgotten),
                     swear_counts,
                     run.scan_before if run.counts_swears else None,
+                    should_skip=lambda: self._guild_blocked(guild.id),
                 )
                 if not finished:
                     raise AnalysisCancelled
@@ -1199,15 +1250,20 @@ class AnalyzeChat(commands.Cog):
             self._finished(guild.id)
 
     @tracked
-    async def run_member(self, interaction: discord.Interaction, target: discord.Member) -> None:
+    async def run_member(self, interaction: discord.Interaction, target: discord.Member, *, reserved: bool = False) -> None:
         """Counts one member, trying message search first. When search isn't available it saves a run and hands over to the history crawl. With search nothing is written until it finishes."""
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
         members = {target.id}
         # Whether the results were already written, which decides what the error message says.
         saved = False
-        self.running_guilds.add(guild.id)
+        if not reserved and not self._reserve(guild.id):
+            await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
+            return
         try:
+            if self._guild_blocked(guild.id):
+                await status.show(create_v2_view("Analysis stopped", "This server's data was reset while the analysis was running, so it was cancelled.", color=NEUTRAL_COLOR))
+                return
             if target.id in self.bot.blacklisted:
                 # Banned after the command was run: nothing is read or saved for them.
                 await status.show(error_view(f"{target.mention} is banned from using WordCounter, so their messages aren't counted."))
@@ -1228,21 +1284,28 @@ class AnalyzeChat(commands.Cog):
                 async with self._live_status(status, render):
                     await self._search_member(guild, target.id, coverage, tally, scope, keywords, progress)
             except SearchUnavailable as reason:
+                if self._guild_blocked(guild.id):
+                    await status.show(create_v2_view("Analysis stopped", "This server's data was reset while the analysis was running, so it was cancelled.", color=NEUTRAL_COLOR))
+                    return
                 log.info("Search unavailable in guild %s (%s); reading channel history instead", guild.id, reason)
                 # Saving a run first lets the history crawl checkpoint and resume like a server run.
                 await self.bot.db.start_analysis_run(guild.id, "member", coverage.scan_before, *status.ids, members)
                 await self._run_crawl(guild, status)
                 return
 
-            if target.id in self.forgotten:
+            if target.id in self.forgotten or self._guild_blocked(guild.id):
                 await status.show(error_view(f"{target.mention}'s data was deleted while their messages were being counted, so nothing was saved."))
                 return
             # Both are read when the write has the database lock, so an ID forgotten while it waited is left out.
-            await self.bot.db.save_retroactive_results(
+            wrote = await self.bot.db.save_retroactive_results(
                 guild.id,
                 WithoutForgotten({target.id: tally.activity} if tally.messages else {}, self.forgotten),
                 (user_id for user_id in members if user_id not in self.forgotten),
+                should_skip=lambda: self._guild_blocked(guild.id),
             )
+            if not wrote:
+                await status.show(create_v2_view("Analysis stopped", "This server's data was reset while the analysis was running, so it was cancelled.", color=NEUTRAL_COLOR))
+                return
             saved = True
             await status.show(
                 self._summary_view(guild, "member", members, tally, int(bool(tally.messages)), keywords, progress)
@@ -1258,16 +1321,22 @@ class AnalyzeChat(commands.Cog):
             self._finished(guild.id)
 
     @tracked
-    async def run_server(self, interaction: discord.Interaction) -> None:
+    async def run_server(self, interaction: discord.Interaction, *, reserved: bool = False) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
-        self.running_guilds.add(guild.id)
+        if not reserved and not self._reserve(guild.id):
+            await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
+            return
         try:
+            if self._guild_blocked(guild.id):
+                return
             pending, _ = await self._pending_members(guild)
             if not pending:
                 await status.show(
                     create_v2_view("Nothing to do", "Every member here has already been analyzed.", color=NEUTRAL_COLOR)
                 )
+                return
+            if self._guild_blocked(guild.id):
                 return
             coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
             # The members to count are saved with the run, so a resume after a restart covers the same people.
@@ -1279,14 +1348,20 @@ class AnalyzeChat(commands.Cog):
             self._finished(guild.id)
 
     @tracked
-    async def run_swears(self, interaction: discord.Interaction) -> None:
+    async def run_swears(self, interaction: discord.Interaction, *, reserved: bool = False) -> None:
         guild = interaction.guild
         status = StatusMessage(interaction.message, interaction)
-        self.running_guilds.add(guild.id)
+        if not reserved and not self._reserve(guild.id):
+            await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
+            return
         try:
+            if self._guild_blocked(guild.id):
+                return
             coverage = LiveCoverage(
                 await self.bot.db.jar_coverage(guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
             )
+            if self._guild_blocked(guild.id):
+                return
             await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
             await self._run_crawl(guild, status)
         finally:
