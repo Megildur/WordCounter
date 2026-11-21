@@ -100,7 +100,7 @@ MESSAGES = {
     "words_restored": ("success", "The default word list is back."),
     "rules_saved": ("success", "Swear jar channels saved."),
     "roles_saved": ("success", "Roles saved."),
-    "role_problem": ("error", "WordCounter can't give that role out. It needs Manage Roles, and its own role has to be above the role you pick."),
+    "role_problem": ("error", "WordCounter can't give that role out. It needs Manage Roles, the role must be below both WordCounter's and your highest role without moderator permissions, and Potty Mouth must be a dedicated role."),
     "goal_saved": ("success", "Goal saved."),
     "bad_goal": ("error", "Give the goal a name and an amount above zero."),
     "need_mention_everyone": ("error", "WordCounter needs the Mention Everyone permission to ping @everyone."),

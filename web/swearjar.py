@@ -81,8 +81,16 @@ def word_lists(settings: Dict[str, Any], overrides: List[Override], tab: str) ->
     }
 
 
-def role_options(guild: discord.Guild) -> List[Dict[str, Any]]:
-    roles = sorted((role for role in guild.roles if role_problem(guild, role) is None), key=lambda role: -role.position)
+def role_options(
+    guild: discord.Guild,
+    member: Optional[discord.Member] = None,
+    *,
+    single_holder: bool = False,
+) -> List[Dict[str, Any]]:
+    roles = sorted(
+        (role for role in guild.roles if role_problem(guild, role, member, single_holder=single_holder) is None),
+        key=lambda role: -role.position,
+    )
     return [{"id": role.id, "label": f"@{role.name}"} for role in roles]
 
 
@@ -113,7 +121,7 @@ def goal_view(settings: Dict[str, Any], goal: Optional[Dict[str, Any]]) -> Optio
 
 @routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/swearjar")
 async def swearjar(request: web.Request) -> web.Response:
-    guild, _, can_manage = await member_access(request)
+    guild, member, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     db = request.app["bot"].db
@@ -133,7 +141,8 @@ async def swearjar(request: web.Request) -> web.Response:
         has_overrides=bool(overrides),
         rules=[{"id": cid, "label": channel_label(guild, cid), "rule": rule} for cid, rule in sorted(rules.items())],
         add_groups=channel_groups(guild, include_categories=True, exclude=tuple(rules)),
-        roles=role_options(guild),
+        potty_roles=role_options(guild, member, single_holder=True),
+        clean_roles=role_options(guild, member),
         goal=goal_view(settings, await db.jar_goal(guild.id)),
         goal_channels=goal_channels(guild),
         can_delete=bool(me and me.guild_permissions.manage_messages),
@@ -184,12 +193,12 @@ async def _words(db, guild: discord.Guild, action: str, form) -> str:
     return "words_skipped" if skipped else WORD_RESULTS[action]
 
 
-async def _roles(db, guild: discord.Guild, form) -> str:
+async def _roles(db, guild: discord.Guild, form, member: Optional[discord.Member] = None) -> str:
     updates: Dict[str, Optional[int]] = {}
     for column in ROLE_COLUMNS:
         role_id = whole_number(form.get(column))
         if role_id:
-            if role_problem(guild, guild.get_role(role_id)):
+            if role_problem(guild, guild.get_role(role_id), member, single_holder=(column == "potty_role_id")):
                 return "role_problem"
             updates[column] = role_id
         else:
@@ -221,7 +230,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
 
     The _fines, _words, _roles and _goal helpers each return their code. A form with a bad CSRF token changes nothing and gets "expired_form".
     """
-    guild, _, can_manage = await member_access(request)
+    guild, member, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
     db = request.app["bot"].db
@@ -269,7 +278,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
             await db.jar_update(guild.id, skip_age_restricted=int(not settings["skip_age_restricted"]))
             result = "rules_saved"
         elif action == "roles":
-            result = await _roles(db, guild, form)
+            result = await _roles(db, guild, form, member)
         elif action == "goal_set":
             result = await _goal(db, guild, settings, form)
         elif action == "goal_end":

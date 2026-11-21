@@ -41,6 +41,7 @@ from cogs.utils.jar import (
     CLEAN_ROLE_STREAK,
     DAY_SECONDS,
     JAR_OFF_MESSAGE,
+    POTTY_ROLE_MAX_HOLDERS,
     SPAM_LIMIT,
     SPAM_MULTIPLIER,
     SPAM_NOTE,
@@ -467,7 +468,7 @@ class JarSettingsView(SectionMenu):
                 "-# Goes to the member fined the most each week. It moves every Monday (UTC).\n"
                 f"**Clean streak:** {role_mention(s['clean_role_id'], 'Not set')}\n"
                 f"-# Given at a {CLEAN_ROLE_STREAK}-day clean streak and taken away when they swear.\n\n"
-                "WordCounter needs Manage Roles, and its own role has to be above these roles."
+                "WordCounter needs Manage Roles, and roles must be below both WordCounter's and your highest role with no moderator permissions."
             )
         )
         for name, column in (("Potty Mouth", "potty_role_id"), ("clean streak", "clean_role_id")):
@@ -739,7 +740,7 @@ class JarSettingsView(SectionMenu):
                 self._done("Role cleared.")
             else:
                 role = self.guild.get_role(ids[0])
-                problem = role_problem(self.guild, role)
+                problem = role_problem(self.guild, role, interaction.user, single_holder=(column == "potty_role_id"))
                 if problem:
                     self._done(problem, WARNING_COLOR)
                 else:
@@ -1176,11 +1177,21 @@ class SwearJar(commands.Cog):
         start = week_start(today)
         winner_id = await self.bot.db.jar_top_fined(guild.id, start - 7 * DAY_SECONDS, start)
         winner = guild.get_member(winner_id) if winner_id else None
+        remove = [member for member in role.members if winner is None or member.id != winner.id]
+        if len(remove) > POTTY_ROLE_MAX_HOLDERS:
+            log.warning(
+                "Skipping Potty Mouth rotation in guild %s: role %s has %s extra holders (limit %s)",
+                guild.id,
+                role.id,
+                len(remove),
+                POTTY_ROLE_MAX_HOLDERS,
+            )
+            return
         await self._set_role(
             guild,
             role.id,
             add=[winner] if winner else [],
-            remove=[member for member in role.members if winner is None or member.id != winner.id],
+            remove=remove,
         )
 
     async def _enabled_settings(self, interaction: discord.Interaction, deferred: Optional[bool] = None) -> Optional[Dict[str, Any]]:
