@@ -12,7 +12,7 @@ import re
 import time
 from collections import defaultdict
 from functools import lru_cache
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
 from pathlib import Path
 from cogs.utils import config
@@ -292,6 +292,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         self._config_kept: Dict[int, Tuple[float, Set[int], Set[int]]] = {}
         self._keywords_kept: Dict[int, Tuple[float, List[str]]] = {}
         self._kept_epoch = 0
+        # Reads of those in flight, per (what, server) with the epoch they began in: everyone who asks meanwhile waits for the same read (`_read_once`).
+        self._kept_reads: Dict[Tuple[str, int], Tuple[int, "asyncio.Future[Any]"]] = {}
         # The totals every status line and home page view asks for, which sum whole tables, and the lock that makes callers share one read.
         self._totals_kept: Optional[Tuple[float, Tuple[int, int]]] = None
         self._totals_lock = asyncio.Lock()
@@ -468,12 +470,35 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             row = await cursor.fetchone()
         return periods, resets, row is not None, row[0] if row else None
 
+    async def _read_once(self, what: str, guild_id: int, load: Callable[[int], Awaitable[Any]]) -> Any:
+        """Runs `load(epoch)` once for everyone who asks for `what` of a server while it runs. Without this, every message that arrives while an expired value is read again starts a read of its own, each waiting for the database lock. A caller joins a read only when nothing was committed since it began (the same epoch), so nobody gets rows from before a change they could already see, and a caller that is cancelled doesn't cancel the read for the others."""
+        epoch = self._kept_epoch
+        key = (what, guild_id)
+        flight = self._kept_reads.get(key)
+        if flight is None or flight[0] != epoch:
+            task = asyncio.ensure_future(load(epoch))
+            flight = (epoch, task)
+            self._kept_reads[key] = flight
+
+            def done(finished: "asyncio.Future[Any]", key: Tuple[str, int] = key, flight: Tuple[int, "asyncio.Future[Any]"] = flight) -> None:
+                if self._kept_reads.get(key) is flight:
+                    del self._kept_reads[key]
+                # Fetched here so an error that every caller stopped waiting for isn't reported as never retrieved.
+                if not finished.cancelled():
+                    finished.exception()
+
+            task.add_done_callback(done)
+        return await asyncio.shield(flight[1])
+
     async def get_guild_tracking_config(self, guild_id: int) -> Tuple[Set[int], Set[int]]:
-        """Returns (watched IDs, ignored IDs), as copies. Either set can hold categories as well as channels, and 1 in the watched set means the entire server. Every message asks, so the answer is kept for KEPT_SECONDS and dropped when a change to the tables is committed."""
+        """Returns (watched IDs, ignored IDs), as copies. Either set can hold categories as well as channels, and 1 in the watched set means the entire server. Every message asks, so the answer is kept for KEPT_SECONDS and dropped when a change to the tables is committed, and callers that ask while it is read again share that read."""
         kept = self._config_kept.get(guild_id)
         if kept is not None and time.monotonic() - kept[0] < KEPT_SECONDS:
             return set(kept[1]), set(kept[2])
-        epoch = self._kept_epoch
+        watched_ids, ignored_ids = await self._read_once("config", guild_id, lambda epoch: self._read_tracking_config(guild_id, epoch))
+        return set(watched_ids), set(ignored_ids)
+
+    async def _read_tracking_config(self, guild_id: int, epoch: int) -> Tuple[Set[int], Set[int]]:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,))
@@ -1052,11 +1077,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             return messages, words
 
     async def get_keywords(self, guild_id: int) -> List[str]:
-        """Returns the server's keywords, sorted, as a copy. Every message asks, so they are kept like the tracking settings are."""
+        """Returns the server's keywords, sorted, as a copy. Every message asks, so they are kept, and read again once, like the tracking settings are."""
         kept = self._keywords_kept.get(guild_id)
         if kept is not None and time.monotonic() - kept[0] < KEPT_SECONDS:
             return list(kept[1])
-        epoch = self._kept_epoch
+        return list(await self._read_once("keywords", guild_id, lambda epoch: self._read_keywords(guild_id, epoch)))
+
+    async def _read_keywords(self, guild_id: int, epoch: int) -> List[str]:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT keyword FROM keyword WHERE guild_id = ? ORDER BY keyword ASC", (guild_id,))

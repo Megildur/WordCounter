@@ -863,6 +863,8 @@ class SwearJar(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.states: Dict[int, JarState] = {}
+        # A state being built, per server: every message that arrives meanwhile waits for it instead of building its own (`state`).
+        self._building: Dict[int, "asyncio.Future[JarState]"] = {}
         # Times of each member's recent fined messages, for the spam rule. In memory only.
         self.recent: Dict[Tuple[int, int], Deque[float]] = defaultdict(deque)
         # When each member's doubled fines end. In memory only, so a restart clears it: the spam rule reads this, and jar_members.spam_until is a copy for the wallet display.
@@ -903,6 +905,8 @@ class SwearJar(commands.Cog):
     def invalidate(self, guild_id: int) -> None:
         """Drops a server's cached state so the next message rebuilds it from the database. Called after settings change, including from the dashboard."""
         self.states.pop(guild_id, None)
+        # A build that began before the change mustn't be kept or shared: the next message starts a new one.
+        self._building.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
         """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts are dropped instead of saved later. A flush that has already taken its counts and is waiting for the database lock can still write them after the delete."""
@@ -933,11 +937,29 @@ class SwearJar(commands.Cog):
         return guild_id in self._forgotten or user_id in self._forgotten or (guild_id, user_id) in self._forgotten_pairs
 
     async def state(self, guild_id: int) -> JarState:
-        """Returns the server's JarState, reused for STATE_TTL seconds. With the jar off the state has no matcher, which tells the listeners to stop early."""
+        """Returns the server's JarState, reused for STATE_TTL seconds and built once for every message that asks while it is built. With the jar off the state has no matcher, which tells the listeners to stop early."""
         state = self.states.get(guild_id)
         if state is not None and time.monotonic() - state.loaded_at < STATE_TTL:
             return state
+        building = self._building.get(guild_id)
+        if building is None:
+            building = asyncio.ensure_future(self._build_state(guild_id))
+            self._building[guild_id] = building
+
+            def done(finished: "asyncio.Future[JarState]", guild_id: int = guild_id, building: "asyncio.Future[JarState]" = building) -> None:
+                if self._building.get(guild_id) is building:
+                    del self._building[guild_id]
+                # Fetched here so an error that every message stopped waiting for isn't reported as never retrieved.
+                if not finished.cancelled():
+                    finished.exception()
+
+            building.add_done_callback(done)
+        # A message that is cancelled doesn't cancel the build for the others.
+        return await asyncio.shield(building)
+
+    async def _build_state(self, guild_id: int) -> JarState:
         db = self.bot.db
+        building = self._building.get(guild_id)
         settings = await db.jar_settings(guild_id)
         if not settings["enabled"]:
             state = JarState(settings)
@@ -955,7 +977,9 @@ class SwearJar(commands.Cog):
                 ignored,
                 min(live) if live else 0,
             )
-        self.states[guild_id] = state
+        # Not kept when the settings changed while it was built (`invalidate` dropped the build): it is still the answer for the messages that waited, as it was before.
+        if self._building.get(guild_id) is building:
+            self.states[guild_id] = state
         return state
 
     def _checks(self, guild: discord.Guild, channel: Any, state: JarState) -> Tuple[bool, int]:
