@@ -754,7 +754,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], _error_summary(error))
 
     async def _write_activity(self, session, taken: Taken) -> None:
-        """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk. Any other row gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
         increments: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
         monthly_rows: List[Tuple[Any, ...]] = []
         in_order: List[Tuple[str, Tuple[Any, ...], List[Any]]] = []
@@ -766,6 +766,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             elif all(change > 0 for change in changes):
                 increments[table].append((*key, sum(changes)))
                 continue
+            # Only subtractions (a burst of deletions hits the same rows): each stops at zero, and so does their sum, since max(0, max(0, x - a) - b) is max(0, x - a - b), so one decrement and prune does what applying them one by one did.
+            if table == MONTHLY_TABLE:
+                if all(max(change) <= 0 for change in changes):
+                    changes = [tuple(sum(column) for column in zip(*changes))]
+            elif all(change <= 0 for change in changes):
+                changes = [sum(changes)]
             in_order.append((table, key, changes))
         # executemany only fills the VALUES list, which is why both of these add with VALUES(col) in their UPDATE part.
         for table, rows in increments.items():
