@@ -189,7 +189,7 @@ def managed_servers(raw: Any) -> Optional[List[Dict[str, Any]]]:
         if not (entry.get("owner") is True or permissions & (MANAGE_GUILD | ADMINISTRATOR)):
             continue
         icon = entry.get("icon")
-        icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{icon}.png?size=96" if isinstance(icon, str) and ICON_HASH.fullmatch(icon) else None
+        icon_url = f"https://cdn.discordapp.com/icons/{guild_id}/{icon}.png?size=128" if isinstance(icon, str) and ICON_HASH.fullmatch(icon) else None
         name = entry.get("name")
         servers.append({"id": guild_id, "name": name.strip()[:100] if isinstance(name, str) and name.strip() else "Unnamed server", "icon_url": icon_url})
     servers.sort(key=lambda server: server["name"].lower())
