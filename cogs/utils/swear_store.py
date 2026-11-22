@@ -65,7 +65,7 @@ JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
         PRIMARY KEY (guild_id, user_id, day))""",
     """CREATE TABLE IF NOT EXISTS jar_fines (
         message_id BIGINT PRIMARY KEY, guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
-        channel_id BIGINT NOT NULL, swears BIGINT NOT NULL, amount BIGINT NOT NULL, fined_at DOUBLE NOT NULL,
+        channel_id BIGINT NOT NULL, swears BIGINT NOT NULL, amount BIGINT NOT NULL, fined_at DOUBLE NOT NULL, units BIGINT NULL,
         INDEX idx_jar_fines_guild (guild_id, fined_at))""",
     """CREATE TABLE IF NOT EXISTS jar_goals (
         guild_id BIGINT PRIMARY KEY, label VARCHAR(255) NOT NULL, target BIGINT NOT NULL, channel_id BIGINT,
@@ -303,25 +303,27 @@ class SwearJarQueries:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute(
-                "SELECT swears, amount FROM jar_fines WHERE message_id = ?",
+                "SELECT swears, amount, units FROM jar_fines WHERE message_id = ?",
                 (message_id,),
             )
             existing = await cursor.fetchone()
             prev_swears, prev_amount = (existing[0], existing[1]) if existing else (0, 0)
+            # `amount` is what was charged, doubled during a spam penalty, so an edit is measured against the fine before doubling (`units`). A row from before that column has only `amount`.
+            prev_units = existing[2] if existing and existing[2] is not None else prev_amount
             delta_swears = max(0, swears - prev_swears)
-            raw_delta = max(0, amount - prev_amount)
+            raw_delta = max(0, amount - prev_units)
             if raw_delta <= 0:
                 return None, None, 0, False
             spam, spam_until = on_fine(now) if on_fine is not None else (False, 0.0)
             delta_amount = raw_delta * (spam_multiplier if spam else 1)
             total_swears = prev_swears + delta_swears
             total_amount = prev_amount + delta_amount
-            # On an edit only swears and amount change. fined_at keeps the time of the first fine, which the weekly totals use.
+            # On an edit only swears, amount and units change. fined_at keeps the time of the first fine, which the weekly totals use.
             await self.db.execute(
-                """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, fined_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE swears = VALUES(swears), amount = VALUES(amount)""",
-                (message_id, guild_id, user_id, channel_id, total_swears, total_amount, now),
+                """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, units, fined_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE swears = VALUES(swears), amount = VALUES(amount), units = VALUES(units)""",
+                (message_id, guild_id, user_id, channel_id, total_swears, total_amount, amount, now),
             )
             # A new member starts at minus the fine and an existing one loses it. Either way the streak goes to zero (best_streak stays) and spam_until only moves forward.
             await self.db.execute(
