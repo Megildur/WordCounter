@@ -267,6 +267,7 @@ ADDED_COLUMNS = (
     ("jar_settings", "english", "INT NOT NULL DEFAULT 1"),
     ("jar_settings", "polish", "INT NOT NULL DEFAULT 0"),
     ("analyzed_users", "analyzed_at", "BIGINT NULL"),
+    ("jar_fines", "units", "BIGINT NULL"),
 )
 
 
