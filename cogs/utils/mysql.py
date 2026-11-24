@@ -91,8 +91,11 @@ class Session:
         self.first_sql: Optional[str] = None
         # True once the block has written to a table whose rows the database layer keeps in memory.
         self.touches_kept = False
+        # How many statements went to the server, each at least one round trip, so a slow block's warning can tell many trips from one slow one.
+        self.statements = 0
 
     def _note(self, sql: str) -> None:
+        self.statements += 1
         cleaned = _LEADING_COMMENTS.sub("", sql)
         if self.first_sql is None:
             self.first_sql = " ".join(cleaned.split())[:80]
@@ -144,6 +147,8 @@ class SessionLock:
         self._last_connection: Optional[aiomysql.Connection] = None
         self._last_used = float("-inf")
         self._needs_ping = True
+        self._ping_took = self._flush_took = 0.0
+        self._flush_statements = 0
 
     async def __aenter__(self) -> Session:
         current = asyncio.current_task()
@@ -160,15 +165,26 @@ class SessionLock:
                 await self.owner.connect_pool()
             self._pool = self.owner.pool
             self.connection = await self._pool.acquire()
+            # Where the time before the block went, for the warning about a lock held too long: a ping is one round trip to the server.
+            self._ping_took = self._flush_took = 0.0
+            self._flush_statements = 0
             # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again.
             if self._needs_ping or self.connection is not self._last_connection or self._held_since - self._last_used > PING_IDLE_SECONDS:
                 self._needs_ping = True
+                started = time.monotonic()
                 await self.connection.ping(reconnect=True)
+                self._ping_took = time.monotonic() - started
                 self._needs_ping = False
             # Counts that were waiting in memory go in first, in their own transaction (see activity_buffer.py).
             flush = getattr(self.owner, "flush_before_block", None)
             if flush is not None:
-                await flush(Session(self.connection))
+                flushing = Session(self.connection)
+                started = time.monotonic()
+                try:
+                    await flush(flushing)
+                finally:
+                    self._flush_took = time.monotonic() - started
+                    self._flush_statements = flushing.statements
         except BaseException:
             # Also covers a cancelled task, and counts that couldn't be written. Give the lock back or every later caller waits forever.
             self._needs_ping = True
@@ -183,7 +199,10 @@ class SessionLock:
         try:
             if held > LOCK_SLOW_SECONDS:
                 began = getattr(self.owner.db, "first_sql", None)
-                _warn("The database lock was held for %.1f s by a block that began with: %s", held, began or "no statement")
+                _warn(
+                    "The database lock was held for %.1f s by a block that began with: %s (ping %.2f s; waiting counts %.2f s in %d statements; the block's own %d statements)",
+                    held, began or "no statement", self._ping_took, self._flush_took, self._flush_statements, getattr(self.owner.db, "statements", 0),
+                )
             if kind is not None and issubclass(kind, BROKEN_CONNECTION):
                 # The next block checks the connection before trusting it.
                 self._needs_ping = True
