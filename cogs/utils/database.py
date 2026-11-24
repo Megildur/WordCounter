@@ -15,7 +15,7 @@ from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
 from pathlib import Path
-from cogs.utils import config
+from cogs.utils import config, sql_batch
 from cogs.utils.activity_buffer import ActivityBuffer, Taken
 from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
@@ -274,6 +274,19 @@ ADDED_COLUMNS = (
 class NotMigrated(RuntimeError):
     """Raised at start-up when copying the old SQLite file into MySQL didn't finish. main.py exits with its message."""
     pass
+
+
+class _Planned:
+    """Stands in for a session while a batch is planned: each statement is kept in order, an executemany as one multi-row statement where it can be, to be sent together (`Session.run_many`)."""
+
+    def __init__(self) -> None:
+        self.statements: List[Tuple[str, Tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
+        self.statements.append((sql, tuple(params)))
+
+    async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> None:
+        self.statements.extend(sql_batch.many_rows(sql, list(rows), mark="?"))
 
 
 class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries, StatsPanelQueries):
@@ -779,7 +792,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], _error_summary(error))
 
     async def _write_activity(self, session, taken: Taken) -> None:
-        """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        """Writes a batch, every statement of it in one round trip (`Session.run_many`). A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        plan = _Planned()
+        await self._plan_activity(plan, taken)
+        await session.run_many(plan.statements)
+
+    async def _plan_activity(self, session, taken: Taken) -> None:
+        """The statements of `_write_activity`, given to `session` in the order they run."""
         increments: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
         monthly_rows: List[Tuple[Any, ...]] = []
         in_order: List[Tuple[str, Tuple[Any, ...], List[Any]]] = []
