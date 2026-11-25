@@ -809,10 +809,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def _write_activity(self, session, taken: Taken) -> None:
         """Writes a batch, every statement of it in one round trip (`Session.run_many`). A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
         plan = _Planned()
-        await self._plan_activity(plan, taken)
+        await self._plan_batch(plan, taken)
         await session.run_many(plan.statements)
 
-    async def _plan_activity(self, session, taken: Taken) -> None:
+    async def _plan_batch(self, session, taken: Taken) -> None:
         """The statements of `_write_activity`, given to `session` in the order they run."""
         increments: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
         monthly_rows: List[Tuple[Any, ...]] = []
