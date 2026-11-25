@@ -127,7 +127,7 @@ class Session:
     async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> Optional[Cursor]:
         """Runs one statement for many rows and returns None when there are no rows.
 
-        An `INSERT ... VALUES (...)` becomes one multi-row statement, as aiomysql's executemany makes it, and fills in only the VALUES list. A `?` anywhere else, such as in `ON DUPLICATE KEY UPDATE`, gets no value, so bulk upserts write `VALUES(col)` there.
+        An `INSERT ... VALUES (...)` becomes multi-row statements, as aiomysql's executemany makes it, and fills in only the VALUES list; a big one is cut into several so none passes the server's packet limit (sql_batch.MAX_BYTES). A `?` anywhere else, such as in `ON DUPLICATE KEY UPDATE`, gets no value, so bulk upserts write `VALUES(col)` there. Anything else is one statement a row. Several statements go through run_many, one round trip for each MAX_BYTES of them; the cursor returned is the last statement's.
         """
         rows = [tuple(row) for row in rows]
         if not rows:
@@ -141,24 +141,22 @@ class Session:
             if begin:
                 await cursor.nextset()
             return Cursor(cursor)
-        if begin:
-            await self.run_many([("START TRANSACTION", ())])
-        self.trips += 1
+        batch = ([("START TRANSACTION", ())] if begin else []) + statements
         cursor = await self.connection.cursor()
-        await cursor.executemany(mysql_sql(sql), rows)
+        self.trips += (await sql_batch.run_many(cursor, batch)).queries
         return Cursor(cursor)
 
     async def run_many(self, statements: Sequence[Tuple[str, Sequence[Any]]]) -> List[sql_batch.Outcome]:
-        """Runs `statements` (with `?` placeholders) in one round trip, opening the block's transaction in it if one of them needs it, and returns each one's outcome (rows as they come from the driver)."""
+        """Runs `statements` (with `?` placeholders) in one round trip (more only past sql_batch.MAX_BYTES), opening the block's transaction in it if one of them needs it, and returns each one's outcome (rows as they come from the driver)."""
         statements = [(sql, tuple(params)) for sql, params in statements]
         if not statements:
             return []
         needs = [self._note(sql) for sql, _ in statements]
         begin = self._beginning(any(needs))
         batch = ([("START TRANSACTION", ())] if begin else []) + [(mysql_sql(sql), params) for sql, params in statements]
-        self.trips += 1
         cursor = await self.connection.cursor()
         outcomes = await sql_batch.run_many(cursor, batch)
+        self.trips += outcomes.queries
         return outcomes[1:] if begin else outcomes
 
     async def commit(self) -> None:
