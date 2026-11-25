@@ -15,7 +15,8 @@ from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
 from pathlib import Path
-from cogs.utils import config
+from cogs.utils import config, sql_batch
+from cogs.utils.keep_warm import keep_warm
 from cogs.utils.activity_buffer import ActivityBuffer, Taken
 from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
@@ -276,6 +277,19 @@ class NotMigrated(RuntimeError):
     pass
 
 
+class _Planned:
+    """Stands in for a session while a batch is planned: each statement is kept in order, an executemany as one multi-row statement where it can be, to be sent together (`Session.run_many`)."""
+
+    def __init__(self) -> None:
+        self.statements: List[Tuple[str, Tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
+        self.statements.append((sql, tuple(params)))
+
+    async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> None:
+        self.statements.extend(sql_batch.many_rows(sql, list(rows), mark="?"))
+
+
 class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries, StatsPanelQueries):
     """The bot's database, available as `bot.db`.
 
@@ -301,6 +315,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         self._activity = ActivityBuffer(ACTIVITY_KEY_NAMES)
         self._flusher: Optional[asyncio.Task] = None
         self._activity_logged = float("-inf")
+        # Pings the connection while the bot is quiet, so the host never closes it (keep_warm.py).
+        self._keeper: Optional[asyncio.Task] = None
         # Website sessions found alive or missing a moment ago (see web_sessions.py).
         self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
         self._web_epoch = 0
@@ -309,6 +325,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def connect_pool(self) -> None:
         if self.pool is None:
             self.pool = await create_pool()
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.get_running_loop().create_task(keep_warm(self.db_lock))
 
     async def connect(self) -> None:
         await self.connect_pool()
@@ -320,6 +338,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             await self.connect()
 
     async def close(self) -> None:
+        keeper, self._keeper = self._keeper, None
+        if keeper is not None:
+            keeper.cancel()
+            await asyncio.gather(keeper, return_exceptions=True)
         flusher, self._flusher = self._flusher, None
         if flusher is not None:
             flusher.cancel()
@@ -452,22 +474,26 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         """Returns the server's tracking periods as (started, ended) and its reset markers as {(user_id, channel_id): reset_at}, with 0 meaning all users or all channels. The analysis skips messages inside a period unless a reset marker says their counts were wiped."""
         await self.ensure_connected()
         async with self.db_lock:
-            cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
-            periods = [(row[0], row[1]) for row in await cursor.fetchall()]
-            cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
-            resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
+            period_rows, reset_rows = await self.db.run_many([
+                ("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,)),
+                ("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,)),
+            ])
+        periods = [(row[0], row[1]) for row in period_rows.rows]
+        resets = {(row[0], row[1]): row[2] for row in reset_rows.rows}
         return periods, resets
 
     async def get_member_coverage(self, guild_id: int, user_id: int) -> Tuple[List[Tuple[int, Optional[int]]], Dict[Tuple[int, int], int], bool, Optional[int]]:
         """Returns what decides whether one member's old message was ever counted: the server's tracking periods and reset markers (as `get_count_history`), whether the member was analyzed, and when (None for a member analyzed before the time was kept). One lock hold, so an edit or delete asks once."""
         await self.ensure_connected()
         async with self.db_lock:
-            cursor = await self.db.execute("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,))
-            periods = [(row[0], row[1]) for row in await cursor.fetchall()]
-            cursor = await self.db.execute("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,))
-            resets = {(row[0], row[1]): row[2] for row in await cursor.fetchall()}
-            cursor = await self.db.execute("SELECT analyzed_at FROM analyzed_users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-            row = await cursor.fetchone()
+            period_rows, reset_rows, analyzed = await self.db.run_many([
+                ("SELECT started, ended FROM tracking_periods WHERE guild_id = ?", (guild_id,)),
+                ("SELECT user_id, channel_id, reset_at FROM count_resets WHERE guild_id = ?", (guild_id,)),
+                ("SELECT analyzed_at FROM analyzed_users WHERE user_id = ? AND guild_id = ?", (user_id, guild_id)),
+            ])
+        periods = [(row[0], row[1]) for row in period_rows.rows]
+        resets = {(row[0], row[1]): row[2] for row in reset_rows.rows}
+        row = analyzed.rows[0] if analyzed.rows else None
         return periods, resets, row is not None, row[0] if row else None
 
     async def _read_once(self, what: str, guild_id: int, load: Callable[[int], Awaitable[Any]]) -> Any:
@@ -501,10 +527,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def _read_tracking_config(self, guild_id: int, epoch: int) -> Tuple[Set[int], Set[int]]:
         await self.ensure_connected()
         async with self.db_lock:
-            cursor = await self.db.execute("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,))
-            watched_ids = {row[0] for row in await cursor.fetchall()}
-            cursor = await self.db.execute("SELECT channel_id FROM `ignore` WHERE guild_id = ?", (guild_id,))
-            ignored_ids = {row[0] for row in await cursor.fetchall()}
+            watched, ignored = await self.db.run_many([
+                ("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,)),
+                ("SELECT channel_id FROM `ignore` WHERE guild_id = ?", (guild_id,)),
+            ])
+        watched_ids = {row[0] for row in watched.rows}
+        ignored_ids = {row[0] for row in ignored.rows}
         # Only kept when nothing was committed to these tables since the read began.
         if epoch == self._kept_epoch:
             self._config_kept[guild_id] = (time.monotonic(), set(watched_ids), set(ignored_ids))
@@ -779,7 +807,13 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 log.warning("Waiting counts for one row of %s were refused by the database and dropped: %s", key[0], _error_summary(error))
 
     async def _write_activity(self, session, taken: Taken) -> None:
-        """Writes a batch. A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        """Writes a batch, every statement of it in one round trip (`Session.run_many`). A row whose changes are all additions gets one summed upsert, in bulk, and one whose changes are all subtractions gets one summed decrement. A row with both gets its changes applied one by one in the order they arrived, which is what writing each message on its own did."""
+        plan = _Planned()
+        await self._plan_activity(plan, taken)
+        await session.run_many(plan.statements)
+
+    async def _plan_activity(self, session, taken: Taken) -> None:
+        """The statements of `_write_activity`, given to `session` in the order they run."""
         increments: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
         monthly_rows: List[Tuple[Any, ...]] = []
         in_order: List[Tuple[str, Tuple[Any, ...], List[Any]]] = []
@@ -908,20 +942,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         """Returns the saved run for a server, or None. It has kind, cutoff, status_channel_id, status_message_id, started_at, messages_read and `totals` (still the raw JSON string), plus `members` (a set of user IDs) and `channels` ({channel_id: (before_id, status)})."""
         await self.ensure_connected()
         async with self.db_lock:
-            cursor = await self.db.execute(
-                """SELECT kind, cutoff, status_channel_id, status_message_id, started_at, messages_read, totals
-                FROM analysis_runs WHERE guild_id = ?""",
-                (guild_id,),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            cursor = await self.db.execute("SELECT user_id FROM analysis_run_members WHERE guild_id = ?", (guild_id,))
-            members = {r[0] for r in await cursor.fetchall()}
-            cursor = await self.db.execute(
-                "SELECT channel_id, before_id, status FROM analysis_run_channels WHERE guild_id = ?", (guild_id,)
-            )
-            channels = {r[0]: (r[1], r[2]) for r in await cursor.fetchall()}
+            # The run and its members and channels in one round trip (the last two are empty when there is no run).
+            run, member_rows, channel_rows = await self.db.run_many([
+                ("""SELECT kind, cutoff, status_channel_id, status_message_id, started_at, messages_read, totals
+                FROM analysis_runs WHERE guild_id = ?""", (guild_id,)),
+                ("SELECT user_id FROM analysis_run_members WHERE guild_id = ?", (guild_id,)),
+                ("SELECT channel_id, before_id, status FROM analysis_run_channels WHERE guild_id = ?", (guild_id,)),
+            ])
+        if not run.rows:
+            return None
+        row = run.rows[0]
+        members = {r[0] for r in member_rows.rows}
+        channels = {r[0]: (r[1], r[2]) for r in channel_rows.rows}
         keys = ("kind", "cutoff", "status_channel_id", "status_message_id", "started_at", "messages_read", "totals")
         return {**dict(zip(keys, row)), "members": members, "channels": channels}
 
@@ -1239,25 +1271,20 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         """Returns one dict per month that has stats, newest first. Each has year, month, words, messages, attachments, emojis, `keywords` ({keyword: count}) and `channels` ({channel_id: the same counts and keywords}). Keyword rows for a month with no stats row are dropped."""
         await self.ensure_connected()
         async with self.db_lock:
-            cursor = await self.db.execute(
-                """
+            stats, keywords = await self.db.run_many([
+                ("""
                 SELECT year, month, channel_id, words, messages, attachments, emojis
                 FROM monthly_user_stats
                 WHERE guild_id = ? AND user_id = ?
                 ORDER BY year DESC, month DESC, words DESC
-                """,
-                (guild_id, user_id),
-            )
-            stat_rows = await cursor.fetchall()
-            cursor = await self.db.execute(
-                """
+                """, (guild_id, user_id)),
+                ("""
                 SELECT year, month, channel_id, keyword, count
                 FROM monthly_user_keywords
                 WHERE guild_id = ? AND user_id = ? AND count > 0
-                """,
-                (guild_id, user_id),
-            )
-            keyword_rows = await cursor.fetchall()
+                """, (guild_id, user_id)),
+            ])
+        stat_rows, keyword_rows = stats.rows, keywords.rows
 
         months: Dict[Tuple[int, int], Dict[str, Any]] = {}
         for year, month, channel_id, words, messages, attachments, emojis in stat_rows:
