@@ -202,6 +202,19 @@ class StoredDataQueries:
         tables: List[Table] = []
         async with self.db_lock:
             id_columns = await self._id_columns()
+            counted: Dict[str, Any] = {}
+            if not rows:
+                # One query per table counts the rows and says which columns held the id (the COUNTs come first in the SELECT, so their placeholders take the first values); every table's goes in one round trip.
+                names = list(id_columns)
+                outcomes = await self.db.run_many([
+                    (
+                        f"SELECT COUNT(*){''.join(f', COUNT(CASE WHEN `{column}` = ? THEN 1 END)' for column in id_columns[name])} FROM `{name}` "
+                        f"WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
+                        (target_id,) * (2 * len(id_columns[name])),
+                    )
+                    for name in names
+                ])
+                counted = {name: outcome.rows[0] for name, outcome in zip(names, outcomes)}
             for name, columns in id_columns.items():
                 # Names come from information_schema, not from user input. A row matches when any of the table's id columns holds the id.
                 where = " OR ".join(f"`{column}` = ?" for column in columns)
@@ -213,10 +226,7 @@ class StoredDataQueries:
                         matched = [column for column in columns if any(row[names.index(column)] == target_id for row in found)]
                         tables.append(Table(name, len(found), matched, columns=names, rows=found))
                     continue
-                # One query counts the rows and says which columns held the id: the COUNTs come first in the SELECT, so their placeholders take the first values.
-                picks = "".join(f", COUNT(CASE WHEN `{column}` = ? THEN 1 END)" for column in columns)
-                cursor = await self.db.execute(f"SELECT COUNT(*){picks} FROM `{name}` WHERE {where}", (target_id,) * (2 * len(columns)))
-                total, *per_column = await cursor.fetchone()
+                total, *per_column = counted[name]
                 if total:
                     tables.append(Table(name, int(total), [column for column, n in zip(columns, per_column) if n]))
             for entry in ID_LISTS:
