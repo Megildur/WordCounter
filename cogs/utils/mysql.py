@@ -18,7 +18,7 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import aiomysql
 import pymysql
 from pymysql.constants import CLIENT
-from cogs.utils import config, sql_batch
+from cogs.utils import config, keep_warm, sql_batch
 
 # aiomysql raises pymysql's errors, so this catches any MySQL failure.
 DatabaseError = pymysql.err.MySQLError
@@ -279,6 +279,7 @@ class SessionLock:
             connection = await pool.acquire()
             try:
                 await connection.ping(reconnect=False)
+                keep_warm.fresh(connection)
             except Exception:
                 connection.close()
                 self._needs_ping = True
