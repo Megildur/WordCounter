@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Opti
 import logging
 from pathlib import Path
 from cogs.utils import config, sql_batch
+from cogs.utils.keep_warm import keep_warm
 from cogs.utils.activity_buffer import ActivityBuffer, Taken
 from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, SessionLock, create_pool
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
@@ -314,6 +315,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         self._activity = ActivityBuffer(ACTIVITY_KEY_NAMES)
         self._flusher: Optional[asyncio.Task] = None
         self._activity_logged = float("-inf")
+        # Pings the connection while the bot is quiet, so the host never closes it (keep_warm.py).
+        self._keeper: Optional[asyncio.Task] = None
         # Website sessions found alive or missing a moment ago (see web_sessions.py).
         self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
         self._web_epoch = 0
@@ -322,6 +325,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def connect_pool(self) -> None:
         if self.pool is None:
             self.pool = await create_pool()
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.get_running_loop().create_task(keep_warm(self.db_lock))
 
     async def connect(self) -> None:
         await self.connect_pool()
@@ -333,6 +338,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             await self.connect()
 
     async def close(self) -> None:
+        keeper, self._keeper = self._keeper, None
+        if keeper is not None:
+            keeper.cancel()
+            await asyncio.gather(keeper, return_exceptions=True)
         flusher, self._flusher = self._flusher, None
         if flusher is not None:
             flusher.cancel()

@@ -270,6 +270,24 @@ class SessionLock:
             finally:
                 await self._release()
 
+    async def ping_idle(self, idle: float) -> bool:
+        """Pings the connection when nobody holds the lock and it has sat unused for `idle` seconds, and returns whether it answered (keep_warm.py calls it). It never waits for the lock: a block holding it is using the connection anyway. One that doesn't answer is closed, so the next block gets a fresh one."""
+        pool = self.owner.pool
+        if pool is None or self.lock.locked() or time.monotonic() - self._last_used < idle:
+            return False
+        async with self.lock:
+            connection = await pool.acquire()
+            try:
+                await connection.ping(reconnect=False)
+            except Exception:
+                connection.close()
+                self._needs_ping = True
+                return False
+            finally:
+                pool.release(connection)
+            self._last_connection, self._last_used, self._needs_ping = connection, time.monotonic(), False
+            return True
+
     async def _release(self) -> None:
         connection, self.connection = self.connection, None
         self.owner.db = None
