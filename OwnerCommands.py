@@ -184,7 +184,7 @@ class DataConfirmView(AuthorOnlyView):
             self.bot.blacklisted.add(self.target.id)
         # Counts that are only in memory, waiting for the next batch, can't be reached by the database delete, so they are dropped first.
         self.bot.db.forget_activity(self.target.id)
-        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID, before the delete and again after it: a day-count write that was already waiting for the database lock then finds the ID refused whenever it runs.
+        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID, before the delete and again after it: a day-count write that starts after the first call leaves the ID out, one already waiting for the database lock is ahead of the delete, which removes what it wrote, and the second call drops counts that came in meanwhile.
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)

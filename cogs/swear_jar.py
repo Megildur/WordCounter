@@ -959,12 +959,12 @@ class SwearJar(commands.Cog):
         self._building.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
-        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts are dropped instead of saved later. A flush that has already taken its counts and is waiting for the database lock can still write them after the delete."""
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. Every reset and the owner data commands call it before their delete and again after: a flush that takes its counts after the first call leaves the ID out, one that took them earlier is already queued for the database lock ahead of the delete (`_write` reads its rows and queues with no await in between), and the second call drops counts that came in while the delete waited. A caller that only forgot after its delete would let a flush that started meanwhile write the counts back."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
                 del store[key]
-        # For the next FORGET_SECONDS this ID's day counts are refused, including a flush that has taken its counts and is waiting for the database lock, which checks again when it gets it.
+        # For the next FORGET_SECONDS this ID's day counts are refused by any flush that takes its counts in that time, and by a failed flush putting its counts back.
         self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
 
     def forget_member(self, guild_id: int, user_id: int) -> None:
@@ -1207,7 +1207,7 @@ class SwearJar(commands.Cog):
         # Swap in a new dict before the write, so messages that arrive during it are counted in the new one.
         counts, self.day_counts = self.day_counts, defaultdict(int)
         try:
-            # The rows are read when the write has the database lock, so an ID forgotten while it waited is left out.
+            # The rows are read as the write starts, and `_write` queues for the database lock with no await in between, so an ID forgotten before this is left out and a reset that forgets it afterwards deletes after this write.
             await self.bot.db.jar_add_day_messages(
                 (guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items() if not self._is_forgotten(guild_id, user_id)
             )
