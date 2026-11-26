@@ -5,11 +5,12 @@ Draws the leaderboard podium, the /stats card, the swear jar card and the live s
 
 from __future__ import annotations
 import asyncio
+from collections import OrderedDict
 import io
 import logging
 import math
 import re
-from functools import lru_cache
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 import discord
@@ -57,16 +58,32 @@ LIVE_GREEN = (34, 197, 94)
 
 # Whether the font has a glyph for a character, per (bold, character). Stops growing at 5000 entries.
 _glyphs: Dict[Tuple[bool, str], bool] = {}
+_glyph_lock = threading.Lock()
+# FreeType faces hold mutable per-glyph C state and are not safe to share across worker threads, so each thread keeps its own bounded font cache and missing-glyph reference.
+_thread_fonts = threading.local()
+_FONT_CACHE_SIZE = 32
 
 
-@lru_cache(maxsize=32)
 def font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
+    cache: "OrderedDict[Tuple[bool, int], ImageFont.FreeTypeFont]" = getattr(_thread_fonts, "fonts", None)
+    if cache is None:
+        cache = OrderedDict()
+        _thread_fonts.fonts = cache
+    key = (bold, size)
+    cached = cache.get(key)
+    if cached is not None:
+        cache.move_to_end(key)
+        return cached
     path = FONTS / ("Poppins-Bold.ttf" if bold else "Poppins-Regular.ttf")
     try:
-        return ImageFont.truetype(str(path), size)
+        face = ImageFont.truetype(str(path), size)
     except OSError:
         log.warning("Font %s is missing; using Pillow's default font", path)
-        return ImageFont.load_default(size=size)
+        face = ImageFont.load_default(size=size)
+    cache[key] = face
+    if len(cache) > _FONT_CACHE_SIZE:
+        cache.popitem(last=False)
+    return face
 
 
 def _glyph(face: ImageFont.FreeTypeFont, char: str) -> Tuple[Tuple[int, int], bytes]:
@@ -79,8 +96,22 @@ def _glyph(face: ImageFont.FreeTypeFont, char: str) -> Tuple[Tuple[int, int], by
     return size, image.tobytes()
 
 
+def _missing_glyph(bold: bool) -> Tuple[Tuple[int, int], bytes]:
+    missing: Dict[bool, Tuple[Tuple[int, int], bytes]] = getattr(_thread_fonts, "missing", None)
+    if missing is None:
+        missing = {}
+        _thread_fonts.missing = missing
+    cached = missing.get(bold)
+    if cached is None:
+        cached = _glyph(font(bold, 48), "\uffff")
+        missing[bold] = cached
+    return cached
+
+
 def _has_glyph(bold: bool, char: str) -> bool:
-    cached = _glyphs.get((bold, char))
+    key = (bold, char)
+    with _glyph_lock:
+        cached = _glyphs.get(key)
     if cached is not None:
         return cached
     if char.isspace():
@@ -89,9 +120,10 @@ def _has_glyph(bold: bool, char: str) -> bool:
         face = font(bold, 48)
         pixels = _glyph(face, char)
         # A character the font lacks is drawn as the same placeholder box that U+FFFF gets, so a glyph that matches that box counts as missing.
-        result = pixels[0] != (0, 0) and pixels != _glyph(face, "￿")
-    if len(_glyphs) < 5000:
-        _glyphs[(bold, char)] = result
+        result = pixels[0] != (0, 0) and pixels != _missing_glyph(bold)
+    with _glyph_lock:
+        if len(_glyphs) < 5000:
+            _glyphs[key] = result
     return result
 
 
