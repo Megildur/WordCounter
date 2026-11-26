@@ -75,6 +75,7 @@ MESSAGES = {
     "tracking_off": ("success", "Tracking is off. Existing stats stay."),
     "channels_saved": ("success", "Channel list saved."),
     "keywords_saved": ("success", "Keyword list saved."),
+    "keywords_too_long": ("error", "That keyword list is over 16,000 characters. Trim it a little and save again."),
     "counts_reset": ("success", "Counts reset."),
     "reanalysis_ready": ("success", "Counts cleared. Run /analyze_chat in Discord to rebuild them."),
     **{f"reset_{what}": ("success", result) for what, (_, _, result) in WIPES.items()},

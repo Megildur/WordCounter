@@ -294,10 +294,14 @@ class SettingsMenuView(SectionMenu):
         listed = "\n".join(f"- {code_span(kw)}" for kw in self.keywords[:30]) or "None yet."
         if len(self.keywords) > 30:
             listed += f"\n…and {len(self.keywords) - 30} more"
+        too_long_for_modal = len(", ".join(self.keywords)) > 2000
+        note = ""
+        if too_long_for_modal:
+            note = "\n-# Your keyword list is over 2,000 characters, so **Edit list** is disabled here to avoid cutting it short. Use Add, Remove, or the web dashboard."
         container.add_item(
             discord.ui.TextDisplay(
                 "### Keywords\nA keyword is counted every time someone says it in a tracked channel.\n\n"
-                f"**Tracked ({len(self.keywords)}):**\n{listed}"
+                f"**Tracked ({len(self.keywords)}):**\n{listed}{note}"
             )
         )
 
@@ -314,7 +318,7 @@ class SettingsMenuView(SectionMenu):
         container.add_item(
             discord.ui.ActionRow(
                 make_button("Add", discord.ButtonStyle.success, self._open_add_keyword_modal),
-                make_button("Edit list", discord.ButtonStyle.primary, self._open_bulk_keyword_modal),
+                make_button("Edit list", discord.ButtonStyle.primary, self._open_bulk_keyword_modal, disabled=too_long_for_modal),
                 make_button("Remove all", discord.ButtonStyle.danger, self._clear_all_keywords, disabled=not self.keywords),
             )
         )
@@ -474,6 +478,14 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.send_modal(AddKeywordModal(self))
 
     async def _open_bulk_keyword_modal(self, interaction: discord.Interaction) -> None:
+        if len(", ".join(self.keywords)) > 2000:
+            await interaction.response.defer()
+            self.status_banner = (
+                "Your keyword list is over 2,000 characters, so it can't be edited in a Discord modal. Use Add, Remove, or the web dashboard.",
+                WARNING_COLOR,
+            )
+            await self.refresh_and_edit(interaction)
+            return
         await interaction.response.send_modal(BulkEditKeywordsModal(self, self.keywords))
 
     async def _on_keywords_removed(self, interaction: discord.Interaction) -> None:

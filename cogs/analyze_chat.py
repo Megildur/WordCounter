@@ -31,6 +31,7 @@ from cogs.utils.components import (
     AuthorOnlyView,
     activity_line,
     check_channel_with_config,
+    code_span,
     create_v2_container,
     create_v2_view,
     error_view,
@@ -83,6 +84,18 @@ COUNTED_MESSAGE_TYPES = frozenset(
 )
 
 HistoryChannel = Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread]
+
+
+RUN_KIND_LABEL = {
+    "member": "one member's messages",
+    "server": "the whole server's messages",
+    "swears": "past swears",
+}
+RUN_COMMAND = {
+    "member": "/analyze_chat single_user",
+    "server": "/analyze_chat whole_server",
+    "swears": "/analyze_chat swears",
+}
 
 
 class SearchUnavailable(Exception):
@@ -454,7 +467,7 @@ class AnalyzeConfirmView(AuthorOnlyView):
         self.message: Optional[discord.Message] = None
 
         if keywords:
-            keyword_text = ", ".join(f"`{k}`" for k in keywords[:LIST_LIMIT])
+            keyword_text = ", ".join(code_span(k) for k in keywords[:LIST_LIMIT])
             if len(keywords) > LIST_LIMIT:
                 keyword_text += f" and {len(keywords) - LIST_LIMIT} more"
         else:
@@ -711,32 +724,48 @@ class AnalyzeChat(commands.Cog):
         return await interaction.original_response()
 
     @tracked
-    async def _resume_interrupted(self, interaction: discord.Interaction) -> bool:
-        """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here, with a new progress message, and True is returned so the command doesn't start another."""
+    async def _resume_interrupted(self, interaction: discord.Interaction, expected_kind: Optional[str] = None) -> bool:
+        """Every command calls this after its checks and before starting a run. When a run was interrupted in this server it is continued here if it matches `expected_kind`, or explained without starting a conflicting run."""
         if not self._reserve(interaction.guild.id):
             await private_followup(
                 interaction,
                 error_view("An analysis is already running in this server. Wait for it to finish."),
             )
             return True
+        resumed = False
         try:
-            if not await self.bot.db.has_analysis_run(interaction.guild.id):
+            record = await self.bot.db.get_analysis_run(interaction.guild.id)
+            if record is None:
                 return False
+            kind = record.get("kind") or "server"
+            if expected_kind is not None and kind != expected_kind:
+                label = RUN_KIND_LABEL.get(kind, "past messages")
+                command = RUN_COMMAND.get(kind, "/analyze_chat")
+                await private_followup(
+                    interaction,
+                    error_view(
+                        f"An interrupted analysis of {label} is still saved for this server. Run `{command}` to resume it before starting a different one."
+                    ),
+                )
+                return True
+            label = RUN_KIND_LABEL.get(kind, "past messages")
             sent = await self._send(
                 interaction,
                 create_v2_view(
                     "Resuming",
-                    "An earlier analysis in this server was interrupted. Picking it up where it stopped.",
+                    f"An earlier analysis of {label} in this server was interrupted. Picking it up where it stopped.",
                     color=WARNING_COLOR,
                 ),
             )
             message = interaction.channel.get_partial_message(sent.id)
-            # Saved before the run starts, so a restart edits this message and not the old one.
+            # Saved before the run starts, so a resume after another restart edits this message and not the old one.
             await self.bot.db.set_analysis_run_message(interaction.guild.id, message.channel.id, message.id)
+            resumed = True
             await self._run_crawl(interaction.guild, StatusMessage(message, interaction))
             return True
         finally:
-            self._finished(interaction.guild.id)
+            if not resumed:
+                self._finished(interaction.guild.id)
 
     async def _pending_members(self, guild: discord.Guild) -> Tuple[List[discord.Member], int]:
         """Returns the members still to analyze and how many humans were skipped as already analyzed. Bots and banned members are never counted."""
@@ -865,7 +894,11 @@ class AnalyzeChat(commands.Cog):
         progress: Progress,
     ) -> Tuple[Dict[int, Dict[str, Any]], int]:
         """Fetches one search page and tallies the hits not seen before. Returns the page's hits and how many were new. `seen` holds the message IDs already handled, so windows that overlap don't count a message twice."""
+        if author_id in self.forgotten or self._guild_blocked(guild.id):
+            raise AnalysisCancelled()
         data = await self._search(guild.id, author_id, before, progress)
+        if author_id in self.forgotten or self._guild_blocked(guild.id):
+            raise AnalysisCancelled()
         progress.pages += 1
         if not progress.total:
             progress.total = int(data.get("total_results") or 0)
@@ -922,6 +955,8 @@ class AnalyzeChat(commands.Cog):
     async def _crawl_targets(self, guild: discord.Guild, scope: ChannelScope, progress: Progress) -> List[HistoryChannel]:
         """Lists every channel and thread to read: the tracked channels the bot can read and their active and archived threads. Tracked channels it can't read are added to `progress.unreadable`."""
         me = guild.me
+        if me is None:
+            return []
         targets: List[HistoryChannel] = []
         parents: List[Union[discord.TextChannel, discord.ForumChannel]] = []
         for channel in guild.channels:
@@ -1296,6 +1331,12 @@ class AnalyzeChat(commands.Cog):
             try:
                 async with self._live_status(status, render):
                     await self._search_member(guild, target.id, coverage, tally, scope, keywords, progress)
+            except AnalysisCancelled:
+                if target.id in self.forgotten and not self._guild_blocked(guild.id):
+                    await status.show(error_view(f"{target.mention}'s data was deleted while their messages were being counted, so nothing was saved."))
+                else:
+                    await status.show(create_v2_view("Analysis stopped", "This server's data was reset while the analysis was running, so it was cancelled.", color=NEUTRAL_COLOR))
+                return
             except SearchUnavailable as reason:
                 if self._guild_blocked(guild.id):
                     await status.show(create_v2_view("Analysis stopped", "This server's data was reset while the analysis was running, so it was cancelled.", color=NEUTRAL_COLOR))
@@ -1354,21 +1395,28 @@ class AnalyzeChat(commands.Cog):
             await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
             return
         try:
-            if await self._stop_if_blocked(status, guild.id):
-                return
-            pending, _ = await self._pending_members(guild)
-            if not pending:
+            try:
+                if await self._stop_if_blocked(status, guild.id):
+                    return
+                pending, _ = await self._pending_members(guild)
+                if not pending:
+                    await status.show(
+                        create_v2_view("Nothing to do", "Every member here has already been analyzed.", color=NEUTRAL_COLOR)
+                    )
+                    return
+                if await self._stop_if_blocked(status, guild.id):
+                    return
+                coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
+                # The members to count are saved with the run, so a resume after a restart covers the same people.
+                await self.bot.db.start_analysis_run(
+                    guild.id, "server", coverage.scan_before, *status.ids, [member.id for member in pending]
+                )
+            except Exception:
+                log.exception("Server analysis setup in guild %s failed", guild.id)
                 await status.show(
-                    create_v2_view("Nothing to do", "Every member here has already been analyzed.", color=NEUTRAL_COLOR)
+                    error_view("The analysis stopped because of an unexpected error, so nothing was saved. You can run it again.")
                 )
                 return
-            if await self._stop_if_blocked(status, guild.id):
-                return
-            coverage = await self._coverage(guild.id, discord.utils.time_snowflake(interaction.created_at))
-            # The members to count are saved with the run, so a resume after a restart covers the same people.
-            await self.bot.db.start_analysis_run(
-                guild.id, "server", coverage.scan_before, *status.ids, [member.id for member in pending]
-            )
             await self._run_crawl(guild, status)
         finally:
             self._finished(guild.id)
@@ -1381,14 +1429,21 @@ class AnalyzeChat(commands.Cog):
             await private_followup(interaction, error_view("An analysis is already running in this server. Wait for it to finish."))
             return
         try:
-            if await self._stop_if_blocked(status, guild.id):
+            try:
+                if await self._stop_if_blocked(status, guild.id):
+                    return
+                coverage = LiveCoverage(
+                    await self.bot.db.jar_coverage(guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
+                )
+                if await self._stop_if_blocked(status, guild.id):
+                    return
+                await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
+            except Exception:
+                log.exception("Swears analysis setup in guild %s failed", guild.id)
+                await status.show(
+                    error_view("The analysis stopped because of an unexpected error, so nothing was saved. You can run it again.")
+                )
                 return
-            coverage = LiveCoverage(
-                await self.bot.db.jar_coverage(guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
-            )
-            if await self._stop_if_blocked(status, guild.id):
-                return
-            await self.bot.db.start_analysis_run(guild.id, "swears", coverage.scan_before, *status.ids, [])
             await self._run_crawl(guild, status)
         finally:
             self._finished(guild.id)
@@ -1417,7 +1472,7 @@ class AnalyzeChat(commands.Cog):
         if reason:
             await private_followup(interaction, error_view(reason))
             return
-        if await self._resume_interrupted(interaction):
+        if await self._resume_interrupted(interaction, "swears"):
             return
         coverage = LiveCoverage(
             await self.bot.db.jar_coverage(interaction.guild.id), {}, discord.utils.time_snowflake(interaction.created_at)
@@ -1455,7 +1510,7 @@ class AnalyzeChat(commands.Cog):
         if reason:
             await private_followup(interaction, error_view(reason))
             return
-        if await self._resume_interrupted(interaction):
+        if await self._resume_interrupted(interaction, "member"):
             return
 
         keywords = await self.bot.db.get_keywords(interaction.guild.id)
@@ -1483,7 +1538,7 @@ class AnalyzeChat(commands.Cog):
         if reason:
             await private_followup(interaction, error_view(reason))
             return
-        if await self._resume_interrupted(interaction):
+        if await self._resume_interrupted(interaction, "server"):
             return
 
         pending, already_done = await self._pending_members(interaction.guild)

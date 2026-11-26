@@ -606,7 +606,8 @@ class JarSettingsView(SectionMenu):
     async def _toggle_delete_mode(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         turning_on = not self.settings["delete_mode"]
-        if turning_on and not self.guild.me.guild_permissions.manage_messages:
+        me = self.guild.me
+        if turning_on and (me is None or not me.guild_permissions.manage_messages):
             self._done("WordCounter needs the Manage Messages permission to delete messages.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update(self.guild.id, delete_mode=int(turning_on))
@@ -806,6 +807,17 @@ class JarSettingsView(SectionMenu):
         ]
         await interaction.response.send_modal(FormModal("Swear jar goal", fields, self._save_goal))
 
+    def _default_goal_channel_id(self, channel: Any) -> Optional[int]:
+        """Returns an announcement text channel ID for `channel` (or its parent text channel when invoked in a thread) if the bot can view and send there."""
+        me = self.guild.me
+        if me is None or channel is None:
+            return None
+        candidate = channel.parent if isinstance(channel, discord.Thread) else channel
+        if not isinstance(candidate, discord.TextChannel):
+            return None
+        perms = candidate.permissions_for(me)
+        return candidate.id if perms.view_channel and perms.send_messages else None
+
     async def _save_goal(self, interaction: discord.Interaction, values: List[str]) -> None:
         label, amount = values
         target = parse_amount(self.settings, amount)
@@ -813,11 +825,12 @@ class JarSettingsView(SectionMenu):
             self._done("Give the goal a name and an amount above zero.", WARNING_COLOR)
         else:
             current = self.goal if self.goal and not self.goal["completed_at"] else None
-            # Changing a goal keeps its announcement channel. A new goal is announced where the settings were opened.
-            channel_id = current["channel_id"] if current and current["channel_id"] else interaction.channel_id
+            # Changing a goal keeps its announcement channel. A new goal defaults to the current text channel (or a thread's parent text channel) if WordCounter can post there.
+            channel_id = current["channel_id"] if current and current["channel_id"] else self._default_goal_channel_id(interaction.channel)
             # Saving starts the goal again from zero progress, even when an admin only changes one that is running.
             await self.bot.db.jar_set_goal(self.guild.id, label[:100], target, channel_id, bool(current and current["ping"]))
-            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. It's announced in <#{channel_id}>.")
+            where = f"It's announced in <#{channel_id}>." if channel_id else "Pick a text channel below for its announcement."
+            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. {where}")
         await self.refresh_and_edit(interaction)
 
     async def _on_goal_channel(self, interaction: discord.Interaction) -> None:
@@ -835,7 +848,18 @@ class JarSettingsView(SectionMenu):
     async def _toggle_goal_ping(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         ping = not (self.goal and self.goal["ping"])
-        if ping and not self.guild.me.guild_permissions.mention_everyone:
+        me = self.guild.me
+        channel = self.guild.get_channel(self.goal["channel_id"]) if self.goal and self.goal.get("channel_id") else None
+        can_mention = (
+            False
+            if me is None
+            else (
+                channel.permissions_for(me).mention_everyone
+                if isinstance(channel, discord.TextChannel)
+                else me.guild_permissions.mention_everyone
+            )
+        )
+        if ping and not can_mention:
             self._done("WordCounter needs the Mention Everyone permission to ping @everyone.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update_goal(self.guild.id, ping=ping)

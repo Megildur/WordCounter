@@ -648,9 +648,12 @@ async def settings_action(request: web.Request) -> web.Response:
             await (db.remove_ignored_channels(guild.id, ids) if whole else db.remove_watched_channels(guild.id, ids))
             result = "channels_saved"
         elif action == "keywords":
-            # The same 2000 character limit as the keyword list in Discord's edit modal.
-            await db.replace_keywords(guild.id, parse_keywords(str(form.get("keywords", ""))[:2000]))
-            result = "keywords_saved"
+            raw_keywords = str(form.get("keywords", ""))
+            if len(raw_keywords) > 16000:
+                result = "keywords_too_long"
+            else:
+                await db.replace_keywords(guild.id, parse_keywords(raw_keywords))
+                result = "keywords_saved"
         elif action == "tracking_off":
             # running_only: turning tracking off and resetting the server are blocked only by an analysis that is running now, while the count resets below also wait for an interrupted one.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "tracking_off"
