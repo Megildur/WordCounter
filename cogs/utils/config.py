@@ -49,8 +49,10 @@ except ValueError:
 ORIGIN_SECRET = _env("ORIGIN_SECRET")
 ORIGIN_SECRET_MODE = "log" if _env("ORIGIN_SECRET_MODE").lower() == "log" else "enforce"
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
-# Signs the website's login cookies. Without SESSION_SECRET it is derived from the bot token, so it stays the same across restarts.
-SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()
+# Signs login cookies, CSRF tokens and OAuth states via isolated HMAC subkeys (at least 32 random characters). SESSION_SECRET_PREVIOUS allows zero-downtime key rotation. Without SESSION_SECRET it falls back to a hash of API_TOKEN with a startup warning.
+SESSION_SECRET_RAW = _env("SESSION_SECRET")
+SESSION_SECRET_PREVIOUS = _env("SESSION_SECRET_PREVIOUS")
+SESSION_SECRET = SESSION_SECRET_RAW or (hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest() if API_TOKEN else "")
 
 DEFAULT_CLIENT_ID = 1551875701748277299
 INVITE_PERMISSIONS = 277295131712

@@ -232,17 +232,19 @@ async def sitemap(request: web.Request) -> web.Response:
 
 @routes.get("/login")
 async def login(request: web.Request) -> web.Response:
-    if not DISCORD_CLIENT_SECRET:
+    if not DISCORD_CLIENT_SECRET or not auth.secret_keys():
         return redirect("/?msg=oauth_missing_secret")
     next_url = auth.safe_next(request.query.get("next"))
     # Someone already signed in goes straight on, unless ?force=1 asks to sign in again.
     if current_user(request) and request.query.get("force") != "1":
         return redirect(next_url)
-    nonce, state = auth.new_state(next_url)
-    response = redirect(auth.login_url(client_id(request.app["bot"]), state))
+    cookie_val, state = auth.new_state(next_url)
+    verifier = auth.state_verifier(cookie_val)
+    challenge = auth.pkce_challenge(verifier) if verifier else None
+    response = redirect(auth.login_url(client_id(request.app["bot"]), state, code_challenge=challenge))
     # SameSite=Lax rather than Strict, so the browser still sends this cookie when Discord redirects back to /callback.
     response.set_cookie(
-        auth.STATE_COOKIE, nonce, max_age=auth.STATE_MAX_AGE, httponly=True, samesite="Lax", secure=SECURE_COOKIES, path="/"
+        auth.STATE_COOKIE, cookie_val, max_age=auth.STATE_MAX_AGE, httponly=True, samesite="Lax", secure=SECURE_COOKIES, path="/"
     )
     return response
 
@@ -252,41 +254,57 @@ async def callback(request: web.Request) -> web.Response:
     state = request.query.get("state")
     error = request.query.get("error")
     code = request.query.get("code")
-    # The state is checked before anything else, so a stray or forged callback is turned away without contacting Discord.
-    next_url = auth.check_state(state, request.cookies.get(auth.STATE_COOKIE))
+    cookie_val = request.cookies.get(auth.STATE_COOKIE)
+
+    def _done(resp: web.Response) -> web.Response:
+        resp.del_cookie(auth.STATE_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
+        return resp
+
+    # The state is checked before anything else, so a stray, expired or forged callback is turned away without contacting Discord.
+    next_url = auth.check_state(state, cookie_val)
     if next_url is None:
-        return redirect("/?msg=oauth_expired")
-    # The first attempt asks Discord to skip its consent screen. If Discord answers with one of these errors, send them back with the screen shown.
+        return _done(redirect("/?msg=oauth_expired"))
+    verifier = auth.state_verifier(cookie_val)
+    # The first attempt asks Discord to skip its consent screen. If Discord answers with one of these errors, send them back with the screen shown (keeping STATE_COOKIE intact for the retry).
     if error in auth.CONSENT_ERRORS:
-        return redirect(auth.login_url(client_id(request.app["bot"]), state, prompt="consent"))
+        challenge = auth.pkce_challenge(verifier) if verifier else None
+        return redirect(auth.login_url(client_id(request.app["bot"]), state, prompt="consent", code_challenge=challenge))
     if error == "access_denied":
-        return redirect("/?msg=oauth_cancelled")
-    if error or not code:
-        return redirect("/?msg=oauth_failed")
+        return _done(redirect("/?msg=oauth_cancelled"))
+    if error or not code or not verifier:
+        return _done(redirect("/?msg=oauth_failed"))
 
     bot = request.app["bot"]
-    user, servers = await auth.fetch_login(code, client_id(bot), bot.blacklisted)
+    user, servers = await auth.fetch_login(code, client_id(bot), bot.blacklisted, code_verifier=verifier)
     if user is None:
-        return redirect("/?msg=oauth_failed")
-    if int(user["id"]) in bot.blacklisted:
+        return _done(redirect("/?msg=oauth_failed"))
+    user_id = int(user["id"])
+    if user_id in bot.blacklisted:
         # Nothing is saved for a banned person, not even a login session. The login's own cookie is dropped too.
-        response = redirect("/?msg=login_banned")
-        response.del_cookie(auth.STATE_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
-        return response
+        bot.db.forget_web_servers(user_id)
+        return _done(redirect("/?msg=login_banned"))
 
     # A new session id for every login, so an old cookie can't carry over. Its hash is saved first: a cookie is only given out once the session exists.
     session_id = auth.new_session_id()
+    token_hash = auth.session_hash(session_id)
     try:
-        await bot.db.create_web_session(auth.session_hash(session_id), int(user["id"]), auth.SESSION_MAX_AGE)
+        await bot.db.create_web_session(token_hash, user_id, auth.SESSION_MAX_AGE)
     except Exception as error:
         log.warning("Couldn't save a login session: %s", error)
-        return redirect("/?msg=oauth_failed")
-    # After the session, which clears whatever list this person had before: a login leaves either a fresh list or none. The ban is looked at again because it may have come while Discord was answering.
-    if servers is not None and int(user["id"]) not in bot.blacklisted:
-        bot.db.remember_web_servers(int(user["id"]), servers)
-    # Signing in again from a browser that is already signed in (the dashboard's refresh links) ends the session that browser came with, so refreshing doesn't pile up sessions and push out the person's other browsers.
+        return _done(redirect("/?msg=oauth_failed"))
+    # Re-check the blacklist after awaiting session creation so a ban added mid-login revokes the new row and issues no cookie.
+    if user_id in bot.blacklisted:
+        bot.db.forget_web_servers(user_id)
+        try:
+            await bot.db.revoke_web_session(token_hash)
+        except Exception as error:
+            log.warning("Couldn't revoke mid-login banned session: %s", error)
+        return _done(redirect("/?msg=login_banned"))
+    if servers is not None:
+        bot.db.remember_web_servers(user_id, servers)
+    # Signing in again (or switching Discord accounts) from a browser that already holds a session cookie ends that browser's old session row.
     previous = auth.read_session(request.cookies.get(auth.SESSION_COOKIE))
-    if previous is not None and previous["id"] == user["id"]:
+    if previous is not None:
         try:
             await bot.db.revoke_web_session(auth.session_hash(previous["sid"]))
         except Exception as error:
@@ -308,8 +326,7 @@ async def callback(request: web.Request) -> web.Response:
         secure=SECURE_COOKIES,
         path="/",
     )
-    response.del_cookie(auth.STATE_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
-    return response
+    return _done(response)
 
 
 @routes.post("/logout")
