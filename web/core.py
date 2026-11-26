@@ -4,6 +4,7 @@ The Jinja environment and its globals, `render` and `error_page`, the signed-in 
 """
 
 from __future__ import annotations
+import asyncio
 import calendar
 import hashlib
 import ipaddress
@@ -563,17 +564,27 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     except web.HTTPServiceUnavailable:
         response = error_page(request, 503, "Try again in a moment", "Discord didn't answer in time, so we couldn't check your server access. Try refreshing the page.")
     except web.HTTPRedirection as moved:
-        # Built again instead of returning the exception, which aiohttp has deprecated. It keeps the headers the exception carries (Location on a redirect), but not its text body.
-        response = web.Response(status=moved.status, headers={name: value for name, value in moved.headers.items() if name.lower() not in ("content-type", "content-length")})
+        # Built again instead of returning the exception, which aiohttp has deprecated. MultiDict keeps duplicate headers such as multiple Set-Cookie lines while dropping body headers.
+        headers = MultiDict((name, value) for name, value in moved.headers.items() if name.lower() not in ("content-type", "content-length"))
+        response = web.Response(status=moved.status, headers=headers)
     except web.HTTPException as problem:
         response = error_page(request, problem.status, problem.reason or "Something went wrong", "That request couldn't be handled.")
         if "Allow" in problem.headers:
             response.headers["Allow"] = problem.headers["Allow"]
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Unhandled errors (such as a transient MySQL or timeout failure) still return a themed 500 with full security and no-store headers, without logging visitor IPs.
+        log.exception("Unhandled error handling %s %s", request.method, request.path)
+        try:
+            response = error_page(request, 500, "Something went wrong", "WordCounter couldn't load this page right now. Try refreshing in a moment.")
+        except Exception:
+            response = web.Response(status=500, text="Something went wrong.", content_type="text/plain")
     # A cookie for a session that has ended is dropped, so the header doesn't keep showing someone as logged in. A login that just set a new cookie keeps it.
     if request.get("session_ended") and auth.SESSION_COOKIE not in response.cookies:
         response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
-    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and the pages that belong to a signed-in person are "no-store".
-    if is_private(request.path):
+    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and private or 5xx responses are never stored or indexed.
+    if is_private(request.path) or (isinstance(response, web.Response) and response.status >= 500):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     if request.path.startswith("/static/"):
