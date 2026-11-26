@@ -841,11 +841,16 @@ class JarSettingsView(SectionMenu):
             if running:
                 self._done(ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             elif member_only and self.reset_user_id is not None:
+                # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                if jar is not None:
+                    jar.forget_member(self.guild.id, self.reset_user_id)
                 await self.bot.db.jar_reset_members(self.guild.id, self.reset_user_id)
                 if jar is not None:
                     jar.forget_member(self.guild.id, self.reset_user_id)
                 self._done(f"Reset <@{self.reset_user_id}>'s jar.")
             else:
+                if jar is not None:
+                    jar.forget(self.guild.id)
                 await self.bot.db.jar_reset_members(self.guild.id)
                 if jar is not None:
                     jar.forget(self.guild.id)

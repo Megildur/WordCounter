@@ -478,8 +478,11 @@ async def member_action(request: web.Request) -> web.Response:
             await db.allow_reanalysis(guild.id, member_id)
             result = "reanalysis_ready"
         elif result is None and action == "reset_jar":
-            await db.jar_reset_members(guild.id, member_id)
+            # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
             cog = request.app["bot"].get_cog("SwearJar")
+            if cog is not None:
+                cog.forget_member(guild.id, member_id)
+            await db.jar_reset_members(guild.id, member_id)
             if cog is not None:
                 cog.forget_member(guild.id, member_id)
             refresh_jar(request, guild.id)
@@ -568,12 +571,13 @@ async def settings_action(request: web.Request) -> web.Response:
             result = "bad_reset" if what not in WIPES else await confirmed_and_free(request, form, guild, running_only=True) or f"reset_{what}"
             if what in WIPES and result == f"reset_{what}":
                 counts, jar, _ = WIPES[what]
+                cog = request.app["bot"].get_cog("SwearJar") if jar else None
+                if cog is not None:
+                    # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                    cog.forget(guild.id)
                 await db.reset_entire_server(guild.id, counts=counts, jar=jar)
-                if jar:
-                    # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
-                    cog = request.app["bot"].get_cog("SwearJar")
-                    if cog is not None:
-                        cog.forget(guild.id)
+                if cog is not None:
+                    cog.forget(guild.id)
         # Drops the swear jar cog's cached tracking config so changes take effect in Discord at once.
         refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")

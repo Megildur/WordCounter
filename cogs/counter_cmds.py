@@ -566,12 +566,13 @@ class SettingsMenuView(SectionMenu):
                 self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
                 await self.refresh_and_edit(interaction)
                 return
+            swear_jar = self.bot.get_cog("SwearJar") if jar else None
+            if swear_jar is not None:
+                # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                swear_jar.forget(self.guild.id)
             await self.bot.db.reset_entire_server(self.guild.id, counts=counts, jar=jar)
-            if jar:
-                # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
-                swear_jar = self.bot.get_cog("SwearJar")
-                if swear_jar is not None:
-                    swear_jar.forget(self.guild.id)
+            if swear_jar is not None:
+                swear_jar.forget(self.guild.id)
             elif counts:
                 self._invalidate_jar()
             if counts:
