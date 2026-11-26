@@ -166,7 +166,7 @@ def _asset_version() -> str:
 
 ICON_FILES = (
     "wordcounter-96.webp", "wordcounter-256.png", "wordcounter-256.webp", "wordcounter-512.png",
-    "wordcounter-512.webp", "favicon-32.png", "apple-touch-icon.png",
+    "wordcounter-512.webp", "favicon-32.png", "apple-touch-icon.png", "botzilla.webp",
 )
 
 

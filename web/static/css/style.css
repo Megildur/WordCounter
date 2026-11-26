@@ -82,6 +82,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
+[id] { scroll-margin-top: calc(var(--header-h) + var(--s-5)); }
 
 html {
   -webkit-text-size-adjust: 100%;
@@ -939,6 +940,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
   background: var(--base-2);
 }
 .account img { width: 3.5rem; height: 3.5rem; border-radius: 50%; object-fit: cover; }
+.account .server__initial { width: 3.5rem; height: 3.5rem; }
 .account__who { flex: 1; min-width: 11rem; }
 .account__name { font-weight: 700; font-size: var(--step-1); line-height: 1.3; }
 .account__meta { font-size: 0.875rem; color: var(--text-3); overflow-wrap: anywhere; }
@@ -1022,7 +1024,7 @@ a.chip:hover { border-color: var(--text-3); color: var(--text); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
 .table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
 .table th, .table td { padding: var(--s-3) var(--s-4); text-align: left; border-bottom: 1px solid var(--line-soft); }
-.table tbody tr:last-child td { border-bottom: 0; }
+.table tbody tr:last-child :is(th, td) { border-bottom: 0; }
 .table th {
   font-family: var(--font-mono);
   font-weight: 500;

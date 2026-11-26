@@ -87,10 +87,10 @@
           </summary>
           <div class="mobile-menu">
             <div class="wrap">
-              <nav class="mobile-menu__main" aria-label="Main">
+              <nav class="mobile-menu__main" aria-label="Mobile menu">
                 <a href="/" {% if active_page == 'home' %}aria-current="page"{% endif %}>Home</a>
                 <a href="/commands" {% if active_page == 'commands' %}aria-current="page"{% endif %}>Commands</a>
-                <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg></a>
+                <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Support server<svg class="icon" aria-hidden="true"><use href="#i-out"/></svg><span class="sr-only">(opens in a new tab)</span></a>
               </nav>
               <div class="mobile-menu__minor">
                 <a href="/terms" {% if active_page == 'terms' %}aria-current="page"{% endif %}>Terms of Service</a>

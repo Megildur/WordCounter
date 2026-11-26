@@ -3,7 +3,7 @@
 
 {% block server_content %}
 <div class="account">
-  {% if person.avatar_url %}<img src="{{ person.avatar_url }}" alt="" width="56" height="56">{% endif %}
+  {% if person.avatar_url %}<img src="{{ person.avatar_url }}" alt="" width="56" height="56">{% else %}<span class="server__initial" aria-hidden="true">{{ person.name[:1] or "?" }}</span>{% endif %}
   <div class="account__who">
     <h2 class="account__name">{{ person.name }}</h2>
     <p class="account__meta">ID <code>{{ person.id }}</code> &middot; {% if analyzed %}past messages counted{% else %}past messages not counted yet{% endif %}</p>
