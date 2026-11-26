@@ -52,6 +52,7 @@ SEARCH_INTERVAL = 6.0
 SEARCH_MAX_FAILURES = 5
 # Extra passes over the windows that came back short while the search's own total says more messages exist.
 SEARCH_RECHECKS = 2
+MAX_RECHECK_WINDOWS = 15
 # The longest wait, in seconds and per search request, for Discord to finish indexing a server before search is given up.
 INDEX_WAIT_LIMIT = 120.0
 # Channels read at the same time, across all servers.
@@ -897,7 +898,7 @@ class AnalyzeChat(commands.Cog):
         keywords: List[str],
         progress: Progress,
     ) -> None:
-        """Counts one member's past messages with search, paging back from `coverage.scan_before`. A page that comes back short while the search's total says more exist is searched again, up to SEARCH_RECHECKS more passes."""
+        """Counts one member's past messages with search, paging back from `coverage.scan_before`. A non-empty page that comes back short while the search's total says more exist is searched again, up to SEARCH_RECHECKS more passes and MAX_RECHECK_WINDOWS per sweep."""
         seen: Set[int] = set()
         starts = [coverage.scan_before]
         for sweep in range(1 + SEARCH_RECHECKS):
@@ -907,8 +908,8 @@ class AnalyzeChat(commands.Cog):
                     hits, new = await self._search_window(
                         guild, author_id, cursor, seen, tally, coverage, scope, keywords, progress
                     )
-                    # Remember where this window started, so a later pass can search it again.
-                    if len(hits) < SEARCH_PAGE_SIZE and len(seen) < progress.total:
+                    # Remember where this window started (skipping empty tail pages and capping recheck breadth).
+                    if hits and len(hits) < SEARCH_PAGE_SIZE and len(seen) < progress.total and len(short_windows) < MAX_RECHECK_WINDOWS:
                         short_windows.append(cursor)
                     # In a recheck pass a window stops as soon as a page brings nothing new.
                     if not hits or (sweep and not new):

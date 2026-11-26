@@ -1,6 +1,6 @@
 """The live stats panel: /owner stats_panel posts it in a channel, and a loop edits it every few minutes.
 
-The owner picks the channel (one panel per server). The loop reads every figure from memory and the database totals, draws the card once and edits each panel's message with it, and stops the pass at the first 429. A panel whose message was deleted is posted again in the same channel. One whose channel is deleted while the bot is running, or whose server the bot has left, is forgotten.
+The owner picks the channel (one panel per server). The loop reads every figure from memory and the database totals, draws the card once and edits each panel's message with it, and stops the pass at the first 429. A panel whose message was deleted is posted again in the same channel. One whose channel is deleted or missing, or whose server the bot has left, is forgotten.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 import discord
 from discord.ext import commands, tasks
 from cogs.utils import cards, people
@@ -23,8 +23,6 @@ UPDATE_MINUTES = 5
 # The card is a file, so its channel needs Attach Files too.
 PANEL_NEEDS = ("view_channel", "send_messages", "attach_files")
 NEEDS_NAMES = {"view_channel": "View Channel", "send_messages": "Send Messages", "attach_files": "Attach Files"}
-# Above this a count is written short (98.8B) so it fits its plaque.
-COMPACT_FROM = 10 ** 9
 
 
 @dataclass(frozen=True)
@@ -113,8 +111,9 @@ def panel_view(figures: Figures, updated_at: int) -> discord.ui.LayoutView:
 class StatsPanel(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # Held while a panel is posted, moved or removed, so the loop can't edit a message the command is deleting.
+        # Held per panel mutation or edit so channel/guild events or /owner stats_panel can run between panels during a pass.
         self.lock = asyncio.Lock()
+        self._mutated: Set[int] = set()
         self.updates.start()
 
     def cog_unload(self) -> None:
@@ -167,13 +166,18 @@ class StatsPanel(commands.Cog):
     async def refresh(self, panel: Tuple[int, int, int], now: Figures, picture: bytes) -> bool:
         """Show the current numbers on a panel, posting it again when its message is gone. False when Discord answered 429, so the pass stops instead of asking again."""
         guild_id, channel_id, message_id = panel
-        if self.bot.get_guild(guild_id) is None:
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
             # The bot left while it was offline, so no event said so.
             await self.bot.db.delete_stats_panel(guild_id)
             return True
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            log.debug("The stats panel's channel %s isn't visible; leaving it for now", channel_id)
+            if self.bot.is_ready() and guild.get_channel(channel_id) is None:
+                # The channel was deleted while the bot was offline, so no event removed the row.
+                await self.bot.db.delete_stats_panel_channel(channel_id)
+            else:
+                log.debug("The stats panel's channel %s isn't visible; leaving it for now", channel_id)
             return True
         try:
             await channel.get_partial_message(message_id).edit(
@@ -208,15 +212,22 @@ class StatsPanel(commands.Cog):
         try:
             async with self.lock:
                 panels = await self.bot.db.stats_panels()
-                if not panels:
-                    return
-                now, picture = await self._draw()
-                for panel in panels:
-                    try:
+                self._mutated.clear()
+            if not panels:
+                return
+            now, picture = await self._draw()
+            for panel in panels:
+                try:
+                    async with self.lock:
+                        if panel[0] in self._mutated:
+                            current = await self.bot.db.stats_panel(panel[0])
+                            if current is None:
+                                continue
+                            panel = current
                         if not await self.refresh(panel, now, picture):
                             break
-                    except Exception:
-                        log.exception("The stats panel in channel %s failed to update", panel[1])
+                except Exception:
+                    log.exception("The stats panel in channel %s failed to update", panel[1])
         except Exception:
             log.exception("The stats panel update failed and will run again at its next turn")
 
@@ -230,15 +241,18 @@ class StatsPanel(commands.Cog):
         async with self.lock:
             try:
                 await self.bot.db.delete_stats_panel_channel(channel.id)
+                self._mutated.add(channel.guild.id)
             except Exception:
                 log.warning("Could not forget the stats panel of deleted channel %s", channel.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
-        try:
-            await self.bot.db.delete_stats_panel(guild.id)
-        except Exception:
-            log.warning("Could not forget the stats panel of server %s", guild.id, exc_info=True)
+        async with self.lock:
+            try:
+                await self.bot.db.delete_stats_panel(guild.id)
+                self._mutated.add(guild.id)
+            except Exception:
+                log.warning("Could not forget the stats panel of server %s", guild.id, exc_info=True)
 
     async def owner_panel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel], remove: bool) -> None:
         """Post the panel in `channel`, move it there, take it down, or say where it is."""
@@ -284,6 +298,7 @@ class StatsPanel(commands.Cog):
             await self._say(interaction, "Nothing to remove", "This server has no stats panel.", NEUTRAL_COLOR)
             return
         await self.bot.db.delete_stats_panel(current[0])
+        self._mutated.add(current[0])
         await self._delete_message(self.bot.get_channel(current[1]), current[2])
         await self._say(interaction, "Stats panel removed", "It's deleted and won't be posted again.")
 
@@ -301,6 +316,7 @@ class StatsPanel(commands.Cog):
             return
         try:
             await self.bot.db.save_stats_panel(channel.guild.id, channel.id, message.id)
+            self._mutated.add(channel.guild.id)
         except Exception:
             # A panel nobody updates is worse than saying it failed, and the old one, if there was one, is still there.
             log.warning("Could not save the stats panel", exc_info=True)
