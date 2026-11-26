@@ -76,17 +76,20 @@ class Status(commands.Cog):
     @tasks.loop(minutes=ROTATE_MINUTES)
     async def cycle(self) -> None:
         try:
-            messages, words = await self.bot.db.get_global_totals()
-        except (DatabaseError, OSError) as error:
-            # With the database down the status still rotates, just without the totals lines.
-            log.warning("Could not read totals for the status: %s", error)
-            messages, words = 0, 0
-        choice = random.choice([line for line in self.statuses(messages or 0, words or 0) if line != self.last])
-        self.last = choice
-        try:
-            await self.bot.change_presence(activity=discord.CustomActivity(name=choice), status=discord.Status.online)
-        except (discord.DiscordException, OSError) as error:
-            log.warning("Could not update presence: %s", error)
+            try:
+                messages, words = await self.bot.db.get_global_totals()
+            except (DatabaseError, OSError) as error:
+                # With the database down the status still rotates, just without the totals lines.
+                log.warning("Could not read totals for the status: %s", error)
+                messages, words = 0, 0
+            choice = random.choice([line for line in self.statuses(messages or 0, words or 0) if line != self.last])
+            self.last = choice
+            try:
+                await self.bot.change_presence(activity=discord.CustomActivity(name=choice), status=discord.Status.online)
+            except (discord.DiscordException, OSError) as error:
+                log.warning("Could not update presence: %s", error)
+        except Exception:
+            log.exception("Error updating presence")
 
     @cycle.before_loop
     async def before_cycle(self) -> None:

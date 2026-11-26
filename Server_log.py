@@ -59,7 +59,10 @@ class ServerJoinLogger(commands.Cog):
             return
         # A bad URL or an HTTP error from the post is logged and swallowed, so it doesn't break the join and leave handlers.
         try:
-            await discord.Webhook.from_url(WEBHOOK_URL, session=get_session()).send(view=view)
+            await discord.Webhook.from_url(WEBHOOK_URL, session=get_session()).send(
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except (discord.HTTPException, ValueError) as error:
             self.logger.error("Webhook message failed: %s", error)
 
