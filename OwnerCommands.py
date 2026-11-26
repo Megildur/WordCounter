@@ -115,6 +115,8 @@ class DataConfirmView(AuthorOnlyView):
     ) -> None:
         super().__init__(author_id=author_id, timeout=600)
         self.bot, self.target, self.found, self.ban, self.reason = bot, target, found, ban, reason
+        # Guards against a rapid double-click firing _confirm or _cancel twice before Discord disables the button.
+        self._busy = False
         # The command sets this after sending the panel, so on_timeout can edit that response.
         self.interaction: Optional[discord.Interaction] = None
         who = f"{target.label[0].upper()}{target.label[1:]}"
@@ -166,9 +168,12 @@ class DataConfirmView(AuthorOnlyView):
         return False
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self.stop()
         # Defer first: the delete searches every table, which can take longer than the 3 seconds Discord gives for a reply.
         await interaction.response.defer()
-        self.stop()
         if self.ban:
             # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so the live counter stops saving anything new for it. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
@@ -198,6 +203,9 @@ class DataConfirmView(AuthorOnlyView):
         await interaction.edit_original_response(view=view)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
+        if self._busy:
+            return
+        self._busy = True
         self.stop()
         await interaction.response.edit_message(view=create_v2_view("Cancelled", "Nothing was changed.", color=NEUTRAL_COLOR))
 
@@ -626,4 +634,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(OwnerCog(bot))
+    if not ALLOWED_GUILD_IDS:
+        log.error("ALLOWED_GUILDS is empty; skipping OwnerCog registration so /owner is never registered globally")
+        return
+    await bot.add_cog(OwnerCog(bot), guilds=[discord.Object(id=gid) for gid in ALLOWED_GUILD_IDS])
