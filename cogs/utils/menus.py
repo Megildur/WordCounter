@@ -4,10 +4,10 @@ One message with a select to switch between sections, a body that changes with t
 """
 
 from __future__ import annotations
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 import discord
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, AuthorOnlyView, Callback, create_v2_view, enforce_text_budget, make_button
+from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, SELECT_TYPES, AuthorOnlyView, Callback, create_v2_view, enforce_text_budget, make_button
 
 # (key, label, description) of one section, as shown in the section select.
 Section = Tuple[str, str, str]
@@ -29,6 +29,7 @@ class SectionMenu(AuthorOnlyView):
         self.active_tab = self.sections[0][0]
         self.pending_confirmation: Optional[str] = None
         self.status_banner: Optional[Tuple[str, discord.Colour]] = None
+        self.message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
 
     async def load_state(self) -> None:
         return None
@@ -131,11 +132,30 @@ class SectionMenu(AuthorOnlyView):
         self.build_ui()
         await interaction.edit_original_response(view=self)
 
+    async def on_timeout(self) -> None:
+        message, self.message = self.message, None
+        if message is None:
+            return
+        changed = False
+        for item in self.walk_children():
+            if isinstance(item, discord.ui.Button) and item.style != discord.ButtonStyle.link and not item.disabled:
+                item.disabled = True
+                changed = True
+            elif isinstance(item, SELECT_TYPES) and not item.disabled:
+                item.disabled = True
+                changed = True
+        if not changed:
+            return
+        try:
+            await message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
     async def _on_close_menu(self, interaction: discord.Interaction) -> None:
         self.stop()
-        await interaction.response.defer()
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            # If the delete is refused, replace the menu with a short closed notice so it doesn't stay on screen as a dead menu.
-            await interaction.edit_original_response(view=create_v2_view(f"{self.title} closed", self.closed_hint, color=NEUTRAL_COLOR))
+        self.message = None
+        closed = create_v2_view(f"{self.title} closed", self.closed_hint, color=NEUTRAL_COLOR)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=closed)
+        else:
+            await interaction.response.edit_message(view=closed)

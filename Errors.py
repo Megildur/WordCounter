@@ -55,6 +55,8 @@ class ErrorDisplayView(AuthorOnlyView):
             container.add_item(Separator())
             container.add_item(ActionRow(make_button("Show traceback", callback=self._on_show_traceback)))
         self.add_item(container)
+        if not traceback_str:
+            self.stop()
 
     async def _on_show_traceback(self, interaction: discord.Interaction) -> None:
         if not can_see_details(interaction):
@@ -146,10 +148,25 @@ async def handle_interaction_error(interaction: discord.Interaction, error: Base
     guild_info = f"'{interaction.guild.name}' ({interaction.guild_id})" if interaction.guild else "DMs"
     channel_name = getattr(interaction.channel, "name", None)
     channel_info = f"#{channel_name} ({interaction.channel_id})" if channel_name else f"channel {interaction.channel_id}"
-    log.error(
-        "Error [%s] in %s '%s' by %s (%s) in %s, %s:\n%s",
-        reference, context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, full_traceback,
+    expected = isinstance(
+        error,
+        (
+            app_commands.MissingPermissions,
+            app_commands.BotMissingPermissions,
+            app_commands.CommandOnCooldown,
+            app_commands.CheckFailure,
+        ),
     )
+    if expected:
+        log.info(
+            "Blocked [%s] %s '%s' by %s (%s) in %s, %s: %s",
+            reference, context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, description,
+        )
+    else:
+        log.error(
+            "Error [%s] in %s '%s' by %s (%s) in %s, %s:\n%s",
+            reference, context_name, command_name, interaction.user, interaction.user.id, guild_info, channel_info, full_traceback,
+        )
 
     original = getattr(error, "original", error)
     # Error 10062 is "Unknown interaction", usually because the 3 second window to answer had passed, so there is nothing to reply to. It is logged above and skipped.

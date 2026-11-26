@@ -473,7 +473,12 @@ class JarSettingsView(SectionMenu):
             options = []
             for cid in sorted(self.rules)[:25]:
                 channel = self.guild.get_channel(cid)
-                name = f"#{channel.name}" if channel is not None else f"Deleted channel {cid}"
+                if isinstance(channel, discord.CategoryChannel):
+                    name = f"{channel.name} (category)"
+                elif channel is not None:
+                    name = f"#{channel.name}"
+                else:
+                    name = f"Deleted channel {cid}"
                 options.append(discord.SelectOption(label=name[:100], value=str(cid), description="Also listens" if self.rules[cid] == "include" else "Never listens"))
             remove_select = discord.ui.Select(placeholder="Remove exceptions", options=options, max_values=len(options))
             remove_select.callback = self._on_rule(None)
@@ -1420,7 +1425,7 @@ class SwearJar(commands.Cog):
         menu = JarSettingsView(self, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
+        menu.message = await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     async def message_fine(self, interaction: discord.Interaction, message: discord.Message) -> None:
         """The Swear Jar message menu: shows what the message was fined, then its author's wallet. The reply is private."""

@@ -19,7 +19,7 @@ from typing import (
 import discord
 from discord.abc import Messageable
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, AuthorOnlyView, make_button
+from cogs.utils.components import BRAND_COLOR, SELECT_TYPES, AuthorOnlyView, make_button
 
 if TYPE_CHECKING:
     Interaction = discord.Interaction[Any]
@@ -115,6 +115,9 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
         changed = False
         for item in self.walk_children():
             if isinstance(item, discord.ui.Button) and item.style != discord.ButtonStyle.link and not item.disabled:
+                item.disabled = True
+                changed = True
+            elif isinstance(item, SELECT_TYPES) and not item.disabled:
                 item.disabled = True
                 changed = True
         if not changed:
@@ -235,7 +238,8 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
                 self.message = await obj.followup.send(**kwargs, **send_kwargs, wait=True)
             else:
                 await obj.response.send_message(**kwargs, **send_kwargs)
-                self.message = await obj.original_response()
+                if not self.is_finished():
+                    self.message = await obj.original_response()
         elif isinstance(obj, Messageable):
             self.message = await obj.send(**kwargs, **send_kwargs)
         else:

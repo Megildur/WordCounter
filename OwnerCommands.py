@@ -92,6 +92,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
             discord.ui.TextDisplay(f"### Nothing kept\nWordCounter stores nothing about {target.label} any more."),
             accent_colour=NEUTRAL_COLOR,
         ))
+        view.stop()
         return view
     view.add_item(discord.ui.Container(
         discord.ui.TextDisplay(
@@ -104,6 +105,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
         discord.ui.TextDisplay(f"-# The whole policy: [Privacy Policy](<{PRIVACY_URL}#kept>)"),
         accent_colour=BRAND_COLOR,
     ))
+    view.stop()
     return view
 
 
@@ -496,6 +498,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             discord.ui.TextDisplay(f"-# {note}"),
             accent_colour=BRAND_COLOR,
         ))
+        view.stop()
         await interaction.followup.send(view=view, file=discord.File(io.BytesIO(data), filename=filename), allowed_mentions=NO_PINGS)
         log.info("Exported the data of a %s: %s", target.what, summary)
 

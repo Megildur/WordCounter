@@ -24,6 +24,7 @@ TRACKING_OFF_MESSAGE = "Tracking is off in this server. An admin can turn it on 
 SERVER_ONLY_MESSAGE = "This command only works in a server."
 
 Callback = Callable[[discord.Interaction], Awaitable[None]]
+SELECT_TYPES = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect, discord.ui.UserSelect, discord.ui.MentionableSelect)
 
 
 def make_button(

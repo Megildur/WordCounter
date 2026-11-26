@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncio
 import calendar
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -584,7 +584,7 @@ class LeaderboardPaginator(ButtonPaginator):
         bot: commands.Bot,
         guild: discord.Guild,
         author_id: int,
-        channel: Optional[discord.TextChannel] = None,
+        channel: Optional[Union[discord.TextChannel, discord.ForumChannel, discord.VoiceChannel]] = None,
     ) -> None:
         super().__init__([], author_id=author_id)
         self.denied_message = "Only the person who ran /leaderboard can use these buttons."
@@ -608,10 +608,13 @@ class LeaderboardPaginator(ButtonPaginator):
             if self.channel is not None:
                 rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
                 if rows:
+                    shown_rows = rows[:24]
                     lines = [
                         f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
-                        for year, month, words, messages, attachments, emojis in rows
+                        for year, month, words, messages, attachments, emojis in shown_rows
                     ]
+                    if len(rows) > 24:
+                        lines.append(f"…and {len(rows) - 24} more month(s)")
                     self.history = [("Monthly history, newest first", "\n".join(lines))]
             self._history_loaded = True
             self._history_channel_id = channel_id
@@ -727,11 +730,11 @@ class Counter_Cmds(commands.Cog):
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
+        menu.message = await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     @app_commands.command(
         name="leaderboard",
-        description="Leaderboards for words, messages, attachments, emojis and keywords",
+        description="Leaderboards for words, messages, attachments, emojis, keywords and swears",
         extras={
             "details": "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's observation deck, with their pictures, then ten members a page. Buttons switch between words, messages, attachments (files, stickers and links), emojis, keywords and swears, and Previous and Next page through. The keywords tab shows who says each tracked keyword most. Pick a channel to rank only what was said there, with that channel's month-by-month history under the list. Members who left show by name. Only the person who ran it can press its buttons, and nobody is pinged. It works once tracking is on in /settings.",
             "bot_perms": (
@@ -740,7 +743,11 @@ class Counter_Cmds(commands.Cog):
         },
     )
     @app_commands.describe(channel="Only count activity in this channel")
-    async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[Union[discord.TextChannel, discord.ForumChannel, discord.VoiceChannel]] = None,
+    ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
