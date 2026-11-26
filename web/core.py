@@ -104,10 +104,13 @@ MESSAGES = {
     "roles_saved": ("success", "Roles saved."),
     "role_problem": ("error", "WordCounter can't give that role out. It needs Manage Roles, the role must be below both WordCounter's and your highest role without moderator permissions, and Potty Mouth must be a dedicated role."),
     "goal_saved": ("success", "Goal saved."),
+    "goal_updated": ("success", "Goal announcement settings saved. Progress kept."),
     "bad_goal": ("error", "Give the goal a name and an amount above zero."),
+    "bad_goal_channel": ("error", "WordCounter can't post in that channel. Pick a text channel it can send messages in."),
     "need_mention_everyone": ("error", "WordCounter needs the Mention Everyone permission to ping @everyone."),
     "goal_ended": ("success", "Goal ended."),
     "jar_reset": ("success", "Swear jar reset."),
+    "bad_action": ("error", "That action isn't supported. Refresh the page and try again."),
 }
 
 

@@ -64,7 +64,7 @@
     <input type="hidden" name="action" value="reset_jar">
     {{ ui.confirm("reset-jar-confirm", "I understand this resets their swear jar.") }}
     <div class="form-actions">
-      <button type="submit" class="btn btn--danger-solid" {% if busy %}disabled{% endif %}>Reset their swear jar</button>
+      <button type="submit" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset their swear jar</button>
     </div>
   </form>
 </section>

@@ -486,6 +486,7 @@ async def member_page(request: web.Request) -> web.Response:
         stats=await member_stats(bot, guild, member_id),
         analyzed=await bot.db.is_user_analyzed(guild.id, member_id),
         jar=await jar_summary(bot, guild.id, member_id),
+        running=running,
         busy=busy,
         reset_menu=channel_menu(
             channel_groups(guild, include_categories=False),
@@ -511,8 +512,11 @@ async def member_action(request: web.Request) -> web.Response:
     # Nothing changes unless the CSRF token matches. Every outcome ends in a redirect with a `?msg=` code, so refreshing the page never repeats the action.
     if not csrf_ok:
         result = "expired_form"
+    elif action not in ("reset_member", "reanalyze_member", "reset_jar"):
+        result = "bad_action"
     else:
-        result = await confirmed_and_free(request, form, guild)
+        # Per-member swear jar reset waits only for a running analysis (matching /swearjar and Discord), while count resets also wait for an interrupted analysis.
+        result = await confirmed_and_free(request, form, guild, running_only=(action == "reset_jar"))
         if result is None and action == "reset_member":
             await db.reset_counts(guild.id, member_id, valid_channel(guild, form.get("channel"), include_categories=False))
             result = "counts_reset"
@@ -529,7 +533,7 @@ async def member_action(request: web.Request) -> web.Response:
                 cog.forget_member(guild.id, member_id)
             refresh_jar(request, guild.id)
             result = "jar_reset"
-    return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
+    return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'bad_action'}")
 
 
 @routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
@@ -575,6 +579,7 @@ async def settings_action(request: web.Request) -> web.Response:
     result = "expired_form"
     # Same as member_action: no change without a valid CSRF token, and every outcome redirects with a `?msg=` code.
     if csrf_ok:
+        result = "bad_action"
         watched, _ = await db.get_guild_tracking_config(guild.id)
         whole = 1 in watched
         if action == "mode" and form.get("mode") in ("whole", "specific"):
@@ -620,6 +625,7 @@ async def settings_action(request: web.Request) -> web.Response:
                 await db.reset_entire_server(guild.id, counts=counts, jar=jar)
                 if cog is not None:
                     cog.forget(guild.id)
-        # Drops the swear jar cog's cached tracking config so changes take effect in Discord at once.
-        refresh_jar(request, guild.id)
+        # Drops the swear jar cog's cached tracking config only when a recognized action ran.
+        if result != "bad_action":
+            refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")
