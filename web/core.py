@@ -11,7 +11,7 @@ import ipaddress
 import logging
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit
@@ -19,7 +19,7 @@ import jinja2
 from aiohttp import web
 from aiohttp.http_exceptions import HttpProcessingError
 from multidict import MultiDict, MultiDictProxy
-from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_EMAIL, SUPPORT_URL, invite_url
+from cogs.utils.config import BOTZILLA_URL, CLIENT_IP_HEADER, DEFAULT_CLIENT_ID, ORIGIN_SECRET, ORIGIN_SECRET_MODE, SITE_URL, SOURCE_URL, SUPPORT_EMAIL, SUPPORT_URL, TRUSTED_PROXY_CIDRS, invite_url
 from cogs.utils.server_settings import ANALYSIS_BUSY_MESSAGE, WIPES
 from web import auth
 
@@ -120,20 +120,24 @@ class Refused(web.HTTPForbidden):
 
 
 class RateLimit:
-    """Allows `limit` requests per `window` seconds for each key. `wait` says how many seconds remain until the key may ask again, or 0 when the request is allowed and counted."""
+    """Allows `limit` requests per `window` seconds for each key, using bounded LRU eviction so memory stays capped without failing open under key floods."""
     def __init__(self, limit: int, window: float, max_keys: int = 20_000) -> None:
         self.limit, self.window, self.max_keys = limit, window, max_keys
-        self.hits: Dict[Any, Deque[float]] = {}
+        self.hits: "OrderedDict[Any, Deque[float]]" = OrderedDict()
         self._swept = float("-inf")
 
     def wait(self, key: Any, now: Optional[float] = None) -> float:
         now = time.monotonic() if now is None else now
-        if key not in self.hits and len(self.hits) >= self.max_keys:
-            # The table is full. Quiet keys are cleared out once a window; if that doesn't make room, this new key isn't counted, so the table stays a fixed size however many addresses ask.
-            self._sweep(now)
+        if key in self.hits:
+            self.hits.move_to_end(key)
+            recent = self.hits[key]
+        else:
             if len(self.hits) >= self.max_keys:
-                return 0.0
-        recent = self.hits.setdefault(key, deque())
+                self._sweep(now)
+                while len(self.hits) >= self.max_keys:
+                    self.hits.popitem(last=False)
+            recent = deque()
+            self.hits[key] = recent
         while recent and now - recent[0] >= self.window:
             recent.popleft()
         if len(recent) >= self.limit:
@@ -341,10 +345,55 @@ def _other_domain(host: str) -> bool:
     return not (ip.is_loopback or ip.is_private)
 
 
-# Requests are limited by the visitor's address. The login pages are limited harder than the rest because each one costs a round trip to Discord or a database write, and 30 in 5 minutes is far more than a person needs. Static files aren't counted, and the dashboard has its own limit for each signed-in person on top of this.
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_tuple(raw: str) -> Optional[Tuple[str, str, int]]:
+    """Normalizes an http/https URL or Origin header to (scheme, lowercase host, port), or None if invalid."""
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower().rstrip(".")
+    if scheme not in ("http", "https") or not host:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host, port
+
+
+def _parse_networks(raw: str) -> Tuple[Any, ...]:
+    networks = []
+    for part in raw.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            log.warning("Ignoring invalid CIDR in TRUSTED_PROXY_CIDRS: %r", text)
+    return tuple(networks)
+
+
+TRUSTED_PROXY_RANGES = _parse_networks(TRUSTED_PROXY_CIDRS)
+
+
+# Requests are limited by the visitor's address. The login pages are limited harder than the rest because each one costs a round trip to Discord or a database write, and 30 in 5 minutes is far more than a person needs. Static files aren't counted, and the dashboard adds per-user read/write and per-guild write budgets on top of this.
 AUTH_PATHS = ("/login", "/callback", "/logout")
 AUTH_LIMIT = RateLimit(30, 300.0)
 PAGE_LIMIT = RateLimit(240, 60.0)
+USER_WRITE_LIMIT = RateLimit(30, 60.0)
+GUILD_WRITE_LIMIT = RateLimit(60, 60.0)
 # Request headers that a proxy may use to pass on the visitor's address. Only their names are ever logged, never what they hold.
 PROXY_HEADERS = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For", "Forwarded", "X-Forwarded-Proto", "Via")
 # Cloudflare's published address ranges (cloudflare.com/ips-v4 and ips-v6). They change rarely, and a range missing from here only means visitors that come through it aren't limited by address, which the log says, never that they are turned away.
@@ -387,20 +436,36 @@ def _from_cloudflare(peer) -> bool:
     return peer is not None and any(peer.version == network.version and peer in network for network in CLOUDFLARE_RANGES)
 
 
+def _from_trusted_proxy(peer) -> bool:
+    return peer is not None and any(peer.version == network.version and peer in network for network in TRUSTED_PROXY_RANGES)
+
+
+def origin_verified(request: web.Request) -> bool:
+    """Whether `request` carried the configured `X-Origin-Secret` while `ORIGIN_SECRET_MODE` is `enforce`, proving Cloudflare origin routing even behind container NAT."""
+    if not ORIGIN_SECRET or ORIGIN_SECRET_MODE != "enforce":
+        return False
+    given = request.headers.get(ORIGIN_HEADER)
+    return given is not None and auth._same(given, ORIGIN_SECRET)
+
+
 def client_address(request: web.Request) -> Optional[str]:
-    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. The owner turns this on with CLIENT_IP_HEADER, because the website can't tell by itself whether the connecting address is the visitor's or a proxy's: a proxy or a CDN connects from a public address too, and counting by it would put every visitor in one group and lock them all out together. The setting is the name of the header the proxy sets to the visitor's address (for a list such as X-Forwarded-For the last entry is used, the one our own proxy added, since the rest is whatever the visitor sent), or the word `peer` when nothing stands in front of the website, and the connecting address, if it is a public one, is the visitor's. The word `cloudflare` reads CF-Connecting-IP, but only on a connection that comes from one of Cloudflare's address ranges, so someone who reaches the website without Cloudflare can't write a header to be counted as another visitor: that request has no trusted address and isn't limited."""
+    """The visitor's address, or None when it can't be trusted. In `cloudflare` mode, trusts CF-Connecting-IP from Cloudflare's ranges or with a verified enforcing X-Origin-Secret (for NATted origins), and falls back to a public peer address on direct-origin requests so direct traffic is still rate-limited. Custom header names require peer membership in TRUSTED_PROXY_RANGES."""
     if not CLIENT_IP_HEADER:
         return None
     mode = CLIENT_IP_HEADER.lower()
+    peer = _ip(request.remote)
     if mode == "peer":
-        peer = _ip(request.remote)
         return _grouped(peer) if peer is not None and peer.is_global else None
-    header = "CF-Connecting-IP" if mode == "cloudflare" else CLIENT_IP_HEADER
-    if mode == "cloudflare" and not _from_cloudflare(_ip(request.remote)):
-        return None
-    # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
-    forwarded = _ip(",".join(request.headers.getall(header, [])).split(",")[-1])
-    return _grouped(forwarded) if forwarded is not None else None
+    if mode == "cloudflare":
+        if _from_cloudflare(peer) or origin_verified(request):
+            forwarded = _ip(",".join(request.headers.getall("CF-Connecting-IP", [])).split(",")[-1])
+            return _grouped(forwarded) if forwarded is not None else None
+        return _grouped(peer) if peer is not None and peer.is_global else None
+    if _from_trusted_proxy(peer):
+        # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
+        forwarded = _ip(",".join(request.headers.getall(CLIENT_IP_HEADER, [])).split(",")[-1])
+        return _grouped(forwarded) if forwarded is not None else None
+    return _grouped(peer) if peer is not None and peer.is_global else None
 
 
 def _tell_about_proxy(request: web.Request) -> None:
@@ -442,9 +507,21 @@ def limit_by_address(request: web.Request) -> None:
     if not _confirmed:
         _confirmed = True
         log.info("Requests are limited by visitor address (CLIENT_IP_HEADER is %s).", CLIENT_IP_HEADER)
-    wait = (AUTH_LIMIT if request.path in AUTH_PATHS else PAGE_LIMIT).wait(address)
+    norm_path = request.path.rstrip("/") or "/"
+    wait = (AUTH_LIMIT if _under(norm_path, *AUTH_PATHS) else PAGE_LIMIT).wait(address)
     if wait:
         raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(wait) + 1))})
+
+
+def limit_write(user_id: int, guild_id: Optional[int] = None) -> None:
+    """Enforces per-user (30/60s) and per-guild (60/60s) budgets on mutating dashboard POSTs."""
+    wait = USER_WRITE_LIMIT.wait(user_id)
+    if wait:
+        raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(wait) + 1))})
+    if guild_id is not None:
+        guild_wait = GUILD_WRITE_LIMIT.wait(guild_id)
+        if guild_wait:
+            raise web.HTTPTooManyRequests(headers={"Retry-After": str(max(1, int(guild_wait) + 1))})
 
 
 def _old_address(request: web.Request) -> bool:
@@ -453,15 +530,29 @@ def _old_address(request: web.Request) -> bool:
 
 
 def sent_from_other_site(request: web.Request) -> bool:
-    """Whether the browser says another site started this request. `Sec-Fetch-Site` is set by the browser and a page can't change it, and `Origin` is the older signal. A request with neither, such as one from an old browser, isn't refused here: the CSRF token still has to match."""
+    """Whether the browser says another site started this request. `Sec-Fetch-Site` is set by the browser and a page can't change it, and `Origin` is checked by exact normalized (scheme, hostname, port) against SITE_URL. Loopback origins are permitted only when SITE_URL itself is local HTTP."""
     if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
         return True
     origin = request.headers.get("Origin")
     # "null" is what a browser sends after some redirects and from some privacy settings, so it says nothing about the site.
     if not origin or origin == "null":
         return False
-    host = urlsplit(origin).hostname
-    return host is None or _other_domain(host)
+    origin_parts = _origin_tuple(origin)
+    if origin_parts is None:
+        return True
+    expected = _origin_tuple(SITE_URL)
+    if expected is None:
+        req_scheme = (request.url.scheme or "http").lower()
+        req_host = (request.url.host or "").lower().rstrip(".")
+        req_port = request.url.port or (443 if req_scheme == "https" else 80)
+        if not req_host:
+            return True
+        expected = (req_scheme, req_host, req_port)
+    if origin_parts == expected:
+        return False
+    if expected[0] == "http" and _is_loopback_host(expected[1]):
+        return not (origin_parts[0] == "http" and _is_loopback_host(origin_parts[1]) and origin_parts[2] == expected[2])
+    return True
 
 
 async def post_form(request: web.Request) -> MultiDictProxy:

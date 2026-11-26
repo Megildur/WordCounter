@@ -16,7 +16,7 @@ from cogs.utils.config import guild_invite_url
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, post_form, redirect, render, sent_from_other_site
+from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, limit_write, post_form, redirect, render, sent_from_other_site
 
 routes = web.RouteTableDef()
 log = logging.getLogger(__name__)
@@ -161,12 +161,16 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
     mutating = request.method not in ("GET", "HEAD", "OPTIONS")
     if mutating and sent_from_other_site(request):
         raise Refused(text="That form was sent from another site, so it was refused.")
+    guild_id = None
     if "guild_id" in request.match_info:
-        _, _, manager = await member_access(request)
+        guild, _, manager = await member_access(request)
         if not manager and pattern not in MEMBER_PAGES:
             return manager_only(request)
-    if mutating and not auth.check_csrf(user, (await post_form(request)).get("csrf")):
-        raise web.HTTPFound(f"{request.path}?msg=expired_form")
+        guild_id = guild.id
+    if mutating:
+        if not auth.check_csrf(user, (await post_form(request)).get("csrf")):
+            raise web.HTTPFound(f"{request.path}?msg=expired_form")
+        limit_write(int(user["id"]), guild_id)
     return await handler(request)
 
 
