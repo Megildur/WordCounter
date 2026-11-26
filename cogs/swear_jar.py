@@ -93,7 +93,7 @@ SPAM_EMOJI = "🚫"
 # How long the "message removed" notice stays up in delete mode.
 NOTICE_SECONDS = 5
 # Seconds a server's cached JarState is reused before it is rebuilt from the database.
-STATE_TTL = 15.0
+STATE_TTL = 300.0
 # How long an ID that the owner commands deleted stays refused for day counts, so a write that was already waiting for the database lock can't put its rows back after the delete.
 FORGET_SECONDS = 60.0
 # Seconds between daily credit checks. The upkeep loop itself runs every minute.
@@ -282,10 +282,17 @@ class JarSettingsView(SectionMenu):
 
     async def load_state(self) -> None:
         db = self.bot.db
-        self.settings = await db.jar_settings(self.guild.id)
-        self.overrides = await db.jar_word_overrides(self.guild.id)
-        self.rules = await db.jar_channel_rules(self.guild.id)
-        self.goal = await db.jar_goal(self.guild.id)
+        if hasattr(db, "jar_bundle"):
+            bundle = await db.jar_bundle(self.guild.id, include_goal=True)
+            self.settings = bundle["settings"]
+            self.overrides = bundle["overrides"]
+            self.rules = bundle["rules"]
+            self.goal = bundle["goal"]
+        else:
+            self.settings = await db.jar_settings(self.guild.id)
+            self.overrides = await db.jar_word_overrides(self.guild.id)
+            self.rules = await db.jar_channel_rules(self.guild.id)
+            self.goal = await db.jar_goal(self.guild.id)
         # Every change ends in a reload, which drops the cached state so the listeners use the new settings straight away.
         self.cog.invalidate(self.guild.id)
 
@@ -965,23 +972,39 @@ class SwearJar(commands.Cog):
     async def _build_state(self, guild_id: int) -> JarState:
         db = self.bot.db
         building = self._building.get(guild_id)
-        settings = await db.jar_settings(guild_id)
-        if not settings["enabled"]:
-            state = JarState(settings)
+        if hasattr(db, "jar_bundle"):
+            bundle = await db.jar_bundle(guild_id, include_tracking=True, include_coverage=True)
+            settings = bundle["settings"]
+            if not settings["enabled"]:
+                state = JarState(settings)
+            else:
+                # live_since is the start of the open coverage period, which is when the jar was last turned on.
+                live = [start for start, end in bundle["coverage"] if end is None]
+                state = JarState(
+                    settings,
+                    # Building a matcher compiles regexes, so it runs in a thread to keep the event loop free. matcher_for caches the result.
+                    await asyncio.to_thread(matcher_for, tuple(bundle["overrides"]), languages_for(settings)),
+                    bundle["rules"],
+                    bundle["watched"],
+                    bundle["ignored"],
+                    min(live) if live else 0,
+                )
         else:
-            overrides = tuple(await db.jar_word_overrides(guild_id))
-            watched, ignored = await db.get_guild_tracking_config(guild_id)
-            # live_since is the start of the open coverage period, which is when the jar was last turned on.
-            live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
-            state = JarState(
-                settings,
-                # Building a matcher compiles regexes, so it runs in a thread to keep the event loop free. matcher_for caches the result.
-                await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
-                await db.jar_channel_rules(guild_id),
-                watched,
-                ignored,
-                min(live) if live else 0,
-            )
+            settings = await db.jar_settings(guild_id)
+            if not settings["enabled"]:
+                state = JarState(settings)
+            else:
+                overrides = tuple(await db.jar_word_overrides(guild_id))
+                watched, ignored = await db.get_guild_tracking_config(guild_id)
+                live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
+                state = JarState(
+                    settings,
+                    await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
+                    await db.jar_channel_rules(guild_id),
+                    watched,
+                    ignored,
+                    min(live) if live else 0,
+                )
         # Not kept when the settings changed while it was built (`invalidate` dropped the build): it is still the answer for the messages that waited, as it was before.
         if self._building.get(guild_id) is building:
             self.states[guild_id] = state

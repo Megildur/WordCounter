@@ -153,9 +153,17 @@ async def swearjar(request: web.Request) -> web.Response:
         return manager_only(request)
     bot = request.app["bot"]
     db = bot.db
-    settings = await db.jar_settings(guild.id)
-    overrides = await db.jar_word_overrides(guild.id)
-    rules = await db.jar_channel_rules(guild.id)
+    if hasattr(db, "jar_bundle"):
+        bundle = await db.jar_bundle(guild.id, include_goal=True)
+        settings = bundle["settings"]
+        overrides = bundle["overrides"]
+        rules = bundle["rules"]
+        goal = bundle["goal"]
+    else:
+        settings = await db.jar_settings(guild.id)
+        overrides = await db.jar_word_overrides(guild.id)
+        rules = await db.jar_channel_rules(guild.id)
+        goal = await db.jar_goal(guild.id)
     words = word_lists(settings, overrides, word_tab(request.query.get("lang")))
     running, _ = await analysis_state(bot, guild.id)
     me = guild.me
@@ -174,7 +182,7 @@ async def swearjar(request: web.Request) -> web.Response:
         clean_roles=role_options(guild, member),
         potty_current=current_role_info(guild, settings["potty_role_id"], member, single_holder=True),
         clean_current=current_role_info(guild, settings["clean_role_id"], member),
-        goal=goal_view(settings, await db.jar_goal(guild.id)),
+        goal=goal_view(settings, goal),
         goal_channels=goal_channels(guild),
         can_delete=bool(me and me.guild_permissions.manage_messages),
         can_manage_roles=bool(me and me.guild_permissions.manage_roles),

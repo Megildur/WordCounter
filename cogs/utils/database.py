@@ -473,25 +473,28 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         sync_tracking_for: Optional[int] = None,
         kept_guild: Optional[int] = None,
     ) -> None:
-        """Runs each (sql, rows) pair with executemany in one transaction and commits. It takes `db_lock` itself, so don't call it from inside a lock block. Pass `sync_tracking_for` when the statements change a server's channels, so its tracking period is opened or closed in the same transaction."""
+        """Plans all (sql, rows) pairs into batched statements and runs them in one transaction (and one round trip up to MAX_BYTES) and commits. It takes `db_lock` itself, so don't call it from inside a lock block. Pass `sync_tracking_for` when the statements change a server's channels, so its tracking period is opened or closed in the same transaction."""
+        planned = _Planned()
+        for sql, rows in statements:
+            await planned.executemany(sql, list(rows))
         await self.ensure_connected()
         async with self.db_lock:
             if kept_guild is not None and hasattr(self.db, "kept_scope"):
                 self.db.kept_scope = kept_guild
-            for index, (sql, rows) in enumerate(statements):
-                if index:
-                    await asyncio.sleep(0)
-                await self.db.executemany(sql, list(rows))
+            if planned.statements:
+                await self.db.run_many(planned.statements)
             if sync_tracking_for is not None:
                 await self._sync_tracking_period(sync_tracking_for)
             await self.db.commit()
 
     async def _sync_tracking_period(self, guild_id: int) -> None:
         """Keeps tracking_periods in step with `channels`: a period opens when the first channel is switched on and closes when the last one is switched off."""
-        enabled = await self._fetch_value("SELECT COUNT(*) FROM channels WHERE guild_id = ?", (guild_id,))
-        is_open = await self._fetch_value(
-            "SELECT COUNT(*) FROM tracking_periods WHERE guild_id = ? AND ended IS NULL", (guild_id,)
-        )
+        enabled_out, open_out = await self.db.run_many([
+            ("SELECT COUNT(*) FROM channels WHERE guild_id = ?", (guild_id,)),
+            ("SELECT COUNT(*) FROM tracking_periods WHERE guild_id = ? AND ended IS NULL", (guild_id,)),
+        ])
+        enabled = enabled_out.rows[0][0] if enabled_out.rows and enabled_out.rows[0][0] is not None else 0
+        is_open = open_out.rows[0][0] if open_out.rows and open_out.rows[0][0] is not None else 0
         if enabled and not is_open:
             await self.db.execute(
                 "INSERT IGNORE INTO tracking_periods (guild_id, started, ended) VALUES (?, ?, NULL)",
@@ -952,9 +955,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 rows["keyword_user"].append((guild_id, user_id, keyword, count))
 
         # executemany only fills the VALUES list, which is why both of these add with VALUES(col) in their UPDATE part.
+        planned = _Planned()
         for table, table_rows in rows.items():
-            await self.db.executemany(_increment_sql(table), table_rows)
-        await self.db.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
+            await planned.executemany(_increment_sql(table), table_rows)
+        await planned.executemany(MONTHLY_BULK_UPSERT, monthly_rows)
+        if planned.statements:
+            await self.db.run_many(planned.statements)
 
     async def _mark_analyzed(self, guild_id: int, user_ids: Iterable[int]) -> None:
         """Marks members as analyzed, which stops `/analyze_chat` from counting them a second time, and records when. Members already marked are ignored, so their time stays the first one."""
@@ -1166,8 +1172,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             try:
                 await self.ensure_connected()
                 async with self.db_lock:
-                    messages = await self._fetch_value("SELECT SUM(messages) FROM message_user", ())
-                    words = await self._fetch_value("SELECT SUM(count) FROM server", ())
+                    messages_out, words_out = await self.db.run_many([
+                        ("SELECT SUM(messages) FROM message_user", ()),
+                        ("SELECT SUM(count) FROM server", ()),
+                    ])
+                messages = messages_out.rows[0][0] if messages_out.rows and messages_out.rows[0][0] is not None else 0
+                words = words_out.rows[0][0] if words_out.rows and words_out.rows[0][0] is not None else 0
             except (DatabaseError, OSError):
                 if kept is None:
                     raise
@@ -1202,6 +1212,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 self.db.kept_scope = guild_id
             cursor = await self.db.execute("SELECT keyword FROM keyword WHERE guild_id = ?", (guild_id,))
             existing = {row[0].lower() for row in await cursor.fetchall()}
+            to_insert: List[Tuple[int, str]] = []
             for keyword in keywords:
                 cleaned = keyword.strip().lower()
                 if not cleaned:
@@ -1209,9 +1220,11 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 if cleaned in existing or len(cleaned) > KEYWORD_LIMIT:
                     skipped.append(cleaned)
                     continue
-                await self.db.execute("INSERT INTO keyword (guild_id, keyword) VALUES (?, ?)", (guild_id, cleaned))
+                to_insert.append((guild_id, cleaned))
                 existing.add(cleaned)
                 added.append(cleaned)
+            if to_insert:
+                await self.db.executemany("INSERT INTO keyword (guild_id, keyword) VALUES (?, ?)", to_insert)
             await self.db.commit()
         return added, skipped
 
@@ -1241,16 +1254,18 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         await self.ensure_connected()
         params = (guild_id, user_id)
         async with self.db_lock:
-            words = await self._fetch_value("SELECT count FROM server WHERE guild_id = ? AND user_id = ?", params)
-            messages = await self._fetch_value("SELECT messages FROM message_user WHERE guild_id = ? AND user_id = ?", params)
-            attachments = await self._fetch_value("SELECT count FROM attachments_users WHERE guild_id = ? AND user_id = ?", params)
-            emojis = await self._fetch_value("SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?", params)
-            cursor = await self.db.execute(
-                "SELECT keyword, count FROM keyword_user WHERE guild_id = ? AND user_id = ? AND count > 0",
-                params,
-            )
-            keywords = await cursor.fetchall()
-        return words, messages, attachments, emojis, keywords
+            words_out, msg_out, att_out, emoji_out, kw_out = await self.db.run_many([
+                ("SELECT count FROM server WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT messages FROM message_user WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT count FROM attachments_users WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT keyword, count FROM keyword_user WHERE guild_id = ? AND user_id = ? AND count > 0", params),
+            ])
+        words = words_out.rows[0][0] if words_out.rows and words_out.rows[0][0] is not None else 0
+        messages = msg_out.rows[0][0] if msg_out.rows and msg_out.rows[0][0] is not None else 0
+        attachments = att_out.rows[0][0] if att_out.rows and att_out.rows[0][0] is not None else 0
+        emojis = emoji_out.rows[0][0] if emoji_out.rows and emoji_out.rows[0][0] is not None else 0
+        return words, messages, attachments, emojis, kw_out.rows
 
     async def reset_counts(self, guild_id: int, user_id: Optional[int] = None, channel_id: Optional[int] = None) -> None:
         """Clears counts for the whole server, one member, one channel, or one member in one channel, and records a reset marker. Settings, the keyword list and the analyzed flags are kept."""
@@ -1262,52 +1277,77 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def allow_reanalysis(self, guild_id: int, user_id: Optional[int] = None) -> None:
         """Clears the counts and the analyzed flags for the whole server or one member, so `/analyze_chat` can read their messages again."""
         await self.ensure_connected()
+        if user_id is None:
+            extra = [("DELETE FROM analyzed_users WHERE guild_id = ?", (guild_id,))]
+        else:
+            extra = [("DELETE FROM analyzed_users WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))]
         async with self.db_lock:
-            await self._clear_counts(guild_id, user_id, None)
-            if user_id is None:
-                await self.db.execute("DELETE FROM analyzed_users WHERE guild_id = ?", (guild_id,))
-            else:
-                await self.db.execute("DELETE FROM analyzed_users WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+            await self._clear_counts(guild_id, user_id, None, extra_statements=extra)
             await self.db.commit()
 
-    async def _clear_counts(self, guild_id: int, user_id: Optional[int], channel_id: Optional[int]) -> None:
+    async def _clear_counts(
+        self,
+        guild_id: int,
+        user_id: Optional[int],
+        channel_id: Optional[int],
+        *,
+        extra_statements: Sequence[Tuple[str, Sequence[Any]]] = (),
+    ) -> None:
         """Deletes counts for the given scope and writes the reset marker. The caller holds `db_lock` and commits."""
-        if channel_id is None:
-            scope = "guild_id = ?" + (" AND user_id = ?" if user_id is not None else "")
-            params = (guild_id,) + ((user_id,) if user_id is not None else ())
-            for table in COUNT_DATA_TABLES:
-                await self.db.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
-        else:
-            scope = "guild_id = ? AND channel_id = ?" + (" AND user_id = ?" if user_id is not None else "")
-            params = (guild_id, channel_id) + ((user_id,) if user_id is not None else ())
-            # The per-user tables have no channel column, so read what the channel held, delete its rows, then take that off each member's total.
-            for channel_table, user_table in METRIC_TABLES.values():
-                column = COUNT_TABLES[channel_table][1]
-                cursor = await self.db.execute(f"SELECT user_id, {column} FROM {channel_table} WHERE {scope}", params)
-                removed = [{"guild_id": guild_id, "user_id": uid, "amount": amount} for uid, amount in await cursor.fetchall()]
-                await self.db.execute(f"DELETE FROM {channel_table} WHERE {scope}", params)
-                await self._subtract(user_table, removed)
-
-            cursor = await self.db.execute(f"SELECT user_id, keyword, count FROM keyword_channel WHERE {scope}", params)
-            removed = [{"guild_id": guild_id, "user_id": uid, "keyword": kw, "amount": n} for uid, kw, n in await cursor.fetchall()]
-            await self.db.execute(f"DELETE FROM keyword_channel WHERE {scope}", params)
-            await self._subtract("keyword_user", removed)
-
-            for table in ("monthly_user_stats", "monthly_user_keywords"):
-                await self.db.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
-
-        # A marker of 0 for the user or the channel means all of them. The analysis reads these to count the wiped messages again.
-        await self.db.execute(
+        reset_stmt = (
             """INSERT INTO count_resets (guild_id, user_id, channel_id, reset_at) VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE reset_at = VALUES(reset_at)""",
             (guild_id, user_id or 0, channel_id or 0, now_snowflake()),
         )
+        if channel_id is None:
+            scope = "guild_id = ?" + (" AND user_id = ?" if user_id is not None else "")
+            params = (guild_id,) + ((user_id,) if user_id is not None else ())
+            statements: List[Tuple[str, Sequence[Any]]] = [
+                (f"DELETE FROM `{table}` WHERE {scope}", params) for table in COUNT_DATA_TABLES
+            ]
+            statements.append(reset_stmt)
+            statements.extend(extra_statements)
+            await self.db.run_many(statements)
+            return
 
-    async def _subtract(self, table: str, removed: List[Dict[str, Any]]) -> None:
+        scope = "guild_id = ? AND channel_id = ?" + (" AND user_id = ?" if user_id is not None else "")
+        params = (guild_id, channel_id) + ((user_id,) if user_id is not None else ())
+        # The per-user tables have no channel column, so read what the channel held in 1 RT, then delete and subtract in 1 RT.
+        metric_pairs = list(METRIC_TABLES.values())
+        selects: List[Tuple[str, Sequence[Any]]] = [
+            (f"SELECT user_id, {COUNT_TABLES[channel_table][1]} FROM {channel_table} WHERE {scope}", params)
+            for channel_table, _ in metric_pairs
+        ]
+        selects.append((f"SELECT user_id, keyword, count FROM keyword_channel WHERE {scope}", params))
+        outcomes = await self.db.run_many(selects)
+
+        planned = _Planned()
+        for (channel_table, user_table), outcome in zip(metric_pairs, outcomes[:-1]):
+            removed = [{"guild_id": guild_id, "user_id": uid, "amount": amount} for uid, amount in outcome.rows]
+            await planned.execute(f"DELETE FROM {channel_table} WHERE {scope}", params)
+            await self._subtract(user_table, removed, target=planned)
+
+        kw_removed = [{"guild_id": guild_id, "user_id": uid, "keyword": kw, "amount": n} for uid, kw, n in outcomes[-1].rows]
+        await planned.execute(f"DELETE FROM keyword_channel WHERE {scope}", params)
+        await self._subtract("keyword_user", kw_removed, target=planned)
+
+        for table in ("monthly_user_stats", "monthly_user_keywords"):
+            await planned.execute(f"DELETE FROM `{table}` WHERE {scope}", params)
+
+        # A marker of 0 for the user or the channel means all of them. The analysis reads these to count the wiped messages again.
+        await planned.execute(*reset_stmt)
+        for sql, extra_params in extra_statements:
+            await planned.execute(sql, extra_params)
+        await self.db.run_many(planned.statements)
+
+    async def _subtract(self, table: str, removed: List[Dict[str, Any]], target: Any = None) -> None:
         """Takes each row's `amount` off a counter table and deletes rows that reach zero. Each row holds the table's key columns and `amount`."""
+        if not removed:
+            return
+        runner = target or self.db
         decrement, prune = _decrement_sql(table)
-        await self.db.executemany(decrement, [(row["amount"], *_key_values(table, row)) for row in removed])
-        await self.db.executemany(prune, [_key_values(table, row) for row in removed])
+        await runner.executemany(decrement, [(row["amount"], *_key_values(table, row)) for row in removed])
+        await runner.executemany(prune, [_key_values(table, row) for row in removed])
 
     async def reset_entire_server(self, guild_id: int, counts: bool = True, jar: bool = True) -> None:
         """Deletes one server's data: with `counts` the tracking side (counts, who was analyzed, tracked and ignored channels, keywords, tracking periods, reset markers and a saved member or server analysis), with `jar` the whole swear jar (settings, words, channel rules, goal, balances, fines, swear counts, coverage and a saved swears analysis). Both is a reset of everything."""

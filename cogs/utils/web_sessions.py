@@ -31,8 +31,9 @@ GONE_SECONDS = 300.0
 KEPT_LIMIT = 5000
 # Someone who signs in on more browsers than this loses the oldest sessions.
 SESSIONS_PER_USER = 10
-# Clears at most this many ended rows on each login, so a big backlog never stalls the database.
+# Clears at most this many ended rows, at most once per EXPIRED_PRUNE_SECONDS, so concurrent logins don't contend on idx_web_sessions_expires.
 EXPIRED_BATCH = 500
+EXPIRED_PRUNE_SECONDS = 300.0
 # How long a person's server list from Discord is kept, and how many people's lists at most. The oldest is dropped first when the limit is reached.
 SERVERS_SECONDS = 3600.0
 SERVERS_LIMIT = 2000
@@ -42,16 +43,23 @@ class WebSessionQueries:
     """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers, the timer that drops them)}."""
 
     async def create_web_session(self, token_hash: str, user_id: int, lifetime: int) -> None:
-        """Records a new session that ends `lifetime` seconds from now, and clears out up to EXPIRED_BATCH sessions that have ended. Raises when the session couldn't be saved. Someone's oldest sessions beyond SESSIONS_PER_USER are then dropped, which is only tidying: if it fails the login still stands."""
+        """Records a new session that ends `lifetime` seconds from now, drops oldest sessions beyond SESSIONS_PER_USER, and periodically clears ended sessions in one transaction."""
         now = int(time.time())
-        await self._write([
-            ("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", [(now, EXPIRED_BATCH)]),
-            ("INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)", [(token_hash, user_id, now, now + lifetime)]),
+        last_prune = getattr(self, "_last_expired_prune", 0.0)
+        should_prune = now - last_prune >= EXPIRED_PRUNE_SECONDS
+        statements: List[Tuple[str, Tuple[Any, ...]]] = []
+        if should_prune:
+            statements.append(("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", (now, EXPIRED_BATCH)))
+        statements.extend([
+            ("INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)", (token_hash, user_id, now, now + lifetime)),
+            (KEEP_NEWEST, (user_id, user_id, SESSIONS_PER_USER)),
         ])
-        try:
-            await self._write([(KEEP_NEWEST, [(user_id, user_id, SESSIONS_PER_USER)])])
-        except Exception as error:
-            log.warning("Couldn't drop a person's oldest login sessions: %s", error)
+        await self.ensure_connected()
+        async with self.db_lock:
+            await self.db.run_many(statements)
+            await self.db.commit()
+        if should_prune:
+            self._last_expired_prune = now
         # A session that was dropped by the last statement is no longer alive, so nothing in memory may still say it is.
         self.forget_web_sessions(user_id)
 
