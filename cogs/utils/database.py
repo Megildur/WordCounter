@@ -331,8 +331,9 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         self._config_kept: Dict[int, Tuple[float, Set[int], Set[int]]] = {}
         self._keywords_kept: Dict[int, Tuple[float, List[str]]] = {}
         self._kept_epoch = 0
+        self._guild_epochs: Dict[int, int] = defaultdict(int)
         # Reads of those in flight, per (what, server) with the epoch they began in: everyone who asks meanwhile waits for the same read (`_read_once`).
-        self._kept_reads: Dict[Tuple[str, int], Tuple[int, "asyncio.Future[Any]"]] = {}
+        self._kept_reads: Dict[Tuple[str, int], Tuple[Tuple[int, int], "asyncio.Future[Any]"]] = {}
         # The totals every status line and home page view asks for, which sum whole tables, and the lock that makes callers share one read.
         self._totals_kept: Optional[Tuple[float, Tuple[int, int]]] = None
         self._totals_lock = asyncio.Lock()
@@ -386,11 +387,23 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 log.warning("Database connection was still in use after %.0f s; closing it", POOL_CLOSE_SECONDS)
                 pool.terminate()
 
-    def forget_kept(self) -> None:
-        """Drops what is kept in memory of the tracking settings and keywords. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
-        self._kept_epoch += 1
-        self._config_kept.clear()
-        self._keywords_kept.clear()
+    def _epoch_for(self, guild_id: int) -> Tuple[int, int]:
+        guild_epochs = getattr(self, "_guild_epochs", None)
+        return (self._kept_epoch, guild_epochs.get(guild_id, 0) if guild_epochs is not None else 0)
+
+    def forget_kept(self, guild_id: Optional[int] = None) -> None:
+        """Drops what is kept in memory of the tracking settings and keywords, for one server or all of them. `SessionLock` calls it when a block that wrote to those tables ends, however it ends and whichever method wrote. A read that began before the change and ends after it sees the new epoch and doesn't store its old rows."""
+        if guild_id is None:
+            self._kept_epoch += 1
+            self._config_kept.clear()
+            self._keywords_kept.clear()
+            return
+        guild_epochs = getattr(self, "_guild_epochs", None)
+        if guild_epochs is None:
+            guild_epochs = self._guild_epochs = defaultdict(int)
+        guild_epochs[guild_id] += 1
+        self._config_kept.pop(guild_id, None)
+        self._keywords_kept.pop(guild_id, None)
 
     async def _ensure_indexes(self, existing: Set[str], present_indexes: Set[Tuple[str, str]]) -> Set[str]:
         """Adds only missing indexes on pre-existing tables, matching Botzilla's Schema.ensure_indexes idempotency."""
@@ -454,10 +467,17 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         row = await cursor.fetchone()
         return row[0] if row and row[0] is not None else 0
 
-    async def _write(self, statements: Statements, sync_tracking_for: Optional[int] = None) -> None:
+    async def _write(
+        self,
+        statements: Statements,
+        sync_tracking_for: Optional[int] = None,
+        kept_guild: Optional[int] = None,
+    ) -> None:
         """Runs each (sql, rows) pair with executemany in one transaction and commits. It takes `db_lock` itself, so don't call it from inside a lock block. Pass `sync_tracking_for` when the statements change a server's channels, so its tracking period is opened or closed in the same transaction."""
         await self.ensure_connected()
         async with self.db_lock:
+            if kept_guild is not None and hasattr(self.db, "kept_scope"):
+                self.db.kept_scope = kept_guild
             for index, (sql, rows) in enumerate(statements):
                 if index:
                     await asyncio.sleep(0)
@@ -541,9 +561,9 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         row = analyzed.rows[0] if analyzed.rows else None
         return periods, resets, row is not None, row[0] if row else None
 
-    async def _read_once(self, what: str, guild_id: int, load: Callable[[int], Awaitable[Any]]) -> Any:
+    async def _read_once(self, what: str, guild_id: int, load: Callable[[Tuple[int, int]], Awaitable[Any]]) -> Any:
         """Runs `load(epoch)` once for everyone who asks for `what` of a server while it runs. Without this, every message that arrives while an expired value is read again starts a read of its own, each waiting for the database lock. A caller joins a read only when nothing was committed since it began (the same epoch), so nobody gets rows from before a change they could already see, and a caller that is cancelled doesn't cancel the read for the others."""
-        epoch = self._kept_epoch
+        epoch = self._epoch_for(guild_id)
         key = (what, guild_id)
         flight = self._kept_reads.get(key)
         if flight is None or flight[0] != epoch:
@@ -551,7 +571,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             flight = (epoch, task)
             self._kept_reads[key] = flight
 
-            def done(finished: "asyncio.Future[Any]", key: Tuple[str, int] = key, flight: Tuple[int, "asyncio.Future[Any]"] = flight) -> None:
+            def done(finished: "asyncio.Future[Any]", key: Tuple[str, int] = key, flight: Tuple[Tuple[int, int], "asyncio.Future[Any]"] = flight) -> None:
                 if self._kept_reads.get(key) is flight:
                     del self._kept_reads[key]
                 # Fetched here so an error that every caller stopped waiting for isn't reported as never retrieved.
@@ -569,7 +589,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         watched_ids, ignored_ids = await self._read_once("config", guild_id, lambda epoch: self._read_tracking_config(guild_id, epoch))
         return set(watched_ids), set(ignored_ids)
 
-    async def _read_tracking_config(self, guild_id: int, epoch: int) -> Tuple[Set[int], Set[int]]:
+    async def _read_tracking_config(self, guild_id: int, epoch: Tuple[int, int]) -> Tuple[Set[int], Set[int]]:
         await self.ensure_connected()
         async with self.db_lock:
             watched, ignored = await self.db.run_many([
@@ -579,7 +599,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         watched_ids = {row[0] for row in watched.rows}
         ignored_ids = {row[0] for row in ignored.rows}
         # Only kept when nothing was committed to these tables since the read began.
-        if epoch == self._kept_epoch:
+        if epoch == self._epoch_for(guild_id):
             self._config_kept[guild_id] = (time.monotonic(), set(watched_ids), set(ignored_ids))
         return watched_ids, ignored_ids
 
@@ -594,15 +614,15 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 ("INSERT INTO channels (guild_id, channel_id) VALUES (?, 1)", [(guild_id,)]),
             ],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def switch_to_specific_mode(self, guild_id: int) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id = 1", [(guild_id,)])],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def disable_server_tracking(self, guild_id: int) -> None:
         await self._write(
@@ -611,41 +631,44 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 ("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)]),
             ],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def add_watched_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write(
             [("INSERT IGNORE INTO channels (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def remove_watched_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def clear_watched_channels(self, guild_id: int) -> None:
         await self._write(
             [("DELETE FROM channels WHERE guild_id = ? AND channel_id != 1", [(guild_id,)])],
             sync_tracking_for=guild_id,
+            kept_guild=guild_id,
         )
-        self.forget_kept()
 
     async def add_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
-        await self._write([("INSERT IGNORE INTO `ignore` (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])])
-        self.forget_kept()
+        await self._write(
+            [("INSERT IGNORE INTO `ignore` (guild_id, channel_id) VALUES (?, ?)", [(guild_id, cid) for cid in channel_ids])],
+            kept_guild=guild_id,
+        )
 
     async def remove_ignored_channels(self, guild_id: int, channel_ids: Sequence[int]) -> None:
-        await self._write([("DELETE FROM `ignore` WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])])
-        self.forget_kept()
+        await self._write(
+            [("DELETE FROM `ignore` WHERE guild_id = ? AND channel_id = ?", [(guild_id, cid) for cid in channel_ids])],
+            kept_guild=guild_id,
+        )
 
     async def clear_ignored_channels(self, guild_id: int) -> None:
-        await self._write([("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)])])
-        self.forget_kept()
+        await self._write([("DELETE FROM `ignore` WHERE guild_id = ?", [(guild_id,)])], kept_guild=guild_id)
 
     @staticmethod
     def _plan_activity(
@@ -1160,12 +1183,12 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             return list(kept[1])
         return list(await self._read_once("keywords", guild_id, lambda epoch: self._read_keywords(guild_id, epoch)))
 
-    async def _read_keywords(self, guild_id: int, epoch: int) -> List[str]:
+    async def _read_keywords(self, guild_id: int, epoch: Tuple[int, int]) -> List[str]:
         await self.ensure_connected()
         async with self.db_lock:
             cursor = await self.db.execute("SELECT keyword FROM keyword WHERE guild_id = ? ORDER BY keyword ASC", (guild_id,))
             keywords = [row[0] for row in await cursor.fetchall()]
-        if epoch == self._kept_epoch:
+        if epoch == self._epoch_for(guild_id):
             self._keywords_kept[guild_id] = (time.monotonic(), list(keywords))
         return keywords
 
@@ -1175,6 +1198,8 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         added: List[str] = []
         skipped: List[str] = []
         async with self.db_lock:
+            if hasattr(self.db, "kept_scope"):
+                self.db.kept_scope = guild_id
             cursor = await self.db.execute("SELECT keyword FROM keyword WHERE guild_id = ?", (guild_id,))
             existing = {row[0].lower() for row in await cursor.fetchall()}
             for keyword in keywords:
@@ -1188,26 +1213,28 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 existing.add(cleaned)
                 added.append(cleaned)
             await self.db.commit()
-        self.forget_kept()
         return added, skipped
 
     async def replace_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
-        await self._write([
-            ("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)]),
-            (
-                "INSERT IGNORE INTO keyword (guild_id, keyword) VALUES (?, ?)",
-                [(guild_id, k.strip().lower()) for k in keywords if k.strip() and len(k.strip()) <= KEYWORD_LIMIT],
-            ),
-        ])
-        self.forget_kept()
+        await self._write(
+            [
+                ("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)]),
+                (
+                    "INSERT IGNORE INTO keyword (guild_id, keyword) VALUES (?, ?)",
+                    [(guild_id, k.strip().lower()) for k in keywords if k.strip() and len(k.strip()) <= KEYWORD_LIMIT],
+                ),
+            ],
+            kept_guild=guild_id,
+        )
 
     async def remove_keywords(self, guild_id: int, keywords: Sequence[str]) -> None:
-        await self._write([("DELETE FROM keyword WHERE guild_id = ? AND keyword = ?", [(guild_id, k) for k in keywords])])
-        self.forget_kept()
+        await self._write(
+            [("DELETE FROM keyword WHERE guild_id = ? AND keyword = ?", [(guild_id, k) for k in keywords])],
+            kept_guild=guild_id,
+        )
 
     async def clear_keywords(self, guild_id: int) -> None:
-        await self._write([("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)])])
-        self.forget_kept()
+        await self._write([("DELETE FROM keyword WHERE guild_id = ?", [(guild_id,)])], kept_guild=guild_id)
 
     async def get_user_full_stats(self, guild_id: int, user_id: int) -> Tuple[int, int, int, int, List[Tuple[str, int]]]:
         """Returns (words, messages, attachments, emojis, [(keyword, count)]). A member with no rows gets zeros and an empty list."""
@@ -1293,9 +1320,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         for table in ANALYSIS_RUN_TABLES[1:]:
             statements.append((f"DELETE FROM `{table}` WHERE guild_id IN (SELECT guild_id FROM analysis_runs WHERE guild_id = ?{kind})", [(guild_id,)]))
         statements.append((f"DELETE FROM analysis_runs WHERE guild_id = ?{kind}", [(guild_id,)]))
-        await self._write(statements)
-        if counts:
-            self.forget_kept()
+        await self._write(statements, kept_guild=guild_id if counts else None)
 
     async def is_user_analyzed(self, guild_id: int, user_id: int) -> bool:
         await self.ensure_connected()

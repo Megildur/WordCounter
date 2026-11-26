@@ -279,6 +279,13 @@ class Counter(commands.Cog):
     # Also only called for cached messages. An edit adds the difference between the old and new text, and never changes the message count. A message whose counts were never saved (see `_was_counted`) is left alone.
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        # Embed unfurls and pin toggles fire MESSAGE_UPDATE with unchanged text, attachments, and stickers.
+        if (
+            before.content == after.content
+            and [a.id for a in before.attachments] == [a.id for a in after.attachments]
+            and [s.id for s in before.stickers] == [s.id for s in after.stickers]
+        ):
+            return
         channel_id = await self._tracked_channel(before)
         if channel_id is None or not await self._was_counted(before, channel_id):
             return

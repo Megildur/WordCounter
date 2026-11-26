@@ -13,7 +13,7 @@ import logging
 import re
 import time
 import warnings
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
 import aiomysql
 import pymysql
 from pymysql.constants import CLIENT
@@ -101,6 +101,10 @@ class Session:
         self.first_sql: Optional[str] = None
         # True once the block has written to a table whose rows the database layer keeps in memory.
         self.touches_kept = False
+        # When every kept-table write in the block sets `kept_scope = guild_id`, only those guilds are invalidated instead of every server.
+        self.kept_scope: Optional[int] = None
+        self._kept_guilds: Set[int] = set()
+        self._kept_all = False
         # How many round trips went to the server, so a slow block's warning can tell many trips from one slow one.
         self.trips = 0
         # Open raw cursors from execute/executemany, closed when the session ends so unread results can't poison the next block.
@@ -112,8 +116,12 @@ class Session:
         if self.first_sql is None:
             self.first_sql = " ".join(cleaned.split())[:80]
         writes = bool(_WRITES.match(cleaned))
-        if not self.touches_kept and writes and _KEPT_TABLE.search(cleaned):
+        if writes and _KEPT_TABLE.search(cleaned):
             self.touches_kept = True
+            if self.kept_scope is not None:
+                self._kept_guilds.add(self.kept_scope)
+            else:
+                self._kept_all = True
         return writes or bool(_LOCKING_READ.search(cleaned))
 
     def _beginning(self, needs_transaction: bool) -> bool:
@@ -344,7 +352,12 @@ class SessionLock:
                 if getattr(self.owner.db, "touches_kept", False):
                     forget = getattr(self.owner, "forget_kept", None)
                     if forget is not None:
-                        forget()
+                        kept_guilds = getattr(self.owner.db, "_kept_guilds", None)
+                        if not getattr(self.owner.db, "_kept_all", True) and kept_guilds:
+                            for guild_id in kept_guilds:
+                                forget(guild_id)
+                        else:
+                            forget()
             finally:
                 await self._release()
 
