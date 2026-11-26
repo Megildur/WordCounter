@@ -489,7 +489,7 @@ def origin_verified(request: web.Request) -> bool:
 
 
 def client_address(request: web.Request) -> Optional[str]:
-    """The visitor's address, or None when it can't be trusted. In `cloudflare` mode, trusts CF-Connecting-IP from Cloudflare's ranges or with a verified enforcing X-Origin-Secret (for NATted origins), and falls back to a public peer address on direct-origin requests so direct traffic is still rate-limited. Custom header names require peer membership in TRUSTED_PROXY_RANGES."""
+    """The visitor's address, or None when it can't be trusted, and nothing is limited by address then. In `cloudflare` mode CF-Connecting-IP counts on a connection from Cloudflare's ranges or one carrying the verified X-Origin-Secret in `enforce` mode (a host such as Wispbyte connects through its own front, so the connecting address is the same for every visitor); a custom header name counts only from peers in TRUSTED_PROXY_RANGES. Anything else is None rather than the connecting address, because that address can be one shared by every visitor, and counting by it would lock them all out together."""
     if not CLIENT_IP_HEADER:
         return None
     mode = CLIENT_IP_HEADER.lower()
@@ -500,12 +500,12 @@ def client_address(request: web.Request) -> Optional[str]:
         if _from_cloudflare(peer) or origin_verified(request):
             forwarded = _ip(",".join(request.headers.getall("CF-Connecting-IP", [])).split(",")[-1])
             return _grouped(forwarded) if forwarded is not None else None
-        return _grouped(peer) if peer is not None and peer.is_global else None
+        return None
     if _from_trusted_proxy(peer):
         # A proxy may add its own line of the same header after the visitor's, so every line is read and the last entry of all is the one our proxy saw.
         forwarded = _ip(",".join(request.headers.getall(CLIENT_IP_HEADER, [])).split(",")[-1])
         return _grouped(forwarded) if forwarded is not None else None
-    return _grouped(peer) if peer is not None and peer.is_global else None
+    return None
 
 
 def _tell_about_proxy(request: web.Request) -> None:
