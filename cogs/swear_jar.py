@@ -655,7 +655,7 @@ class JarSettingsView(SectionMenu):
                 self._done("Give both names and a whole number of tokens from 1 to 10000.", WARNING_COLOR)
             else:
                 await self.bot.db.jar_update(self.guild.id, **tokens)
-                self._done(f"Fines now show as {tokens['token_plural']}.")
+                self._done(f"Fines now show as {safe_name(tokens['token_plural'])}.")
         await self.refresh_and_edit(interaction)
 
     async def _open_prices_modal(self, interaction: discord.Interaction) -> None:
@@ -741,7 +741,7 @@ class JarSettingsView(SectionMenu):
                         footer = f"{name} is off, so these aren't fined · " + footer
                     pages.append(
                         create_v2_container(
-                            title=f"{name}, {TIER_NAMES[tier]}: {money(self.settings, prices(self.settings)[tier])} each",
+                            title=f"{name}, {TIER_NAMES[tier]}: {self._money(prices(self.settings)[tier])} each",
                             description=word_list(chunk, WORDS_PER_PAGE) if chunk else "No words in this tier.",
                             footer=footer,
                             color=NEUTRAL_COLOR if off else BRAND_COLOR,
@@ -1462,7 +1462,7 @@ class SwearJar(commands.Cog):
             return
         record = await self.bot.db.jar_message_fine(message.id)
         if record:
-            description = f"{message.author.mention} was fined **{money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
+            description = f"{message.author.mention} was fined **{safe_money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
         else:
             description = f"This message from {message.author.mention} wasn't fined."
         data = await self._member_data(interaction.guild.id, message.author.id)

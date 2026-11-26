@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 import discord
 from aiohttp import web
+from cogs.utils import components
 from cogs.utils.config import guild_invite_url
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
@@ -192,13 +193,27 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
     return await handler(request)
 
 
-def person(guild: discord.Guild, user_id: int) -> Dict[str, Any]:
-    """Name and avatar for a row in a list. Someone who has left the server (not in the member cache) shows as "Former member" with no avatar."""
+def person(guild: discord.Guild, user_id: int, bot: Any = None) -> Dict[str, Any]:
+    """Name and avatar for a row in a list, checking guild cache, bot user cache, and fetched-name cache before falling back to "Former member"."""
     member = guild.get_member(user_id)
+    if member is not None:
+        return {
+            "id": user_id,
+            "name": member.display_name,
+            "avatar_url": member.display_avatar.with_size(64).url,
+        }
+    user = bot.get_user(user_id) if bot is not None and hasattr(bot, "get_user") else None
+    if user is not None:
+        return {
+            "id": user_id,
+            "name": user.display_name,
+            "avatar_url": user.display_avatar.with_size(64).url,
+        }
+    cached = components._cached_name(user_id)
     return {
         "id": user_id,
-        "name": member.display_name if member else "Former member",
-        "avatar_url": member.display_avatar.with_size(64).url if member else None,
+        "name": cached if cached and cached != components.FORMER_MEMBER else "Former member",
+        "avatar_url": None,
     }
 
 
@@ -442,7 +457,7 @@ async def leaderboard(request: web.Request) -> web.Response:
         context["keyword_leaders"] = [
             {
                 "keyword": keyword,
-                "rows": [{"rank": rank, "count": count, **person(guild, uid)} for rank, (uid, count) in enumerate(users[:KEYWORD_TOP], start=1)],
+                "rows": [{"rank": rank, "count": count, **person(guild, uid, bot)} for rank, (uid, count) in enumerate(users[:KEYWORD_TOP], start=1)],
                 "total": len(users),
             }
             for keyword, users in await bot.db.get_keyword_leaders(guild.id, channel_id)
@@ -461,7 +476,7 @@ async def leaderboard(request: web.Request) -> web.Response:
             total = len(rows)
         start = (page - 1) * PAGE_SIZE
         context.update(
-            rows=[{"rank": start + index, "count": count, **person(guild, uid)} for index, (uid, count) in enumerate(shown, start=1)],
+            rows=[{"rank": start + index, "count": count, **person(guild, uid, bot)} for index, (uid, count) in enumerate(shown, start=1)],
             page=page,
             pages=pages,
             total=total,
@@ -479,30 +494,67 @@ async def members(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
-    db = request.app["bot"].db
+    bot = request.app["bot"]
+    db = bot.db
     query = request.query.get("q", "").strip()[:100]
+    showing_former = request.query.get("former") == "1"
     needle = query.casefold()
-    found = sorted(
-        (m for m in guild.members if not m.bot and (needle in m.display_name.casefold() or needle in m.name.casefold())),
-        key=lambda m: m.display_name.casefold(),
-    )
-    shown, page, pages = paginate(found, request.query.get("page"))
-    if hasattr(db, "get_member_totals_for_ids"):
-        words, messages = await db.get_member_totals_for_ids(guild.id, [m.id for m in shown])
-    else:
+    active_ids = {m.id for m in guild.members}
+
+    if showing_former:
         words = dict(await db.get_leaderboard("words", guild.id, None))
         messages = dict(await db.get_leaderboard("messages", guild.id, None))
+        former_ids = [uid for uid in words.keys() | messages.keys() if uid not in active_ids]
+        entries = []
+        for uid in former_ids:
+            info = person(guild, uid, bot)
+            if not needle or needle in info["name"].casefold() or needle == str(uid):
+                entries.append({**info, "words": words.get(uid, 0), "messages": messages.get(uid, 0)})
+        entries.sort(key=lambda row: (-row["words"], row["name"].casefold(), row["id"]))
+        rows, page, pages = paginate(entries, request.query.get("page"))
+        total = len(entries)
+    else:
+        found = sorted(
+            (
+                m
+                for m in guild.members
+                if not m.bot and (needle in m.display_name.casefold() or needle in m.name.casefold() or needle == str(m.id))
+            ),
+            key=lambda m: m.display_name.casefold(),
+        )
+        shown, page, pages = paginate(found, request.query.get("page"))
+        shown_ids = [m.id for m in shown]
+        # Numeric ID searches also surface former members who have recorded server stats.
+        extra_former_id: Optional[int] = None
+        query_id = whole_number(query)
+        if not shown and query_id is not None and query_id not in active_ids:
+            shown_ids = [query_id]
+            extra_former_id = query_id
+        if hasattr(db, "get_member_totals_for_ids"):
+            words, messages = await db.get_member_totals_for_ids(guild.id, shown_ids)
+        else:
+            words = dict(await db.get_leaderboard("words", guild.id, None))
+            messages = dict(await db.get_leaderboard("messages", guild.id, None))
+        if extra_former_id is not None and (extra_former_id in words or extra_former_id in messages):
+            rows = [{**person(guild, extra_former_id, bot), "words": words.get(extra_former_id, 0), "messages": messages.get(extra_former_id, 0)}]
+            total = 1
+        else:
+            rows = [{**person(guild, m.id, bot), "words": words.get(m.id, 0), "messages": messages.get(m.id, 0)} for m in shown]
+            total = len(found)
 
     def link(number: int) -> str:
-        return page_url(f"/dashboard/{guild.id}/members", q=query, page=number)
+        return page_url(f"/dashboard/{guild.id}/members", q=query, former="1" if showing_former else None, page=number)
 
     return render(
         request,
         "server_members.html",
         "dashboard",
-        rows=[{**person(guild, m.id), "words": words.get(m.id, 0), "messages": messages.get(m.id, 0)} for m in shown],
+        rows=rows,
         query=query,
-        total=len(found),
+        showing_former=showing_former,
+        chunked=guild.chunked,
+        toggle_former_url=page_url(f"/dashboard/{guild.id}/members", q=query, former=None if showing_former else "1"),
+        total=total,
         page=page,
         pages=pages,
         prev_url=link(page - 1) if page > 1 else None,
@@ -534,7 +586,7 @@ async def member_page(request: web.Request) -> web.Response:
         request,
         "server_member.html",
         "dashboard",
-        person=person(guild, member_id),
+        person=person(guild, member_id, bot),
         stats=stats,
         analyzed=analyzed,
         jar=jar,

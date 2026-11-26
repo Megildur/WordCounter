@@ -24,6 +24,8 @@ from paginator import ButtonPaginator
 log = logging.getLogger(__name__)
 
 ALLOWED_GUILDS = [discord.Object(id=guild_id) for guild_id in ALLOWED_GUILD_IDS]
+# Kept in sync with main.py's CORE_EXTENSIONS so unloaded core extensions remain discoverable to `/owner ext load`.
+CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web", "cogs.utils.timing")
 Kind = Literal["User", "Server"]
 NO_PINGS = discord.AllowedMentions.none()
 LISTED_TABLES = 40
@@ -237,7 +239,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     def all_extensions(self) -> List[str]:
         # "cogs" is relative to the working directory, so the bot has to be started from the repository root.
         found = {f"cogs.{name[:-3]}" for name in os.listdir("cogs") if name.endswith(".py")}
-        return sorted(found | set(self.bot.extensions))
+        return sorted(found | set(CORE_EXTENSIONS) | set(self.bot.extensions))
 
     @app_commands.command(name="sync", description="Sync slash commands")
     async def sync(self, interaction: discord.Interaction, sync_type: Literal["Global", "Guild"]) -> None:
@@ -291,8 +293,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await interaction.followup.send(
             view=create_v2_view(
                 "Commands cleared",
-                f"Removed **{removed}** command(s) {target}. Nobody will see them until you sync again.",
-                footer="Run /owner sync to add them back",
+                f"Removed **{removed}** command(s) {target} from the local command tree. Nothing changes on Discord until you sync, and syncing right now would push an empty tree (including `/owner`).",
+                footer="Reload cogs (/owner ext reload) or restart the bot before running /owner sync or !wcquicksync",
                 color=SUCCESS_COLOR,
             )
         )
@@ -302,6 +304,15 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if not await self._admin_only(interaction):
             return
         await interaction.response.defer()
+        if action == "unload" and extension == "OwnerCommands":
+            await interaction.followup.send(
+                view=create_v2_view(
+                    "Couldn't unload `OwnerCommands`",
+                    "Unloading `OwnerCommands` would turn off `/owner` commands until the bot restarts. Use `reload` instead.",
+                    color=ERROR_COLOR,
+                )
+            )
+            return
         # A name is imported as a module when it is loaded, so only a cog on disk or one that is already loaded is accepted.
         if extension not in self.all_extensions():
             await interaction.followup.send(

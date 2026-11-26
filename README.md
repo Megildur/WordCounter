@@ -161,13 +161,13 @@ Right-click menus:
 
    `/analyze_chat whole_server` can read private archived threads only if the bot has **Manage Threads** or was added to those threads.
 
-7. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
+8. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
    ```text
    https://wordcounter.dev/callback
    ```
    The website starts with the bot and asks Discord who you are and which servers you are in (the `identify` and `guilds` scopes). The server list is only used to show the servers you manage on the dashboard, and is kept in memory for an hour.
 
-8. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
+9. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
    ```text
    !wcquicksync
    ```

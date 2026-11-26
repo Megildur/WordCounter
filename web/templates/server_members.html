@@ -3,11 +3,16 @@
 
 {% block server_content %}
 <form method="get" class="search" role="search">
-  <label class="form-label" for="member-search">Find a member</label>
+  {% if showing_former %}<input type="hidden" name="former" value="1">{% endif %}
+  <label class="form-label" for="member-search">{% if showing_former %}Find a former member with stats{% else %}Find a member{% endif %}</label>
   <div class="search__row">
-    <input class="input" type="search" id="member-search" name="q" value="{{ query }}" maxlength="100" autocomplete="off" placeholder="Name or username">
+    <input class="input" type="search" id="member-search" name="q" value="{{ query }}" maxlength="100" autocomplete="off" placeholder="Name, username, or user ID">
     <button type="submit" class="btn btn--ghost">Search</button>
+    <a class="btn btn--quiet" href="{{ toggle_former_url }}">{% if showing_former %}Current members{% else %}Former members with stats{% endif %}</a>
   </div>
+  {% if not chunked and not showing_former %}
+    <p class="form-hint">Showing cached server members. Offline members not yet in Discord's cache appear after they speak or by searching their user ID.</p>
+  {% endif %}
 </form>
 
 {% if rows %}
