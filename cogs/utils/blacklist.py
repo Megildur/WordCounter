@@ -18,6 +18,8 @@ SERVER = "server"
 # The cog attribute that opts a cog in to a banned user's events.
 GUARD = "acts_on_blacklisted"
 USER_TYPES = (discord.user.BaseUser, discord.Member)
+# High-frequency internal or non-actionable gateway events that never need blacklist reflection.
+_SKIP_EVENTS = frozenset({"socket_raw_receive", "socket_response", "socket_event_type", "presence_update", "typing"})
 # Keeps the refusal tasks referenced until they finish, because the event loop only holds weak references to tasks.
 _TASKS: Set[asyncio.Task] = set()
 
@@ -78,6 +80,8 @@ def screen(bot: Any, event: str, args: Sequence[Any], kwargs: Dict[str, Any]) ->
 
     When only a user is banned, the listeners of cogs with `acts_on_blacklisted` still get the event, scheduled directly. Only cog listeners are re-sent, not the bot's own handlers.
     """
+    if event in _SKIP_EVENTS:
+        return False
     kind = blocked_by(bot, args)
     if kind is None:
         return False

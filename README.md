@@ -1,7 +1,7 @@
 # WordCounter
 
 <p align="center">
-  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0">
+  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277295131712&scope=bot+applications.commands&integration_type=0">
     <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B85A24?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
@@ -24,7 +24,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 
 | | |
 | :--- | :--- |
-| Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
+| Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277295131712&scope=bot+applications.commands&integration_type=0) |
 | Website and dashboard | [wordcounter.dev](https://wordcounter.dev) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
 | Support email | [support@wordcounter.dev](mailto:support@wordcounter.dev) |
@@ -89,7 +89,7 @@ Right-click menus:
 ### Requirements
 - Python 3.10 or newer
 - A MySQL 8 (or MariaDB 10.5+) database for WordCounter, separate from Botzilla's
-- A [Discord application](https://discord.com/developers/applications) with the **Message Content** and **Server Members** intents turned on
+- A [Discord application](https://discord.com/developers/applications) with the **Message Content**, **Server Members**, and **Presence** intents turned on (Presence is used for the home-page developer card)
 
 ### Install
 
@@ -150,13 +150,13 @@ Right-click menus:
    python main.py
    ```
 
-7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
-   - View Channels, Read Message History, Send Messages, Send Messages in Threads
-   - Embed Links, Attach Files, Add Reactions, Use Slash Commands, Use External Apps
-   - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings), Manage Channels
+7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `277295131712`):
+   - View Channels, Read Message History, Send Messages, Send Messages in Threads, Connect (for reading tracked voice channel chats in `/analyze_chat`)
+   - Embed Links, Attach Files, Add Reactions, Use Slash Commands
+   - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings)
 
    ```text
-   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=277295131712&scope=bot+applications.commands&integration_type=0
    ```
 
    `/analyze_chat whole_server` can read private archived threads only if the bot has **Manage Threads** or was added to those threads.
