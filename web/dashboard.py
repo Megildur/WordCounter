@@ -628,7 +628,7 @@ async def member_action(request: web.Request) -> web.Response:
             await db.allow_reanalysis(guild.id, member_id)
             result = "reanalysis_ready"
         elif result is None and action == "reset_jar":
-            # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+            # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
             cog = request.app["bot"].get_cog("SwearJar")
             if cog is not None:
                 cog.forget_member(guild.id, member_id)
@@ -727,7 +727,7 @@ async def settings_action(request: web.Request) -> web.Response:
                 counts, jar, _ = WIPES[what]
                 cog = request.app["bot"].get_cog("SwearJar") if jar else None
                 if cog is not None:
-                    # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                    # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
                     cog.forget(guild.id)
                 await db.reset_entire_server(guild.id, counts=counts, jar=jar)
                 if cog is not None:

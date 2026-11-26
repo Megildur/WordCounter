@@ -95,7 +95,7 @@ SPAM_EMOJI = "🚫"
 NOTICE_SECONDS = 5
 # Seconds a server's cached JarState is reused before it is rebuilt from the database.
 STATE_TTL = 300.0
-# How long an ID that the owner commands deleted stays refused for day counts, so a write that was already waiting for the database lock can't put its rows back after the delete.
+# How long a forgotten ID stays refused for day counts, so a flush that starts while its delete waits for the database lock leaves the ID out.
 FORGET_SECONDS = 60.0
 # Seconds between daily credit checks. The upkeep loop itself runs every minute.
 DAILY_INTERVAL = 600.0
@@ -886,7 +886,7 @@ class JarSettingsView(SectionMenu):
             if running:
                 self._done(ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             elif member_only and self.reset_user_id is not None:
-                # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
                 if jar is not None:
                     jar.forget_member(self.guild.id, self.reset_user_id)
                 await self.bot.db.jar_reset_members(self.guild.id, self.reset_user_id)
@@ -959,7 +959,7 @@ class SwearJar(commands.Cog):
         self._building.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
-        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. Every reset and the owner data commands call it before their delete and again after: a flush that takes its counts after the first call leaves the ID out, one that took them earlier is already queued for the database lock ahead of the delete (`_write` reads its rows and queues with no await in between), and the second call drops counts that came in while the delete waited. A caller that only forgot after its delete would let a flush that started meanwhile write the counts back."""
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The whole-server resets and the owner data commands call it before their delete and again after (the per-member resets do the same with `forget_member`): a flush that takes its counts after the first call leaves the ID out, one that took them earlier is already queued for the database lock ahead of the delete (`_write` reads its rows and queues with no await in between), and the second call drops counts that came in while the delete waited. A caller that only forgot after its delete would let a flush that started meanwhile write the counts back."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
@@ -968,7 +968,7 @@ class SwearJar(commands.Cog):
         self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
 
     def forget_member(self, guild_id: int, user_id: int) -> None:
-        """Drops unsaved spam tracking and day counts for one member in one server after a per-member jar reset."""
+        """Drops unsaved spam tracking and day counts for one member in one server. The per-member jar resets call it before their delete and again after, for the same reason `forget` is called both sides of a delete."""
         pair = (guild_id, user_id)
         self.recent.pop(pair, None)
         self.spam_until.pop(pair, None)

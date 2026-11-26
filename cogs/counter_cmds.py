@@ -569,7 +569,7 @@ class SettingsMenuView(SectionMenu):
                 return
             swear_jar = self.bot.get_cog("SwearJar") if jar else None
             if swear_jar is not None:
-                # Forget both before and after the delete so an in-flight _flush_days waiting on db_lock can't restore wiped day counts.
+                # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
                 swear_jar.forget(self.guild.id)
             await self.bot.db.reset_entire_server(self.guild.id, counts=counts, jar=jar)
             if swear_jar is not None:

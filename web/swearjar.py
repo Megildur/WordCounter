@@ -361,7 +361,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
             # Needs confirm=yes, and is refused while an analysis is running here.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "jar_reset"
             if result == "jar_reset":
-                # Drop unsaved day counts and spam tracking both before and after the delete so an in-flight _flush_days can't flush wiped counts back.
+                # Drop unsaved day counts and spam tracking before the delete, so a flush that starts while it waits leaves them out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
                 cog = request.app["bot"].get_cog("SwearJar")
                 if cog is not None:
                     cog.forget(guild.id)
