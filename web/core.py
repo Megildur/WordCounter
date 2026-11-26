@@ -37,7 +37,7 @@ WEBP_SIZE_MASK = 0x3FFF
 
 # script-src 'none' makes the browser refuse any JavaScript, form-action 'self' keeps forms posting to this site, and frame-ancestors 'none' stops other sites framing it. Avatars come from Discord's CDN.
 SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self'; script-src 'none'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self'; script-src 'none'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "DENY",
@@ -583,10 +583,15 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
     # A cookie for a session that has ended is dropped, so the header doesn't keep showing someone as logged in. A login that just set a new cookie keeps it.
     if request.get("session_ended") and auth.SESSION_COOKIE not in response.cookies:
         response.del_cookie(auth.SESSION_COOKIE, path="/", secure=SECURE_COOKIES, httponly=True, samesite="Lax")
-    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and private or 5xx responses are never stored or indexed.
-    if is_private(request.path) or (isinstance(response, web.Response) and response.status >= 500):
+    # Static files are cached for a week, and the stylesheet's URL carries a `?v=` hash so a changed one is fetched again. Pages are "private, no-cache", so a shared cache never keeps one and the browser checks it again each time, and private, authenticated or 5xx responses are never stored.
+    private = is_private(request.path)
+    authenticated = bool(request.cookies.get(auth.SESSION_COOKIE))
+    is_error = isinstance(response, web.Response) and response.status >= 400
+    if private or (isinstance(response, web.Response) and response.status >= 500):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    elif authenticated and not request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-store")
     if request.path.startswith("/static/"):
         # Only a file that was found is kept for a week. A missing one is asked for again next time, so adding it later shows up at once.
         # A FileResponse only works out its status (200, 206, 304, 416) when it is sent, after this, but the file is known to exist because static_file raised a 404 otherwise.
@@ -599,7 +604,9 @@ async def site_middleware(request: web.Request, handler) -> web.StreamResponse:
             response.enable_compression()
     elif isinstance(response, web.Response) and response.content_type in ("text/html", "text/plain", "application/xml"):
         response.headers.setdefault("Cache-Control", "private, no-cache")
-        response.enable_compression()
+        # Never compress private, authenticated, or error dynamic responses (BREACH protection against CSRF token length oracles).
+        if not (private or authenticated or is_error):
+            response.enable_compression()
     for name, value in SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
     return response
