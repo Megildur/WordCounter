@@ -62,11 +62,14 @@ JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS jar_days (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, day BIGINT NOT NULL,
         messages BIGINT NOT NULL DEFAULT 0, fined INT NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id, day))""",
+        PRIMARY KEY (guild_id, user_id, day),
+        INDEX idx_jar_days_day (guild_id, day))""",
     """CREATE TABLE IF NOT EXISTS jar_fines (
         message_id BIGINT PRIMARY KEY, guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         channel_id BIGINT NOT NULL, swears BIGINT NOT NULL, amount BIGINT NOT NULL, fined_at DOUBLE NOT NULL, units BIGINT NULL,
-        INDEX idx_jar_fines_guild (guild_id, fined_at))""",
+        INDEX idx_jar_fines_guild (guild_id, fined_at),
+        INDEX idx_jar_fines_at (fined_at),
+        INDEX idx_jar_fines_member (guild_id, user_id, fined_at))""",
     """CREATE TABLE IF NOT EXISTS jar_goals (
         guild_id BIGINT PRIMARY KEY, label VARCHAR(255) NOT NULL, target BIGINT NOT NULL, channel_id BIGINT,
         ping INT NOT NULL DEFAULT 0, progress BIGINT NOT NULL DEFAULT 0, started_at DOUBLE NOT NULL,

@@ -117,7 +117,8 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     # counters (per channel) and server (per user) hold the word counts. The other metrics have tables named after them.
     """CREATE TABLE IF NOT EXISTS counters (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, count BIGINT NOT NULL,
-        PRIMARY KEY (guild_id, user_id, channel_id))""",
+        PRIMARY KEY (guild_id, user_id, channel_id),
+        INDEX idx_counters_channel (guild_id, channel_id, count))""",
     # Where counting is on. channel_id is a channel, a category, or 1 for the entire server.
     """CREATE TABLE IF NOT EXISTS channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
@@ -147,14 +148,16 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
         PRIMARY KEY (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS message_channels (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, messages BIGINT NOT NULL,
-        PRIMARY KEY (guild_id, user_id, channel_id))""",
+        PRIMARY KEY (guild_id, user_id, channel_id),
+        INDEX idx_message_channels_channel (guild_id, channel_id, messages))""",
     """CREATE TABLE IF NOT EXISTS message_user (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, messages BIGINT NOT NULL,
         PRIMARY KEY (guild_id, user_id))""",
     # analyzed_at is the snowflake of the moment the analysis finished for the member (NULL for rows saved before it was kept), so a later edit or delete can tell whether the analysis ran after a reset wiped their counts.
     """CREATE TABLE IF NOT EXISTS analyzed_users (
         user_id BIGINT NOT NULL, guild_id BIGINT NOT NULL, analyzed_at BIGINT,
-        PRIMARY KEY (user_id, guild_id))""",
+        PRIMARY KEY (user_id, guild_id),
+        INDEX idx_analyzed_users_guild (guild_id, user_id))""",
     """CREATE TABLE IF NOT EXISTS emojis_channels (
         guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, user_id BIGINT NOT NULL, count BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, user_id))""",
@@ -172,7 +175,8 @@ SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS monthly_user_keywords (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, keyword VARCHAR(255) NOT NULL,
         year INT NOT NULL, month INT NOT NULL, count BIGINT NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id, channel_id, keyword, year, month))""",
+        PRIMARY KEY (guild_id, user_id, channel_id, keyword, year, month),
+        INDEX idx_monthly_kw_channel (guild_id, channel_id))""",
     # started and ended are snowflakes (see now_snowflake), so they compare directly with message IDs. ended is NULL while counting is on.
     """CREATE TABLE IF NOT EXISTS tracking_periods (
         guild_id BIGINT NOT NULL, started BIGINT NOT NULL, ended BIGINT,
@@ -270,6 +274,27 @@ ADDED_COLUMNS = (
     ("analyzed_users", "analyzed_at", "BIGINT NULL"),
     ("jar_fines", "units", "BIGINT NULL"),
 )
+# Indexes added after their table first shipped, as (table, index_name, columns_sql). They are in CREATE TABLE too, and `create_tables` adds them to databases made before them.
+ADDED_INDEXES = (
+    ("counters", "idx_counters_channel", "guild_id, channel_id, count"),
+    ("message_channels", "idx_message_channels_channel", "guild_id, channel_id, messages"),
+    ("analyzed_users", "idx_analyzed_users_guild", "guild_id, user_id"),
+    ("jar_days", "idx_jar_days_day", "guild_id, day"),
+    ("jar_fines", "idx_jar_fines_at", "fined_at"),
+    ("jar_fines", "idx_jar_fines_member", "guild_id, user_id, fined_at"),
+    ("monthly_user_keywords", "idx_monthly_kw_channel", "guild_id, channel_id"),
+)
+
+
+def _schema_text(value: Any) -> str:
+    return value.decode() if isinstance(value, (bytes, bytearray)) else str(value)
+
+
+def _is_duplicate_index(error: Exception) -> bool:
+    if "duplicate key name" in str(error).lower():
+        return True
+    args = getattr(error, "args", ())
+    return bool(args and args[0] == 1061)
 
 
 class NotMigrated(RuntimeError):
@@ -367,15 +392,34 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         self._config_kept.clear()
         self._keywords_kept.clear()
 
+    async def _ensure_indexes(self, existing: Set[str], present_indexes: Set[Tuple[str, str]]) -> Set[str]:
+        """Adds only missing indexes on pre-existing tables, matching Botzilla's Schema.ensure_indexes idempotency."""
+        added: Set[str] = set()
+        for table, index_name, columns_sql in ADDED_INDEXES:
+            table_key = table.lower()
+            index_key = index_name.lower()
+            if table_key not in existing or (table_key, index_key) in present_indexes:
+                continue
+            try:
+                await self.db.execute(f"ALTER TABLE `{table}` ADD INDEX `{index_name}` ({columns_sql})")
+                added.add(index_key)
+                log.info("Added index %s.%s", table, index_name)
+            except Exception as error:
+                if not _is_duplicate_index(error):
+                    raise
+        return added
+
     async def create_tables(self) -> None:
         async with self.db_lock:
-            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One query against information_schema.COLUMNS lists both existing tables and their columns, so existing tables need zero DDL statements and newly created tables already include ADDED_COLUMNS.
-            cursor = await self.db.execute(
-                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
-            )
-            rows = await cursor.fetchall()
-            existing = {table.lower() for table, _ in rows}
-            present = {(table.lower(), column.lower()) for table, column in rows}
+            # CREATE TABLE IF NOT EXISTS does nothing to a table that is there, but each statement is still a round trip, and 33 of them held the lock for 7 seconds at every start. One run_many round trip against information_schema.COLUMNS and STATISTICS lists existing tables, columns, and indexes, so existing tables need zero DDL statements and newly created tables already include ADDED_COLUMNS and ADDED_INDEXES.
+            columns_out, indexes_out = await self.db.run_many([
+                ("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()", ()),
+                ("SELECT DISTINCT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()", ()),
+            ])
+            col_rows = [(_schema_text(table).lower(), _schema_text(column).lower()) for table, column in columns_out.rows]
+            existing = {table for table, _ in col_rows}
+            present = set(col_rows)
+            present_indexes = {(_schema_text(table).lower(), _schema_text(index_name).lower()) for table, index_name in indexes_out.rows}
             for statement in (*SCHEMA, *JAR_SCHEMA, *BLACKLIST_SCHEMA, *META_SCHEMA, *WEB_SESSION_SCHEMA, *STATS_PANEL_SCHEMA):
                 named = CREATED_TABLE.match(statement)
                 if named is None or named.group(1).lower() not in existing:
@@ -385,6 +429,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 table_key = table.lower()
                 if table_key in existing and (table_key, column.lower()) not in present:
                     await self.db.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
+            await self._ensure_indexes(existing, present_indexes)
 
     async def sqlite_imported(self) -> bool:
         async with self.db_lock:
