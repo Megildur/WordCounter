@@ -4,6 +4,7 @@ Everyone sees their own stats in the servers they share with the bot, and the se
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 import math
 import time
@@ -126,11 +127,12 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     guild = request.app["bot"].get_guild(guild_id) if guild_id else None
     if guild is None:
         raise web.HTTPNotFound()
-    if guild.id in request.app["bot"].blacklisted:
-        raise Banned(text="This server has been banned from using WordCounter, so its dashboard is closed.")
+    # Verify membership before checking guild blacklist so non-members always receive 404 (prevents guild-blacklist existence oracle).
     member = await find_member(guild, int(user["id"]))
     if member is None:
         raise web.HTTPNotFound()
+    if guild.id in request.app["bot"].blacklisted:
+        raise Banned(text="This server has been banned from using WordCounter, so its dashboard is closed.")
     manager = manages(member)
     # Only for the words on the "managers only" page: someone with a role that gives Manage Server who is timed out is told why they are shut out.
     request["timed_out"] = not manager and member.is_timed_out() and any(role.permissions.manage_guild for role in member.roles)
@@ -144,9 +146,19 @@ def manager_only(request: web.Request) -> web.Response:
     return error_page(request, 403, "Managers only", "You need the Manage Server permission in this server to see this.")
 
 
+def _csrf_fallback_path(request: web.Request, guild_id: Optional[int]) -> str:
+    """Safe GET target after a failed CSRF check so POST-only dashboard routes never redirect into a 405 Method Not Allowed."""
+    resource = request.match_info.route.resource
+    if resource is not None and any(route.method == "GET" for route in resource):
+        return f"{request.path}?msg=expired_form"
+    if guild_id is not None:
+        return f"/dashboard/{guild_id}?msg=expired_form"
+    return "/dashboard?msg=expired_form"
+
+
 @web.middleware
 async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
-    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a mutating request sent from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a mutating request carries their CSRF token. One with a bad token is sent back to its page with the "form expired" message and changes nothing.
+    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a mutating request sent from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a mutating request carries their CSRF token. One with a bad token is sent back to a safe GET page with the "form expired" message and changes nothing.
 
     It goes by the route's pattern, not by each handler, so a new page is covered the moment it is added.
     """
@@ -169,7 +181,7 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
         guild_id = guild.id
     if mutating:
         if not auth.check_csrf(user, (await post_form(request)).get("csrf")):
-            raise web.HTTPFound(f"{request.path}?msg=expired_form")
+            raise web.HTTPFound(_csrf_fallback_path(request, guild_id))
         limit_write(int(user["id"]), guild_id)
     return await handler(request)
 
@@ -321,10 +333,36 @@ async def dashboard(request: web.Request) -> web.Response:
     user_id = int(user["id"])
     bot = request.app["bot"]
     managed = bot.db.web_servers(user_id)
+    managed_ids = {server["id"] for server in managed or ()}
+    resolved_members = {}
+    unchunked_candidates = []
+    for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
+        if guild.id in bot.blacklisted:
+            continue
+        member = guild.get_member(user_id)
+        if member is not None:
+            resolved_members[guild.id] = member
+        elif not getattr(guild, "chunked", True) and guild.id in managed_ids:
+            unchunked_candidates.append(guild)
+    if unchunked_candidates:
+        sem = asyncio.Semaphore(4)
+
+        async def _lookup(g):
+            async with sem:
+                try:
+                    return g.id, await find_member(g, user_id)
+                except web.HTTPServiceUnavailable:
+                    return g.id, None
+
+        for gid, member in await asyncio.gather(*(_lookup(g) for g in unchunked_candidates)):
+            if member is not None:
+                resolved_members[gid] = member
     servers = []
     for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
-        member = guild.get_member(user_id)
-        if member is not None and guild.id not in bot.blacklisted:
+        if guild.id in bot.blacklisted:
+            continue
+        member = resolved_members.get(guild.id)
+        if member is not None:
             servers.append({
                 "id": guild.id,
                 "name": guild.name,
