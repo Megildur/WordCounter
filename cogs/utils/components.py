@@ -5,8 +5,10 @@ The accent colours, the container and view builders every reply uses, button and
 
 from __future__ import annotations
 import asyncio
+from collections import OrderedDict
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+import weakref
 import discord
 
 # Accent colours for container stripes, taken from the bot avatar's palette.
@@ -52,22 +54,40 @@ FORMER_MEMBER = "Former member"
 NAME_TTL = 3600.0
 NAME_WAIT = 1.5
 NAME_CACHE_LIMIT = 5000
-# Names fetched from Discord for people no cache knows: user id to (time fetched, name). Entries last NAME_TTL seconds, and the whole dict is emptied when it reaches NAME_CACHE_LIMIT.
-_fetched_names: Dict[int, Tuple[float, str]] = {}
+FETCH_CONCURRENCY = 4
+# Names fetched from Discord for people no cache knows: user id to (time fetched, name). Entries last NAME_TTL seconds and evict oldest first beyond NAME_CACHE_LIMIT.
+_fetched_names: "OrderedDict[int, Tuple[float, str]]" = OrderedDict()
+# In-flight user lookups keyed by user id so concurrent callers share one Discord fetch.
+_fetching: Dict[int, asyncio.Task] = {}
 # Keeps the lookup tasks referenced until they finish, since asyncio only holds weak references to running tasks.
 _name_lookups: Set[asyncio.Task] = set()
+_fetch_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _fetch_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _fetch_semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+        _fetch_semaphores[loop] = sem
+    return sem
 
 
 def _cached_name(user_id: int) -> Optional[str]:
     entry = _fetched_names.get(user_id)
-    if entry and time.monotonic() - entry[0] < NAME_TTL:
+    if entry is None:
+        return None
+    if time.monotonic() - entry[0] < NAME_TTL:
+        _fetched_names.move_to_end(user_id)
         return entry[1]
+    _fetched_names.pop(user_id, None)
     return None
 
 
 async def _fetch_name(client: discord.Client, user_id: int) -> None:
     try:
-        user = await client.fetch_user(user_id)
+        async with _fetch_semaphore():
+            user = await client.fetch_user(user_id)
     except discord.NotFound:
         name = FORMER_MEMBER
     except discord.HTTPException:
@@ -75,9 +95,11 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
         return
     else:
         name = user.display_name
-    if len(_fetched_names) >= NAME_CACHE_LIMIT:
-        _fetched_names.clear()
+    if user_id not in _fetched_names:
+        while len(_fetched_names) >= NAME_CACHE_LIMIT:
+            _fetched_names.popitem(last=False)
     _fetched_names[user_id] = (time.monotonic(), name)
+    _fetched_names.move_to_end(user_id)
 
 
 # A private-use character that stands in for the backslash while escape_markdown runs, because a real one would be escaped itself.
@@ -107,15 +129,28 @@ async def display_names(client: discord.Client, guild: discord.Guild, user_ids: 
         user = member or client.get_user(user_id)
         if user is not None:
             names[user_id] = user.display_name
-        elif _cached_name(user_id):
-            names[user_id] = _cached_name(user_id)
+            continue
+        cached = _cached_name(user_id)
+        if cached:
+            names[user_id] = cached
         else:
             missing.append(user_id)
     if missing:
-        lookups = [asyncio.ensure_future(_fetch_name(client, user_id)) for user_id in missing]
-        _name_lookups.update(lookups)
-        for lookup in lookups:
-            lookup.add_done_callback(_name_lookups.discard)
+        lookups: List[asyncio.Task] = []
+        for user_id in missing:
+            task = _fetching.get(user_id)
+            if task is None or task.done():
+                task = asyncio.ensure_future(_fetch_name(client, user_id))
+                _fetching[user_id] = task
+                _name_lookups.add(task)
+
+                def _done(done_task: asyncio.Task, uid: int = user_id) -> None:
+                    _name_lookups.discard(done_task)
+                    if _fetching.get(uid) is done_task:
+                        _fetching.pop(uid, None)
+
+                task.add_done_callback(_done)
+            lookups.append(task)
         await asyncio.wait(lookups, timeout=NAME_WAIT)
         for user_id in missing:
             names[user_id] = _cached_name(user_id) or FORMER_MEMBER

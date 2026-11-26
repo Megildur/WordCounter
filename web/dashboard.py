@@ -5,6 +5,7 @@ Everyone sees their own stats in the servers they share with the bot, and the se
 
 from __future__ import annotations
 import asyncio
+from collections import OrderedDict
 import logging
 import math
 import time
@@ -84,7 +85,7 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
 
 
 # (server id, user id) to when Discord answered that they aren't in the server, asked because its member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time. Only that answer is kept: a found member could have lost a permission, and an error could be passing.
-_asked: Dict[Tuple[int, int], float] = {}
+_asked: "OrderedDict[Tuple[int, int], float]" = OrderedDict()
 ASKED_SECONDS = 20.0
 ASKED_LIMIT = 2000
 
@@ -95,14 +96,19 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
     if member is None and not guild.chunked:
         key = (guild.id, user_id)
         asked = _asked.get(key)
-        if asked is not None and time.monotonic() - asked < ASKED_SECONDS:
-            return None
+        if asked is not None:
+            if time.monotonic() - asked < ASKED_SECONDS:
+                _asked.move_to_end(key)
+                return None
+            _asked.pop(key, None)
         try:
             member = await guild.fetch_member(user_id)
         except discord.NotFound:
-            if len(_asked) >= ASKED_LIMIT:
-                _asked.clear()
+            if key not in _asked:
+                while len(_asked) >= ASKED_LIMIT:
+                    _asked.popitem(last=False)
             _asked[key] = time.monotonic()
+            _asked.move_to_end(key)
         except discord.HTTPException as error:
             log.warning("Discord didn't answer a server member lookup (status %s)", error.status)
             raise web.HTTPServiceUnavailable() from error

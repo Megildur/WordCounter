@@ -16,6 +16,8 @@ from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, SAFE_WORDS
 # The most swears one message can add to the fines and to the swear counts. fine_for keeps the priciest ones.
 MAX_FINED_PER_MESSAGE = 3
 WORD_LIMIT = 40
+# Cap distinct censored tokens (*-masked) evaluated per message so pathological messages stay bounded.
+MAX_STAR_TOKENS = 40
 
 LEET = {"@": "a", "4": "a", "$": "s", "5": "s", "1": "i", "!": "i", "|": "i", "3": "e", "0": "o", "7": "t"}
 # Cyrillic lookalikes and special Latin letters that accent stripping doesn't break down, mapped to plain Latin ones so a word can't hide behind them.
@@ -189,11 +191,18 @@ class SwearMatcher:
             raw = NOISE.sub(" ", text.translate(INVISIBLE).lower())
             for tier, pattern in self.spelled.items():
                 tiers.extend([tier] * len(pattern.findall(raw)))
-        # Censored words like f*ck are checked token by token, because the patterns don't treat a * as a letter.
+        # Censored words like f*ck are checked token by token, because the patterns don't treat a * as a letter. Deduplicated per message and capped to prevent worst-case event-loop CPU spikes.
+        star_cache: Dict[str, Optional[int]] = {}
         for token in normalized.split():
             token = token.strip("*")
             if "*" in token and token.replace("*", "").isalpha():
-                tier = self._star_tier(token)
+                if token in star_cache:
+                    tier = star_cache[token]
+                elif len(star_cache) >= MAX_STAR_TOKENS:
+                    continue
+                else:
+                    tier = self._star_tier(token)
+                    star_cache[token] = tier
                 if tier is not None:
                     tiers.append(tier)
         return tiers

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 import logging
+import logging.handlers
+import queue
 import discord
 from discord.ext import commands
 from cogs.utils.components import NEUTRAL_COLOR, SUCCESS_COLOR, create_v2_view, safe_name
@@ -36,14 +38,21 @@ class ServerJoinLogger(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger("bot_server_joins")
         self.logger.setLevel(logging.INFO)
-        self.handler = daily_log_handler("bot_server_joins.log")
-        self.handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        self.logger.propagate = False
+        self.file_handler = daily_log_handler("bot_server_joins.log")
+        self.file_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        self._log_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self.handler = logging.handlers.QueueHandler(self._log_queue)
         self.logger.addHandler(self.handler)
+        self.listener = logging.handlers.QueueListener(self._log_queue, self.file_handler, respect_handler_level=True)
+        self.listener.start()
 
     async def cog_unload(self) -> None:
         # The named logger outlives the cog, so the handler must come off or a reload would write every line twice.
         self.logger.removeHandler(self.handler)
+        self.listener.stop()
         self.handler.close()
+        self.file_handler.close()
 
     async def send_webhook_message(self, view: discord.ui.LayoutView) -> None:
         if not WEBHOOK_URL:

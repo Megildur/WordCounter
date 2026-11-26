@@ -10,7 +10,7 @@ import asyncio
 import os
 import re
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 import logging
@@ -344,7 +344,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         # Pings the connection while the bot is quiet, so the host never closes it (keep_warm.py).
         self._keeper: Optional[asyncio.Task] = None
         # Website sessions found alive or missing a moment ago (see web_sessions.py).
-        self._web_kept: Dict[str, Tuple[float, Optional[int]]] = {}
+        self._web_kept: "OrderedDict[str, Tuple[float, Optional[int]]]" = OrderedDict()
         self._web_epoch = 0
         self._web_servers: Dict[int, Tuple[float, List[Dict[str, Any]], Optional[asyncio.TimerHandle]]] = {}
 

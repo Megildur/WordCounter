@@ -99,6 +99,14 @@ FORGET_SECONDS = 60.0
 # Seconds between daily credit checks. The upkeep loop itself runs every minute.
 DAILY_INTERVAL = 600.0
 WORDS_PER_PAGE = 60
+# Offload swear matching to a worker thread when a message is long enough to tie up the event loop.
+OFFLOAD_LENGTH = 1000
+
+
+async def _find_swears(matcher: SwearMatcher, text: str) -> List[int]:
+    if len(text) > OFFLOAD_LENGTH:
+        return await asyncio.to_thread(matcher.find, text)
+    return matcher.find(text)
 
 TOP_TABS = {"swears": "Swears", "debt": "Debt", "wallet": "Wallet", "streak": "Streak"}
 TOP_DESCRIPTIONS = {
@@ -1027,7 +1035,7 @@ class SwearJar(commands.Cog):
         # Every message that gets this far counts toward the member's active day, whether or not it is fined.
         if not self._is_forgotten(message.guild.id, message.author.id):
             self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
-        tiers = state.matcher.find(message.content)
+        tiers = await _find_swears(state.matcher, message.content)
         if tiers:
             await self._fine(message, channel_id, state, tiers)
 
@@ -1043,7 +1051,7 @@ class SwearJar(commands.Cog):
         allowed, channel_id = self._checks(after.guild, after.channel, state)
         if not allowed or await self._banned(after, state):
             return
-        tiers = state.matcher.find(after.content)
+        tiers = await _find_swears(state.matcher, after.content)
         if tiers:
             await self._fine(after, channel_id, state, tiers)
 
@@ -1094,7 +1102,7 @@ class SwearJar(commands.Cog):
         """Returns True if the author is banned from WordCounter, and the caller then skips them. In delete mode their swearing is still removed, with a notice, but they are never fined or counted."""
         if message.author.id not in self.bot.blacklisted:
             return False
-        if state.settings["delete_mode"] and state.matcher.find(message.content):
+        if state.settings["delete_mode"] and await _find_swears(state.matcher, message.content):
             await self._remove(message, f"{message.author.mention}'s message was removed for swearing.")
         return True
 

@@ -67,8 +67,11 @@ class WebSessionQueries:
         """Returns the user ID a session belongs to, or None when it doesn't exist or has ended. Raises when the database can't be read, and the caller decides what that means."""
         now = time.monotonic()
         kept = self._web_kept.get(token_hash)
-        if kept is not None and now - kept[0] < (ALIVE_SECONDS if kept[1] is not None else GONE_SECONDS):
-            return kept[1]
+        if kept is not None:
+            if now - kept[0] < (ALIVE_SECONDS if kept[1] is not None else GONE_SECONDS):
+                self._web_kept.move_to_end(token_hash)
+                return kept[1]
+            self._web_kept.pop(token_hash, None)
         await self.ensure_connected()
         epoch = self._web_epoch
         async with self.db_lock:
@@ -77,9 +80,11 @@ class WebSessionQueries:
         owner = int(row[0]) if row else None
         # A look-up that began before a revoke or a deletion and ended after it may have read the row just before it went, so its answer is used once and not kept.
         if epoch == self._web_epoch:
-            if len(self._web_kept) >= KEPT_LIMIT:
-                self._web_kept.clear()
+            if token_hash not in self._web_kept:
+                while len(self._web_kept) >= KEPT_LIMIT:
+                    self._web_kept.popitem(last=False)
             self._web_kept[token_hash] = (time.monotonic(), owner)
+            self._web_kept.move_to_end(token_hash)
         return owner
 
     async def revoke_web_session(self, token_hash: str) -> None:

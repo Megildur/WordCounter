@@ -267,8 +267,40 @@ def _ensure_assets() -> None:
         _assets_loaded = True
 
 
+def _build_static_manifest() -> Dict[str, Path]:
+    manifest: Dict[str, Path] = {}
+    if not STATIC_DIR.is_dir():
+        return manifest
+    for path in STATIC_DIR.rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            rel = path.relative_to(STATIC_DIR)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            resolved = path.resolve()
+            if resolved.is_relative_to(STATIC_DIR):
+                manifest[rel.as_posix()] = resolved
+        except OSError:
+            continue
+    return manifest
+
+
+def _ensure_static_manifest() -> None:
+    global _static_manifest_ready
+    if _static_manifest_ready:
+        return
+    manifest = _build_static_manifest()
+    with _assets_lock:
+        if not _static_manifest_ready:
+            _STATIC_FILES.clear()
+            _STATIC_FILES.update(manifest)
+            _static_manifest_ready = True
+
+
 def load_templates() -> None:
     _ensure_assets()
+    _ensure_static_manifest()
     for name in ENV.list_templates():
         ENV.get_template(name)
 
@@ -320,19 +352,23 @@ def error_page(request: web.Request, status: int, title: str, message: str) -> w
 
 
 STATIC_DIR = (ROOT / "static").resolve()
+_STATIC_FILES: Dict[str, Path] = {}
+_static_manifest_ready = False
 
 
 async def static_file(request: web.Request) -> web.StreamResponse:
-    """Serves a file from web/static, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a dotfile segment, an invalid path, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
+    """Serves a file from web/static using the startup static manifest, with the ETag, Range and conditional-request handling of aiohttp's FileResponse. aiohttp's own static route decides a missing file's 404 only after the middleware has run, so that 404 had no themed page and was cached for a week. Here a missing file, a dotfile segment, an invalid path, a folder and a path that leaves the folder (even through a link) are all a plain 404 raised before any response exists."""
     raw = request.match_info["filename"]
-    if "\x00" in raw or any(part.startswith(".") for part in Path(raw.replace("\\", "/")).parts):
+    if "\x00" in raw or "\\" in raw:
         raise web.HTTPNotFound()
-    try:
-        target = (STATIC_DIR / raw).resolve()
-        if not target.is_relative_to(STATIC_DIR) or not target.is_file():
-            raise web.HTTPNotFound()
-    except (OSError, ValueError):
-        raise web.HTTPNotFound() from None
+    parts = [part for part in raw.split("/") if part]
+    if not parts or any(part in (".", "..") or part.startswith(".") for part in parts):
+        raise web.HTTPNotFound()
+    if not _static_manifest_ready:
+        await asyncio.to_thread(_ensure_static_manifest)
+    target = _STATIC_FILES.get("/".join(parts))
+    if target is None:
+        raise web.HTTPNotFound()
     return web.FileResponse(target)
 
 
