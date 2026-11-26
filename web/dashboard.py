@@ -249,11 +249,14 @@ def valid_channel(guild: discord.Guild, value: Any, include_categories: bool) ->
     return channel.id if channel is not None and channel.type in allowed else None
 
 
-async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any]:
-    """One member's totals, keywords and monthly history shaped for the templates, months newest first with each month's channels sorted by words. `empty` is True when nothing is recorded."""
-    words, messages, attachments, emojis, keywords = await bot.db.get_user_full_stats(guild.id, user_id)
+def _shape_member_stats(
+    guild: discord.Guild,
+    full_stats: Tuple[int, int, int, int, List[Tuple[str, int]]],
+    monthly: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    words, messages, attachments, emojis, keywords = full_stats
     months = []
-    for month in await bot.db.get_user_monthly_breakdown(guild.id, user_id):
+    for month in monthly:
         channels = sorted(month["channels"].items(), key=lambda item: item[1]["words"], reverse=True)
         months.append({
             **month,
@@ -271,12 +274,9 @@ async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any
     }
 
 
-async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
-    """The swear jar numbers for one member, or None when the jar is off in this server."""
-    settings = await bot.db.jar_settings(guild_id)
-    if not settings["enabled"]:
+def _shape_jar_summary(settings: Dict[str, Any], data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not settings["enabled"] or data is None:
         return None
-    data = await bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
     balance = data["balance"]
     spam_until = data["spam_until"] if data["spam_until"] > time.time() else None
     return {
@@ -292,6 +292,22 @@ async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, An
         "spam_note": SPAM_NOTE,
         "unit": unit_label(settings),
     }
+
+
+async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any]:
+    """One member's totals, keywords and monthly history shaped for the templates, months newest first with each month's channels sorted by words. `empty` is True when nothing is recorded."""
+    full_stats = await bot.db.get_user_full_stats(guild.id, user_id)
+    monthly = await bot.db.get_user_monthly_breakdown(guild.id, user_id)
+    return _shape_member_stats(guild, full_stats, monthly)
+
+
+async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """The swear jar numbers for one member, or None when the jar is off in this server."""
+    settings = await bot.db.jar_settings(guild_id)
+    if not settings["enabled"]:
+        return None
+    data = await bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
+    return _shape_jar_summary(settings, data)
 
 
 def refresh_jar(request: web.Request, guild_id: int) -> None:
@@ -381,13 +397,22 @@ async def dashboard(request: web.Request) -> web.Response:
 async def own_stats(request: web.Request) -> web.Response:
     guild, member, can_manage = await member_access(request)
     bot = request.app["bot"]
+    if hasattr(bot.db, "dashboard_member_bundle"):
+        bundle = await bot.db.dashboard_member_bundle(guild.id, member.id, week_start(utc_day()), include_tracking=True)
+        stats = _shape_member_stats(guild, bundle["full_stats"], bundle["months"])
+        tracking = bundle["tracking"]
+        jar = _shape_jar_summary(bundle["jar_settings"], bundle["jar_member"])
+    else:
+        stats = await member_stats(bot, guild, member.id)
+        tracking = await bot.db.has_tracking_enabled(guild.id)
+        jar = await jar_summary(bot, guild.id, member.id)
     return render(
         request,
         "server_stats.html",
         "dashboard",
-        stats=await member_stats(bot, guild, member.id),
-        tracking=await bot.db.has_tracking_enabled(guild.id),
-        jar=await jar_summary(bot, guild.id, member.id),
+        stats=stats,
+        tracking=tracking,
+        jar=jar,
         **guild_context(guild, can_manage, "stats"),
     )
 
@@ -417,14 +442,23 @@ async def leaderboard(request: web.Request) -> web.Response:
             for keyword, users in await bot.db.get_keyword_leaders(guild.id, channel_id)
         ]
     else:
-        rows = await bot.db.get_leaderboard(metric, guild.id, channel_id)
-        shown, page, pages = paginate(rows, request.query.get("page"))
+        if hasattr(bot.db, "get_leaderboard_page"):
+            page = max(1, whole_number(request.query.get("page")) or 1)
+            shown, total = await bot.db.get_leaderboard_page(metric, guild.id, channel_id, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+            pages = max(1, math.ceil(total / PAGE_SIZE))
+            if page > pages:
+                page = pages
+                shown, total = await bot.db.get_leaderboard_page(metric, guild.id, channel_id, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+        else:
+            rows = await bot.db.get_leaderboard(metric, guild.id, channel_id)
+            shown, page, pages = paginate(rows, request.query.get("page"))
+            total = len(rows)
         start = (page - 1) * PAGE_SIZE
         context.update(
             rows=[{"rank": start + index, "count": count, **person(guild, uid)} for index, (uid, count) in enumerate(shown, start=1)],
             page=page,
             pages=pages,
-            total=len(rows),
+            total=total,
         )
 
     context["history"] = await bot.db.get_channel_monthly_breakdown(guild.id, channel_id) if channel_id else []
@@ -447,8 +481,11 @@ async def members(request: web.Request) -> web.Response:
         key=lambda m: m.display_name.casefold(),
     )
     shown, page, pages = paginate(found, request.query.get("page"))
-    words = dict(await db.get_leaderboard("words", guild.id, None))
-    messages = dict(await db.get_leaderboard("messages", guild.id, None))
+    if hasattr(db, "get_member_totals_for_ids"):
+        words, messages = await db.get_member_totals_for_ids(guild.id, [m.id for m in shown])
+    else:
+        words = dict(await db.get_leaderboard("words", guild.id, None))
+        messages = dict(await db.get_leaderboard("messages", guild.id, None))
 
     def link(number: int) -> str:
         return page_url(f"/dashboard/{guild.id}/members", q=query, page=number)
@@ -478,14 +515,23 @@ async def member_page(request: web.Request) -> web.Response:
     if member_id is None:
         raise web.HTTPNotFound()
     running, busy = await analysis_state(bot, guild.id)
+    if hasattr(bot.db, "dashboard_member_bundle"):
+        bundle = await bot.db.dashboard_member_bundle(guild.id, member_id, week_start(utc_day()), include_analyzed=True)
+        stats = _shape_member_stats(guild, bundle["full_stats"], bundle["months"])
+        analyzed = bundle["analyzed"]
+        jar = _shape_jar_summary(bundle["jar_settings"], bundle["jar_member"])
+    else:
+        stats = await member_stats(bot, guild, member_id)
+        analyzed = await bot.db.is_user_analyzed(guild.id, member_id)
+        jar = await jar_summary(bot, guild.id, member_id)
     return render(
         request,
         "server_member.html",
         "dashboard",
         person=person(guild, member_id),
-        stats=await member_stats(bot, guild, member_id),
-        analyzed=await bot.db.is_user_analyzed(guild.id, member_id),
-        jar=await jar_summary(bot, guild.id, member_id),
+        stats=stats,
+        analyzed=analyzed,
+        jar=jar,
         running=running,
         busy=busy,
         reset_menu=channel_menu(

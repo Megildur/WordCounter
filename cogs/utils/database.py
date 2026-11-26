@@ -22,7 +22,7 @@ from cogs.utils.mysql import BROKEN_CONNECTION, TABLE_OPTIONS, DatabaseError, Se
 from cogs.utils.stored_data import BLACKLIST_SCHEMA, META_SCHEMA, StoredDataQueries
 from cogs.utils.sqlite_import import copy_sqlite
 from cogs.utils.stats_panel_store import STATS_PANEL_SCHEMA, StatsPanelQueries
-from cogs.utils.swear_store import JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
+from cogs.utils.swear_store import JAR_DEFAULTS, JAR_SCHEMA, JAR_TABLES, SWEAR_COUNT_TABLES, SwearCounts, SwearJarQueries
 from cogs.utils.web_sessions import WEB_SESSION_SCHEMA, WebSessionQueries
 
 log = logging.getLogger(__name__)
@@ -1117,6 +1117,47 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
             await self.db.commit()
             return True
 
+    async def get_leaderboard_page(
+        self, metric: str, guild_id: int, channel_id: Optional[int], limit: int, offset: int,
+    ) -> Tuple[List[Tuple[int, int]], int]:
+        """Returns (page_rows, total_ranked) for one metric in one round trip using SQL LIMIT/OFFSET."""
+        channel_table, user_table = LEADERBOARD_TABLES[metric]
+        await self.ensure_connected()
+        async with self.db_lock:
+            if channel_id is None:
+                column = COUNT_TABLES[user_table][1]
+                count_sql = f"SELECT COUNT(*) FROM {user_table} WHERE guild_id = ? AND {column} > 0"
+                page_sql = f"SELECT user_id, {column} FROM {user_table} WHERE guild_id = ? AND {column} > 0 ORDER BY {column} DESC LIMIT ? OFFSET ?"
+                count_params: Tuple[Any, ...] = (guild_id,)
+                page_params: Tuple[Any, ...] = (guild_id, limit, offset)
+            else:
+                column = COUNT_TABLES[channel_table][1]
+                count_sql = f"SELECT COUNT(*) FROM {channel_table} WHERE guild_id = ? AND channel_id = ? AND {column} > 0"
+                page_sql = f"SELECT user_id, {column} FROM {channel_table} WHERE guild_id = ? AND channel_id = ? AND {column} > 0 ORDER BY {column} DESC LIMIT ? OFFSET ?"
+                count_params = (guild_id, channel_id)
+                page_params = (guild_id, channel_id, limit, offset)
+            count_out, page_out = await self.db.run_many([(count_sql, count_params), (page_sql, page_params)])
+        total = int(count_out.rows[0][0]) if count_out.rows and count_out.rows[0][0] is not None else 0
+        return page_out.rows, total
+
+    async def get_member_totals_for_ids(self, guild_id: int, user_ids: Sequence[int]) -> Tuple[Dict[int, int], Dict[int, int]]:
+        """Returns ({user_id: words}, {user_id: messages}) for only the requested user IDs in one round trip."""
+        ids = list(dict.fromkeys(user_ids))
+        if not ids:
+            return {}, {}
+        marks = ", ".join(["?"] * len(ids))
+        params = (guild_id, *ids)
+        await self.ensure_connected()
+        async with self.db_lock:
+            words_out, msg_out = await self.db.run_many([
+                (f"SELECT user_id, count FROM server WHERE guild_id = ? AND user_id IN ({marks})", params),
+                (f"SELECT user_id, messages FROM message_user WHERE guild_id = ? AND user_id IN ({marks})", params),
+            ])
+        return (
+            {int(uid): int(count) for uid, count in words_out.rows},
+            {int(uid): int(msgs) for uid, msgs in msg_out.rows},
+        )
+
     async def get_leaderboard(self, metric: str, guild_id: int, channel_id: Optional[int] = None) -> List[Tuple[int, int]]:
         """Returns [(user_id, count)] with the biggest first, for the whole server or for one channel. Members with a count of 0 are left out. `metric` must be a key of LEADERBOARD_TABLES."""
         channel_table, user_table = LEADERBOARD_TABLES[metric]
@@ -1394,8 +1435,10 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
                 WHERE guild_id = ? AND user_id = ? AND count > 0
                 """, (guild_id, user_id)),
             ])
-        stat_rows, keyword_rows = stats.rows, keywords.rows
+        return self._build_monthly_breakdown(stats.rows, keywords.rows)
 
+    @staticmethod
+    def _build_monthly_breakdown(stat_rows: Sequence[Tuple[Any, ...]], keyword_rows: Sequence[Tuple[Any, ...]]) -> List[Dict[str, Any]]:
         months: Dict[Tuple[int, int], Dict[str, Any]] = {}
         for year, month, channel_id, words, messages, attachments, emojis in stat_rows:
             entry = months.setdefault(
@@ -1435,6 +1478,91 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
         for entry in ordered:
             entry["keywords"] = dict(entry["keywords"])
         return ordered
+
+    async def dashboard_member_bundle(
+        self,
+        guild_id: int,
+        user_id: int,
+        week_start: float,
+        *,
+        include_tracking: bool = False,
+        include_analyzed: bool = False,
+    ) -> Dict[str, Any]:
+        """Reads all member stats, monthly breakdown, swear jar summary, and optional tracking/analyzed flags in one lock hold and one round trip."""
+        await self.ensure_connected()
+        params = (guild_id, user_id)
+        statements: List[Tuple[str, Sequence[Any]]] = [
+            ("SELECT count FROM server WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT messages FROM message_user WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT count FROM attachments_users WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT count FROM emojis_users WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT keyword, count FROM keyword_user WHERE guild_id = ? AND user_id = ? AND count > 0", params),
+            ("""
+            SELECT year, month, channel_id, words, messages, attachments, emojis
+            FROM monthly_user_stats
+            WHERE guild_id = ? AND user_id = ?
+            ORDER BY year DESC, month DESC, words DESC
+            """, params),
+            ("""
+            SELECT year, month, channel_id, keyword, count
+            FROM monthly_user_keywords
+            WHERE guild_id = ? AND user_id = ? AND count > 0
+            """, params),
+            (f"SELECT {', '.join(JAR_DEFAULTS)} FROM jar_settings WHERE guild_id = ?", (guild_id,)),
+            ("SELECT balance, streak, best_streak, fines, spam_until FROM jar_members WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT count FROM swears_users WHERE guild_id = ? AND user_id = ?", params),
+            ("SELECT SUM(amount) FROM jar_fines WHERE guild_id = ? AND user_id = ? AND fined_at >= ?", (*params, week_start)),
+        ]
+        if include_tracking:
+            statements.append(("SELECT 1 FROM channels WHERE guild_id = ? LIMIT 1", (guild_id,)))
+        if include_analyzed:
+            statements.append(("SELECT 1 FROM analyzed_users WHERE user_id = ? AND guild_id = ? LIMIT 1", (user_id, guild_id)))
+
+        async with self.db_lock:
+            outcomes = await self.db.run_many(statements)
+
+        def _val(out) -> int:
+            return out.rows[0][0] if out.rows and out.rows[0][0] is not None else 0
+
+        words = _val(outcomes[0])
+        messages = _val(outcomes[1])
+        attachments = _val(outcomes[2])
+        emojis = _val(outcomes[3])
+        keywords = outcomes[4].rows
+        months = self._build_monthly_breakdown(outcomes[5].rows, outcomes[6].rows)
+
+        jar_settings_rows = outcomes[7].rows
+        jar_settings = dict(zip(JAR_DEFAULTS, jar_settings_rows[0])) if jar_settings_rows else dict(JAR_DEFAULTS)
+        jar_member = None
+        if jar_settings["enabled"]:
+            row = outcomes[8].rows[0] if outcomes[8].rows else (0, 0, 0, 0, 0.0)
+            balance, streak, best_streak, fines, spam_until = row
+            jar_member = {
+                "balance": balance,
+                "streak": streak,
+                "best_streak": best_streak,
+                "fines": fines,
+                "spam_until": spam_until,
+                "swears": _val(outcomes[9]),
+                "week_fines": _val(outcomes[10]),
+            }
+
+        idx = 11
+        tracking = False
+        if include_tracking:
+            tracking = bool(outcomes[idx].rows)
+            idx += 1
+        analyzed = False
+        if include_analyzed:
+            analyzed = bool(outcomes[idx].rows)
+        return {
+            "full_stats": (words, messages, attachments, emojis, keywords),
+            "months": months,
+            "jar_settings": jar_settings,
+            "jar_member": jar_member,
+            "tracking": tracking,
+            "analyzed": analyzed,
+        }
 
     async def get_channel_monthly_breakdown(self, guild_id: int, channel_id: int) -> List[Tuple[int, int, int, int, int, int]]:
         """Returns (year, month, words, messages, attachments, emojis) per month, summed over every member, newest first."""
