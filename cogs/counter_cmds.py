@@ -30,6 +30,7 @@ from cogs.utils.components import (
     member_names,
     safe_name,
     rank_prefix,
+    summarize_channels,
     tab_rows,
 )
 from cogs.utils import cards
@@ -39,19 +40,7 @@ from paginator import ButtonPaginator
 
 OVERVIEW_CHANNEL_LIMIT = 25
 CHANNELS_TAB_LIMIT = 40
-
-
-def _summarize_channels(
-    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
-) -> str:
-    sorted_ids = sorted(channel_ids)
-    if not sorted_ids:
-        return empty
-    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
-    remaining = len(sorted_ids) - limit
-    if remaining > 0:
-        shown.append(f"{prefix}and {remaining} more")
-    return sep.join(shown)
+_summarize_channels = summarize_channels
 
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
 SECTIONS = (

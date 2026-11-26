@@ -34,6 +34,7 @@ from cogs.utils.components import (
     private_followup,
     rank_prefix,
     safe_name,
+    summarize_channels,
     tab_rows,
 )
 from cogs.utils.jar import (
@@ -451,7 +452,7 @@ class JarSettingsView(SectionMenu):
         includes, excludes = self._rule_ids("include"), self._rule_ids("exclude")
 
         def listed(ids: List[int]) -> str:
-            return ", ".join(format_channel_or_category(self.guild, cid) for cid in ids) or "None"
+            return summarize_channels(self.guild, ids, limit=40, sep=", ", empty="None")
 
         container.add_item(
             discord.ui.TextDisplay(

@@ -228,6 +228,41 @@ def clip_text(text: str, limit: int) -> str:
     return text[:cut].rstrip() + "\n…"
 
 
+def summarize_channels(
+    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
+) -> str:
+    sorted_ids = sorted(channel_ids)
+    if not sorted_ids:
+        return empty
+    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
+    remaining = len(sorted_ids) - limit
+    if remaining > 0:
+        shown.append(f"{prefix}and {remaining} more")
+    return sep.join(shown)
+
+
+def enforce_text_budget(container: discord.ui.Container, budget: int = TEXT_BUDGET) -> None:
+    """Clips TextDisplay contents inside `container` so their total stays within Discord's 4,000-character Components v2 ceiling."""
+    displays: List[discord.ui.TextDisplay] = []
+    for child in container.children:
+        if isinstance(child, discord.ui.TextDisplay):
+            displays.append(child)
+        elif isinstance(child, discord.ui.Section):
+            for sub in child.children:
+                if isinstance(sub, discord.ui.TextDisplay):
+                    displays.append(sub)
+    if sum(len(td.content) for td in displays) <= budget:
+        return
+    remaining = budget
+    for idx, td in enumerate(displays):
+        # Leave at least 1 character ("…") for each following TextDisplay so none becomes empty.
+        reserve = len(displays) - 1 - idx
+        avail = max(1, remaining - reserve)
+        if len(td.content) > avail:
+            td.content = clip_text(td.content, avail) if avail >= 2 else "…"
+        remaining -= len(td.content)
+
+
 def create_v2_container(
     title: str,
     description: str = "",
