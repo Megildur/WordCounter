@@ -931,7 +931,7 @@ class AnalyzeChat(commands.Cog):
         keywords: List[str],
         progress: Progress,
     ) -> None:
-        """Counts one member's past messages with search, paging back from `coverage.scan_before`. A non-empty page that comes back short while the search's total says more exist is searched again, up to SEARCH_RECHECKS more passes and MAX_RECHECK_WINDOWS per sweep."""
+        """Counts one member's past messages with search, paging back from `coverage.scan_before`. A page that comes back short while the search's total says more exist is searched again, up to SEARCH_RECHECKS more passes and MAX_RECHECK_WINDOWS per sweep. An empty page is searched again only when at least a page's worth is missing: a spurious empty page partway back leaves that much uncounted, while a total that is merely a little high would cost two more searches for nothing."""
         seen: Set[int] = set()
         starts = [coverage.scan_before]
         for sweep in range(1 + SEARCH_RECHECKS):
@@ -941,8 +941,9 @@ class AnalyzeChat(commands.Cog):
                     hits, new = await self._search_window(
                         guild, author_id, cursor, seen, tally, coverage, scope, keywords, progress
                     )
-                    # Remember where this window started (skipping empty tail pages and capping recheck breadth).
-                    if hits and len(hits) < SEARCH_PAGE_SIZE and len(seen) < progress.total and len(short_windows) < MAX_RECHECK_WINDOWS:
+                    # Remember where this window started, capping recheck breadth.
+                    missing = progress.total - len(seen)
+                    if len(hits) < SEARCH_PAGE_SIZE and missing > 0 and (hits or missing >= SEARCH_PAGE_SIZE) and len(short_windows) < MAX_RECHECK_WINDOWS:
                         short_windows.append(cursor)
                     # In a recheck pass a window stops as soon as a page brings nothing new.
                     if not hits or (sweep and not new):
