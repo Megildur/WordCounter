@@ -4,6 +4,7 @@ Shows pages as Components v2 containers with a Previous, page counter and Next r
 """
 
 from __future__ import annotations
+import asyncio
 from typing import (
     Any,
     Dict,
@@ -68,6 +69,7 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
         self.per_page: int = per_page
         self.loop: bool = loop
         self.custom_buttons: Optional[List[discord.ui.Button]] = custom_buttons
+        self._update_lock = asyncio.Lock()
         self.set_pages(pages)
 
     def set_pages(self, pages: Sequence[PageT_co]) -> None:
@@ -201,13 +203,14 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
 
         for container in containers:
             self.add_item(container)
+        self._assign_steady_ids()
 
         kwargs: Dict[str, Any] = {"view": self}
         if files:
             kwargs["files"] = files
         return kwargs
 
-    async def update_page(self, interaction: Interaction) -> None:
+    async def _apply_page(self, interaction: Interaction) -> None:
         if self.message is None:
             self.message = interaction.message
 
@@ -216,7 +219,23 @@ class ButtonPaginator(Generic[PageT_co], AuthorOnlyView):
         # An edit takes new files as `attachments`, where a send takes `files`.
         if "files" in kwargs:
             kwargs["attachments"] = kwargs.pop("files")
-        await interaction.response.edit_message(**kwargs)
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(**kwargs)
+            else:
+                await interaction.response.edit_message(**kwargs)
+        except discord.NotFound as error:
+            if error.code != 10062:
+                raise
+            if self.message is not None:
+                try:
+                    await self.message.edit(**kwargs)
+                except discord.HTTPException:
+                    pass
+
+    async def update_page(self, interaction: Interaction) -> None:
+        async with self._update_lock:
+            await self._apply_page(interaction)
 
     def reset_files(self, page_kwargs: dict[str, Any]) -> None:
         """Rewinds the files in the arguments, because a discord.File is used up once it has been sent."""

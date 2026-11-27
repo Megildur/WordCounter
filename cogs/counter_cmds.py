@@ -17,6 +17,7 @@ from cogs.utils.components import (
     TRACKING_OFF_MESSAGE,
     WARNING_COLOR,
     Callback,
+    acknowledge,
     activity_line,
     create_v2_container,
     error_view,
@@ -657,15 +658,11 @@ class LeaderboardPaginator(ButtonPaginator):
         return kwargs
 
     async def update_page(self, interaction: discord.Interaction) -> None:
-        if self.message is None:
-            self.message = interaction.message
         # Name lookups and the podium can run past 3 seconds, so answer the click first and edit the message afterwards.
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
-        if "files" in kwargs:
-            kwargs["attachments"] = kwargs.pop("files")
-        await interaction.edit_original_response(**kwargs)
+            await acknowledge(interaction, "a leaderboard button press")
+        async with self._update_lock:
+            await self._apply_page(interaction)
 
     async def format_page(self, chunk: List) -> discord.ui.Container:
         where = self.channel.mention if self.channel else "this server"
@@ -709,9 +706,10 @@ class LeaderboardPaginator(ButtonPaginator):
 
     def _switch_to(self, category: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
-            await interaction.response.defer()
-            await self.load(category)
-            await self.update_page(interaction)
+            await acknowledge(interaction, "a leaderboard tab press")
+            async with self._update_lock:
+                await self.load(category)
+                await self._apply_page(interaction)
 
         return callback
 

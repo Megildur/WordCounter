@@ -23,6 +23,7 @@ from cogs.utils.components import (
     SUCCESS_COLOR,
     WARNING_COLOR,
     Callback,
+    acknowledge,
     can_attach,
     create_v2_container,
     create_v2_view,
@@ -259,18 +260,17 @@ class JarTopPaginator(ButtonPaginator):
 
     async def update_page(self, interaction: discord.Interaction) -> None:
         # Reading the ranking and the names can take longer than the 3 seconds Discord gives a press, so it is answered first and the message is edited afterwards.
-        if self.message is None:
-            self.message = interaction.message
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
-        await interaction.edit_original_response(**kwargs)
+            await acknowledge(interaction, "a swear jar leaderboard press")
+        async with self._update_lock:
+            await self._apply_page(interaction)
 
     def _switch_to(self, kind: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
-            await interaction.response.defer()
-            await self.load(kind)
-            await self.update_page(interaction)
+            await acknowledge(interaction, "a swear jar tab press")
+            async with self._update_lock:
+                await self.load(kind)
+                await self._apply_page(interaction)
 
         return callback
 

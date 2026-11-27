@@ -6,10 +6,15 @@ The accent colours, the container and view builders every reply uses, button and
 from __future__ import annotations
 import asyncio
 from collections import OrderedDict
+import logging
+import os
+import re
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 import weakref
 import discord
+
+log = logging.getLogger(__name__)
 
 # Accent colours for container stripes, taken from the bot avatar's palette.
 BRAND_COLOR = discord.Colour(0xF08A3A)
@@ -341,7 +346,64 @@ def error_view(description: str, title: str = "Something went wrong", footer: Op
     return create_v2_view(title=title, description=description, footer=footer, color=ERROR_COLOR)
 
 
-class AuthorOnlyView(discord.ui.LayoutView):
+def _action_name(item: discord.ui.Item) -> str:
+    """What the control does: its callback's name, else its label or placeholder."""
+    name = getattr(getattr(item, "callback", None), "__name__", "")
+    if name in ("", "callback", "<lambda>"):
+        name = getattr(item, "label", None) or getattr(item, "placeholder", None) or type(item).__name__
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(name)).strip("_")[:40] or "item"
+
+
+class SteadyIds:
+    """Keeps each control's custom_id the same when a view redraws itself.
+
+    discord.py gives every control a random custom_id. When a view rebuilds its controls (a settings menu after a click, a paginator after Next), Discord is still tracking the control that was pressed; if its id changed, Discord shows "This interaction failed" on a press that worked and turns away a quick second press. Each id is built from what the control does after a short code made once per message, so ids stay put across redraws and never clash between messages. Controls given their own custom_id are left alone.
+    """
+    id_scope: str = ""
+    _steady_prefix: Optional[str] = None
+
+    def steady_ids_from(self, other: Any) -> None:
+        prefix = getattr(other, "_steady_prefix", None)
+        if prefix:
+            self._steady_prefix = prefix
+
+    def to_components(self) -> List[Dict[str, Any]]:
+        self._assign_steady_ids()
+        return super().to_components()  # type: ignore[misc]
+
+    def _assign_steady_ids(self) -> None:
+        if self._steady_prefix is None:
+            self._steady_prefix = os.urandom(4).hex()
+        base = f"{self._steady_prefix}:{type(self).__name__}"
+        if self.id_scope:
+            base += f":{re.sub(r'[^A-Za-z0-9_]+', '_', str(self.id_scope))[:30]}"
+        seen: Dict[str, int] = {}
+        for item in self.walk_children():  # type: ignore[attr-defined]
+            # Link buttons aren't dispatchable; a provided id is already steady.
+            if not item.is_dispatchable() or getattr(item, "_provided_custom_id", True):
+                continue
+            action = _action_name(item)
+            count = seen.get(action, 0)
+            seen[action] = count + 1
+            item.custom_id = (f"{base}:{action}" + (f":{count}" if count else ""))[:100]
+
+
+async def acknowledge(interaction: discord.Interaction, what: str = "a press") -> None:
+    """Answers a press with a defer unless it was answered already, carrying on if the 3-second window already expired (10062)."""
+    extras = getattr(interaction, "extras", None)
+    if interaction.response.is_done() or (extras is not None and extras.get("answered_too_late")):
+        return
+    try:
+        await interaction.response.defer()
+    except discord.NotFound as error:
+        if error.code != 10062:
+            raise
+        if extras is not None:
+            extras["answered_too_late"] = True
+        log.warning("%s was already too late to answer", what[:1].upper() + what[1:])
+
+
+class AuthorOnlyView(SteadyIds, discord.ui.LayoutView):
     """A LayoutView that only `author_id` can press, or anyone when it is None. Anyone else gets `denied_message` as a private reply. With `needs_manager` the author must also still have Manage Server on every press, so someone who loses it while the menu is open can't go on using it."""
     def __init__(
         self,
