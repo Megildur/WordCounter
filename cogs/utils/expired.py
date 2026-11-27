@@ -1,6 +1,6 @@
 """Answers a press on a menu that nobody is listening for, instead of leaving Discord's "This interaction failed" on screen.
 
-A menu stops listening when its view times out, when the bot restarts, or when it is redrawn with new controls, but its message keeps its old buttons. discord.py drops a press on such a button without answering. `install` wraps its INTERACTION_CREATE parser, like `startup.py` and `blacklist.py`, to check before the press is handed on whether a view or a form is registered for it, and when none is, to answer privately that the menu has expired.
+A menu stops listening when its view times out, when the bot restarts, or when a new menu replaces it on the same message (a menu that redraws itself keeps its control IDs through `SteadyIds`), but its message keeps its old buttons. discord.py drops a press on such a button without answering. `install` wraps its INTERACTION_CREATE parser, like `startup.py` and `blacklist.py`, to check before the press is handed on whether a view or a form is registered for it, and when none is, to answer privately that the menu has expired.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _TASKS: Set[asyncio.Task] = set()
 
 
 def expired_view() -> discord.ui.LayoutView:
-    # A menu that was redrawn gives its controls new IDs, so a press that was already on its way lands here too, which is why the text doesn't only say it timed out.
+    # A new menu that replaces an old one on the same message gives its controls new IDs, so a press on the old one that was already on its way lands here too, which is why the text doesn't only say it timed out.
     return create_v2_view("This menu has expired", "It timed out, or a newer version of it replaced it. Use the newest one, or run the command again to get a fresh one.", color=NEUTRAL_COLOR)
 
 
