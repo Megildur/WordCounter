@@ -65,9 +65,10 @@ CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands
 class MyBot(commands.Bot):
     """The bot. Nobody is pinged by default, so a message that must ping passes its own `allowed_mentions`."""
     def __init__(self) -> None:
-        # The only text command WordCounter adds is !wcquicksync, and Intents.all() includes the privileged message content and members intents the counting needs.
+        # The only text command WordCounter adds is !wcquicksync. Explicit minimal intents keep gateway traffic down while keeping message content, members (for stats/dashboard) and presences (for the home-page developer card).
+        intents = discord.Intents(guilds=True, members=True, messages=True, message_content=True, presences=True)
         super().__init__(
-            command_prefix="!wc", intents=discord.Intents.all(), allowed_mentions=discord.AllowedMentions.none(), http_trace=nettrace.trace_config(),
+            command_prefix="!wc", intents=intents, allowed_mentions=discord.AllowedMentions.none(), http_trace=nettrace.trace_config(),
         )
         self.db = WordCounterDatabase(self)
         # When this process started, in Unix seconds, for the stats panel's "Online since".

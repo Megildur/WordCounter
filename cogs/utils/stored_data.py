@@ -170,20 +170,27 @@ def _holding(raw: Any, entry: IdList, target_id: int) -> List[str]:
 
 
 class StoredDataQueries:
-    async def _id_columns(self) -> Dict[str, List[str]]:
-        """Returns {table: its integer columns whose names end in _id} for the whole database. The caller must hold db_lock."""
+    async def _schema_columns(self) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+        """Returns ({table: integer _id columns}, {table: all columns in ordinal order}) for the database. The caller must hold db_lock."""
         cursor = await self.db.execute(
             """SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION"""
         )
-        found: Dict[str, List[str]] = {}
+        id_cols: Dict[str, List[str]] = {}
+        all_cols: Dict[str, List[str]] = {}
         for table, column, kind in await cursor.fetchall():
             # The blacklist is kept on purpose (see KEPT_POLICY), and db_meta is internal bookkeeping.
             if table in (BLACKLIST_TABLE, META_TABLE):
                 continue
+            all_cols.setdefault(table, []).append(column)
             if column.endswith("_id") and str(kind).lower() in INTEGER_TYPES:
-                found.setdefault(table, []).append(column)
-        return found
+                id_cols.setdefault(table, []).append(column)
+        return id_cols, all_cols
+
+    async def _id_columns(self) -> Dict[str, List[str]]:
+        """Returns {table: its integer columns whose names end in _id} for the whole database. The caller must hold db_lock."""
+        id_cols, _ = await self._schema_columns()
+        return id_cols
 
     async def _listing_rows(self, entry: IdList, target_id: int, id_columns: List[str]) -> List[Tuple[Any, ...]]:
         """The rows of an ID_LISTS table that list the id, as the key columns followed by the JSON column. The LIKE only narrows the search, because it also finds an id that merely contains these digits, so every row is checked with `_holding`. A row the integer search already found (a server's own run) is left out, so it counts once. The caller must hold db_lock."""
@@ -201,34 +208,36 @@ class StoredDataQueries:
         await self.ensure_connected()
         tables: List[Table] = []
         async with self.db_lock:
-            id_columns = await self._id_columns()
-            counted: Dict[str, Any] = {}
-            if not rows:
-                # One query per table counts the rows and says which columns held the id (the COUNTs come first in the SELECT, so their placeholders take the first values); every table's goes in one round trip.
-                names = list(id_columns)
-                outcomes = await self.db.run_many([
-                    (
-                        f"SELECT COUNT(*){''.join(f', COUNT(CASE WHEN `{column}` = ? THEN 1 END)' for column in id_columns[name])} FROM `{name}` "
-                        f"WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
-                        (target_id,) * (2 * len(id_columns[name])),
-                    )
-                    for name in names
-                ])
-                counted = {name: outcome.rows[0] for name, outcome in zip(names, outcomes)}
-            for name, columns in id_columns.items():
-                # Names come from information_schema, not from user input. A row matches when any of the table's id columns holds the id.
-                where = " OR ".join(f"`{column}` = ?" for column in columns)
-                if rows:
-                    cursor = await self.db.execute(f"SELECT * FROM `{name}` WHERE {where}", (target_id,) * len(columns))
-                    found = [tuple(row) for row in await cursor.fetchall()]
-                    if found:
-                        names = [description[0] for description in cursor.description]
-                        matched = [column for column in columns if any(row[names.index(column)] == target_id for row in found)]
-                        tables.append(Table(name, len(found), matched, columns=names, rows=found))
-                    continue
-                total, *per_column = counted[name]
+            id_columns, all_columns = await self._schema_columns()
+            # One round trip counts every table and says which columns held the id; when `rows=True`, only tables with hits are fetched in a second batch.
+            names = list(id_columns)
+            outcomes = await self.db.run_many([
+                (
+                    f"SELECT COUNT(*){''.join(f', COUNT(CASE WHEN `{column}` = ? THEN 1 END)' for column in id_columns[name])} FROM `{name}` "
+                    f"WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
+                    (target_id,) * (2 * len(id_columns[name])),
+                )
+                for name in names
+            ]) if names else []
+            matching: List[Tuple[str, Table]] = []
+            for name, outcome in zip(names, outcomes):
+                columns = id_columns[name]
+                total, *per_column = outcome.rows[0]
                 if total:
-                    tables.append(Table(name, int(total), [column for column, n in zip(columns, per_column) if n]))
+                    table = Table(name, int(total), [column for column, n in zip(columns, per_column) if n])
+                    tables.append(table)
+                    matching.append((name, table))
+            if rows and matching:
+                row_outcomes = await self.db.run_many([
+                    (
+                        f"SELECT * FROM `{name}` WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
+                        (target_id,) * len(id_columns[name]),
+                    )
+                    for name, _ in matching
+                ])
+                for (name, table), outcome in zip(matching, row_outcomes):
+                    table.columns = list(all_columns.get(name, ()))
+                    table.rows = [tuple(row) for row in outcome.rows]
             for entry in ID_LISTS:
                 if entry.table not in id_columns:
                     continue
@@ -269,13 +278,27 @@ class StoredDataQueries:
             await self.ensure_connected()
             async with self.db_lock:
                 id_columns = await self._id_columns()
-                for name, columns in id_columns.items():
-                    # The same match as find_by_id, so a deletion removes exactly what an export lists.
-                    where = " OR ".join(f"`{column}` = ?" for column in columns)
-                    cursor = await self.db.execute(f"DELETE FROM `{name}` WHERE {where}", (target_id,) * len(columns))
-                    if cursor.rowcount and cursor.rowcount > 0:
-                        deleted.removed[name] = cursor.rowcount
-                    await asyncio.sleep(0)
+                names = list(id_columns)
+                # Count first in 1 RT, then DELETE in 1 RT only on tables that actually hold `target_id`.
+                count_outcomes = await self.db.run_many([
+                    (
+                        f"SELECT COUNT(*) FROM `{name}` WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
+                        (target_id,) * len(id_columns[name]),
+                    )
+                    for name in names
+                ]) if names else []
+                hit_names = [name for name, outcome in zip(names, count_outcomes) if outcome.rows and outcome.rows[0][0]]
+                if hit_names:
+                    del_outcomes = await self.db.run_many([
+                        (
+                            f"DELETE FROM `{name}` WHERE {' OR '.join(f'`{column}` = ?' for column in id_columns[name])}",
+                            (target_id,) * len(id_columns[name]),
+                        )
+                        for name in hit_names
+                    ])
+                    for name, outcome in zip(hit_names, del_outcomes):
+                        if outcome.rowcount and outcome.rowcount > 0:
+                            deleted.removed[name] = outcome.rowcount
                 # After the deletes, so a server's own run is gone and not rewritten. An interrupted run isn't running in memory for `AnalyzeChat.forget` to clean, and a resume reads its members back from this row.
                 for entry in ID_LISTS:
                     if entry.table in id_columns:

@@ -4,6 +4,8 @@ Everyone sees their own stats in the servers they share with the bot, and the se
 """
 
 from __future__ import annotations
+import asyncio
+from collections import OrderedDict
 import logging
 import math
 import time
@@ -12,11 +14,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 import discord
 from aiohttp import web
+from cogs.utils import components
 from cogs.utils.config import guild_invite_url
 from cogs.utils.jar import SPAM_NOTE, days_to_clear, money, unit_label, utc_day, week_start
 from cogs.utils.server_settings import LEADERBOARDS, TRACKABLE_CHANNEL_TYPES, WIPES, analysis_state, parse_keywords
 from web import auth
-from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, post_form, redirect, render, sent_from_other_site
+from web.core import ENV, Banned, RateLimit, Refused, client_id, current_user, error_page, limit_write, post_form, redirect, render, sent_from_other_site
 
 routes = web.RouteTableDef()
 log = logging.getLogger(__name__)
@@ -83,7 +86,7 @@ def icon_url(guild: discord.Guild) -> Optional[str]:
 
 
 # (server id, user id) to when Discord answered that they aren't in the server, asked because its member list isn't fully cached. A refresh, or a link to many server ids, then doesn't ask Discord each time. Only that answer is kept: a found member could have lost a permission, and an error could be passing.
-_asked: Dict[Tuple[int, int], float] = {}
+_asked: "OrderedDict[Tuple[int, int], float]" = OrderedDict()
 ASKED_SECONDS = 20.0
 ASKED_LIMIT = 2000
 
@@ -94,14 +97,19 @@ async def find_member(guild: discord.Guild, user_id: int) -> Optional[discord.Me
     if member is None and not guild.chunked:
         key = (guild.id, user_id)
         asked = _asked.get(key)
-        if asked is not None and time.monotonic() - asked < ASKED_SECONDS:
-            return None
+        if asked is not None:
+            if time.monotonic() - asked < ASKED_SECONDS:
+                _asked.move_to_end(key)
+                return None
+            _asked.pop(key, None)
         try:
             member = await guild.fetch_member(user_id)
         except discord.NotFound:
-            if len(_asked) >= ASKED_LIMIT:
-                _asked.clear()
+            if key not in _asked:
+                while len(_asked) >= ASKED_LIMIT:
+                    _asked.popitem(last=False)
             _asked[key] = time.monotonic()
+            _asked.move_to_end(key)
         except discord.HTTPException as error:
             log.warning("Discord didn't answer a server member lookup (status %s)", error.status)
             raise web.HTTPServiceUnavailable() from error
@@ -126,11 +134,12 @@ async def member_access(request: web.Request) -> Tuple[discord.Guild, discord.Me
     guild = request.app["bot"].get_guild(guild_id) if guild_id else None
     if guild is None:
         raise web.HTTPNotFound()
-    if guild.id in request.app["bot"].blacklisted:
-        raise Banned(text="This server has been banned from using WordCounter, so its dashboard is closed.")
+    # Verify membership before checking guild blacklist so non-members always receive 404 (prevents guild-blacklist existence oracle).
     member = await find_member(guild, int(user["id"]))
     if member is None:
         raise web.HTTPNotFound()
+    if guild.id in request.app["bot"].blacklisted:
+        raise Banned(text="This server has been banned from using WordCounter, so its dashboard is closed.")
     manager = manages(member)
     # Only for the words on the "managers only" page: someone with a role that gives Manage Server who is timed out is told why they are shut out.
     request["timed_out"] = not manager and member.is_timed_out() and any(role.permissions.manage_guild for role in member.roles)
@@ -144,9 +153,19 @@ def manager_only(request: web.Request) -> web.Response:
     return error_page(request, 403, "Managers only", "You need the Manage Server permission in this server to see this.")
 
 
+def _csrf_fallback_path(request: web.Request, guild_id: Optional[int]) -> str:
+    """Safe GET target after a failed CSRF check so POST-only dashboard routes never redirect into a 405 Method Not Allowed."""
+    resource = request.match_info.route.resource
+    if resource is not None and any(route.method == "GET" for route in resource):
+        return f"{request.path}?msg=expired_form"
+    if guild_id is not None:
+        return f"/dashboard/{guild_id}?msg=expired_form"
+    return "/dashboard?msg=expired_form"
+
+
 @web.middleware
 async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
-    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a mutating request sent from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a mutating request carries their CSRF token. One with a bad token is sent back to its page with the "form expired" message and changes nothing.
+    """Runs before every handler under /dashboard, so none of them can forget the checks: the person is signed in and not banned, a mutating request sent from another site is refused, the person is in the server and (for every page but their own stats) may manage it, and a mutating request carries their CSRF token. One with a bad token is sent back to a safe GET page with the "form expired" message and changes nothing.
 
     It goes by the route's pattern, not by each handler, so a new page is covered the moment it is added.
     """
@@ -161,22 +180,40 @@ async def dashboard_guard(request: web.Request, handler) -> web.StreamResponse:
     mutating = request.method not in ("GET", "HEAD", "OPTIONS")
     if mutating and sent_from_other_site(request):
         raise Refused(text="That form was sent from another site, so it was refused.")
+    guild_id = None
     if "guild_id" in request.match_info:
-        _, _, manager = await member_access(request)
+        guild, _, manager = await member_access(request)
         if not manager and pattern not in MEMBER_PAGES:
             return manager_only(request)
-    if mutating and not auth.check_csrf(user, (await post_form(request)).get("csrf")):
-        raise web.HTTPFound(f"{request.path}?msg=expired_form")
+        guild_id = guild.id
+    if mutating:
+        if not auth.check_csrf(user, (await post_form(request)).get("csrf")):
+            raise web.HTTPFound(_csrf_fallback_path(request, guild_id))
+        limit_write(int(user["id"]), guild_id)
     return await handler(request)
 
 
-def person(guild: discord.Guild, user_id: int) -> Dict[str, Any]:
-    """Name and avatar for a row in a list. Someone who has left the server (not in the member cache) shows as "Former member" with no avatar."""
+def person(guild: discord.Guild, user_id: int, bot: Any = None) -> Dict[str, Any]:
+    """Name and avatar for a row in a list, checking guild cache, bot user cache, and fetched-name cache before falling back to "Former member"."""
     member = guild.get_member(user_id)
+    if member is not None:
+        return {
+            "id": user_id,
+            "name": member.display_name,
+            "avatar_url": member.display_avatar.with_size(64).url,
+        }
+    user = bot.get_user(user_id) if bot is not None and hasattr(bot, "get_user") else None
+    if user is not None:
+        return {
+            "id": user_id,
+            "name": user.display_name,
+            "avatar_url": user.display_avatar.with_size(64).url,
+        }
+    cached = components._cached_name(user_id)
     return {
         "id": user_id,
-        "name": member.display_name if member else "Former member",
-        "avatar_url": member.display_avatar.with_size(64).url if member else None,
+        "name": cached if cached and cached != components.FORMER_MEMBER else "Former member",
+        "avatar_url": None,
     }
 
 
@@ -233,11 +270,14 @@ def valid_channel(guild: discord.Guild, value: Any, include_categories: bool) ->
     return channel.id if channel is not None and channel.type in allowed else None
 
 
-async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any]:
-    """One member's totals, keywords and monthly history shaped for the templates, months newest first with each month's channels sorted by words. `empty` is True when nothing is recorded."""
-    words, messages, attachments, emojis, keywords = await bot.db.get_user_full_stats(guild.id, user_id)
+def _shape_member_stats(
+    guild: discord.Guild,
+    full_stats: Tuple[int, int, int, int, List[Tuple[str, int]]],
+    monthly: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    words, messages, attachments, emojis, keywords = full_stats
     months = []
-    for month in await bot.db.get_user_monthly_breakdown(guild.id, user_id):
+    for month in monthly:
         channels = sorted(month["channels"].items(), key=lambda item: item[1]["words"], reverse=True)
         months.append({
             **month,
@@ -255,12 +295,9 @@ async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any
     }
 
 
-async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
-    """The swear jar numbers for one member, or None when the jar is off in this server."""
-    settings = await bot.db.jar_settings(guild_id)
-    if not settings["enabled"]:
+def _shape_jar_summary(settings: Dict[str, Any], data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not settings["enabled"] or data is None:
         return None
-    data = await bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
     balance = data["balance"]
     spam_until = data["spam_until"] if data["spam_until"] > time.time() else None
     return {
@@ -276,6 +313,22 @@ async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, An
         "spam_note": SPAM_NOTE,
         "unit": unit_label(settings),
     }
+
+
+async def member_stats(bot, guild: discord.Guild, user_id: int) -> Dict[str, Any]:
+    """One member's totals, keywords and monthly history shaped for the templates, months newest first with each month's channels sorted by words. `empty` is True when nothing is recorded."""
+    full_stats = await bot.db.get_user_full_stats(guild.id, user_id)
+    monthly = await bot.db.get_user_monthly_breakdown(guild.id, user_id)
+    return _shape_member_stats(guild, full_stats, monthly)
+
+
+async def jar_summary(bot, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """The swear jar numbers for one member, or None when the jar is off in this server."""
+    settings = await bot.db.jar_settings(guild_id)
+    if not settings["enabled"]:
+        return None
+    data = await bot.db.jar_member(guild_id, user_id, week_start(utc_day()))
+    return _shape_jar_summary(settings, data)
 
 
 def refresh_jar(request: web.Request, guild_id: int) -> None:
@@ -317,10 +370,36 @@ async def dashboard(request: web.Request) -> web.Response:
     user_id = int(user["id"])
     bot = request.app["bot"]
     managed = bot.db.web_servers(user_id)
+    managed_ids = {server["id"] for server in managed or ()}
+    resolved_members = {}
+    unchunked_candidates = []
+    for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
+        if guild.id in bot.blacklisted:
+            continue
+        member = guild.get_member(user_id)
+        if member is not None:
+            resolved_members[guild.id] = member
+        elif not getattr(guild, "chunked", True) and guild.id in managed_ids:
+            unchunked_candidates.append(guild)
+    if unchunked_candidates:
+        sem = asyncio.Semaphore(4)
+
+        async def _lookup(g):
+            async with sem:
+                try:
+                    return g.id, await find_member(g, user_id)
+                except web.HTTPServiceUnavailable:
+                    return g.id, None
+
+        for gid, member in await asyncio.gather(*(_lookup(g) for g in unchunked_candidates)):
+            if member is not None:
+                resolved_members[gid] = member
     servers = []
     for guild in sorted(bot.guilds, key=lambda g: g.name.lower()):
-        member = guild.get_member(user_id)
-        if member is not None and guild.id not in bot.blacklisted:
+        if guild.id in bot.blacklisted:
+            continue
+        member = resolved_members.get(guild.id)
+        if member is not None:
             servers.append({
                 "id": guild.id,
                 "name": guild.name,
@@ -339,13 +418,22 @@ async def dashboard(request: web.Request) -> web.Response:
 async def own_stats(request: web.Request) -> web.Response:
     guild, member, can_manage = await member_access(request)
     bot = request.app["bot"]
+    if hasattr(bot.db, "dashboard_member_bundle"):
+        bundle = await bot.db.dashboard_member_bundle(guild.id, member.id, week_start(utc_day()), include_tracking=True)
+        stats = _shape_member_stats(guild, bundle["full_stats"], bundle["months"])
+        tracking = bundle["tracking"]
+        jar = _shape_jar_summary(bundle["jar_settings"], bundle["jar_member"])
+    else:
+        stats = await member_stats(bot, guild, member.id)
+        tracking = await bot.db.has_tracking_enabled(guild.id)
+        jar = await jar_summary(bot, guild.id, member.id)
     return render(
         request,
         "server_stats.html",
         "dashboard",
-        stats=await member_stats(bot, guild, member.id),
-        tracking=await bot.db.has_tracking_enabled(guild.id),
-        jar=await jar_summary(bot, guild.id, member.id),
+        stats=stats,
+        tracking=tracking,
+        jar=jar,
         **guild_context(guild, can_manage, "stats"),
     )
 
@@ -369,20 +457,29 @@ async def leaderboard(request: web.Request) -> web.Response:
         context["keyword_leaders"] = [
             {
                 "keyword": keyword,
-                "rows": [{"rank": rank, "count": count, **person(guild, uid)} for rank, (uid, count) in enumerate(users[:KEYWORD_TOP], start=1)],
+                "rows": [{"rank": rank, "count": count, **person(guild, uid, bot)} for rank, (uid, count) in enumerate(users[:KEYWORD_TOP], start=1)],
                 "total": len(users),
             }
             for keyword, users in await bot.db.get_keyword_leaders(guild.id, channel_id)
         ]
     else:
-        rows = await bot.db.get_leaderboard(metric, guild.id, channel_id)
-        shown, page, pages = paginate(rows, request.query.get("page"))
+        if hasattr(bot.db, "get_leaderboard_page"):
+            page = max(1, whole_number(request.query.get("page")) or 1)
+            shown, total = await bot.db.get_leaderboard_page(metric, guild.id, channel_id, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+            pages = max(1, math.ceil(total / PAGE_SIZE))
+            if page > pages:
+                page = pages
+                shown, total = await bot.db.get_leaderboard_page(metric, guild.id, channel_id, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+        else:
+            rows = await bot.db.get_leaderboard(metric, guild.id, channel_id)
+            shown, page, pages = paginate(rows, request.query.get("page"))
+            total = len(rows)
         start = (page - 1) * PAGE_SIZE
         context.update(
-            rows=[{"rank": start + index, "count": count, **person(guild, uid)} for index, (uid, count) in enumerate(shown, start=1)],
+            rows=[{"rank": start + index, "count": count, **person(guild, uid, bot)} for index, (uid, count) in enumerate(shown, start=1)],
             page=page,
             pages=pages,
-            total=len(rows),
+            total=total,
         )
 
     context["history"] = await bot.db.get_channel_monthly_breakdown(guild.id, channel_id) if channel_id else []
@@ -397,27 +494,67 @@ async def members(request: web.Request) -> web.Response:
     guild, _, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
-    db = request.app["bot"].db
+    bot = request.app["bot"]
+    db = bot.db
     query = request.query.get("q", "").strip()[:100]
+    showing_former = request.query.get("former") == "1"
     needle = query.casefold()
-    found = sorted(
-        (m for m in guild.members if not m.bot and (needle in m.display_name.casefold() or needle in m.name.casefold())),
-        key=lambda m: m.display_name.casefold(),
-    )
-    shown, page, pages = paginate(found, request.query.get("page"))
-    words = dict(await db.get_leaderboard("words", guild.id, None))
-    messages = dict(await db.get_leaderboard("messages", guild.id, None))
+    active_ids = {m.id for m in guild.members}
+
+    if showing_former:
+        words = dict(await db.get_leaderboard("words", guild.id, None))
+        messages = dict(await db.get_leaderboard("messages", guild.id, None))
+        former_ids = [uid for uid in words.keys() | messages.keys() if uid not in active_ids]
+        entries = []
+        for uid in former_ids:
+            info = person(guild, uid, bot)
+            if not needle or needle in info["name"].casefold() or needle == str(uid):
+                entries.append({**info, "words": words.get(uid, 0), "messages": messages.get(uid, 0)})
+        entries.sort(key=lambda row: (-row["words"], row["name"].casefold(), row["id"]))
+        rows, page, pages = paginate(entries, request.query.get("page"))
+        total = len(entries)
+    else:
+        found = sorted(
+            (
+                m
+                for m in guild.members
+                if not m.bot and (needle in m.display_name.casefold() or needle in m.name.casefold() or needle == str(m.id))
+            ),
+            key=lambda m: m.display_name.casefold(),
+        )
+        shown, page, pages = paginate(found, request.query.get("page"))
+        shown_ids = [m.id for m in shown]
+        # Numeric ID searches also surface former members who have recorded server stats.
+        extra_former_id: Optional[int] = None
+        query_id = whole_number(query)
+        if not shown and query_id is not None and query_id not in active_ids:
+            shown_ids = [query_id]
+            extra_former_id = query_id
+        if hasattr(db, "get_member_totals_for_ids"):
+            words, messages = await db.get_member_totals_for_ids(guild.id, shown_ids)
+        else:
+            words = dict(await db.get_leaderboard("words", guild.id, None))
+            messages = dict(await db.get_leaderboard("messages", guild.id, None))
+        if extra_former_id is not None and (extra_former_id in words or extra_former_id in messages):
+            rows = [{**person(guild, extra_former_id, bot), "words": words.get(extra_former_id, 0), "messages": messages.get(extra_former_id, 0)}]
+            total = 1
+        else:
+            rows = [{**person(guild, m.id, bot), "words": words.get(m.id, 0), "messages": messages.get(m.id, 0)} for m in shown]
+            total = len(found)
 
     def link(number: int) -> str:
-        return page_url(f"/dashboard/{guild.id}/members", q=query, page=number)
+        return page_url(f"/dashboard/{guild.id}/members", q=query, former="1" if showing_former else None, page=number)
 
     return render(
         request,
         "server_members.html",
         "dashboard",
-        rows=[{**person(guild, m.id), "words": words.get(m.id, 0), "messages": messages.get(m.id, 0)} for m in shown],
+        rows=rows,
         query=query,
-        total=len(found),
+        showing_former=showing_former,
+        chunked=guild.chunked,
+        toggle_former_url=page_url(f"/dashboard/{guild.id}/members", q=query, former=None if showing_former else "1"),
+        total=total,
         page=page,
         pages=pages,
         prev_url=link(page - 1) if page > 1 else None,
@@ -436,14 +573,24 @@ async def member_page(request: web.Request) -> web.Response:
     if member_id is None:
         raise web.HTTPNotFound()
     running, busy = await analysis_state(bot, guild.id)
+    if hasattr(bot.db, "dashboard_member_bundle"):
+        bundle = await bot.db.dashboard_member_bundle(guild.id, member_id, week_start(utc_day()), include_analyzed=True)
+        stats = _shape_member_stats(guild, bundle["full_stats"], bundle["months"])
+        analyzed = bundle["analyzed"]
+        jar = _shape_jar_summary(bundle["jar_settings"], bundle["jar_member"])
+    else:
+        stats = await member_stats(bot, guild, member_id)
+        analyzed = await bot.db.is_user_analyzed(guild.id, member_id)
+        jar = await jar_summary(bot, guild.id, member_id)
     return render(
         request,
         "server_member.html",
         "dashboard",
-        person=person(guild, member_id),
-        stats=await member_stats(bot, guild, member_id),
-        analyzed=await bot.db.is_user_analyzed(guild.id, member_id),
-        jar=await jar_summary(bot, guild.id, member_id),
+        person=person(guild, member_id, bot),
+        stats=stats,
+        analyzed=analyzed,
+        jar=jar,
+        running=running,
         busy=busy,
         reset_menu=channel_menu(
             channel_groups(guild, include_categories=False),
@@ -469,8 +616,11 @@ async def member_action(request: web.Request) -> web.Response:
     # Nothing changes unless the CSRF token matches. Every outcome ends in a redirect with a `?msg=` code, so refreshing the page never repeats the action.
     if not csrf_ok:
         result = "expired_form"
+    elif action not in ("reset_member", "reanalyze_member", "reset_jar"):
+        result = "bad_action"
     else:
-        result = await confirmed_and_free(request, form, guild)
+        # Per-member swear jar reset waits only for a running analysis (matching /swearjar and Discord), while count resets also wait for an interrupted analysis.
+        result = await confirmed_and_free(request, form, guild, running_only=(action == "reset_jar"))
         if result is None and action == "reset_member":
             await db.reset_counts(guild.id, member_id, valid_channel(guild, form.get("channel"), include_categories=False))
             result = "counts_reset"
@@ -478,13 +628,16 @@ async def member_action(request: web.Request) -> web.Response:
             await db.allow_reanalysis(guild.id, member_id)
             result = "reanalysis_ready"
         elif result is None and action == "reset_jar":
-            await db.jar_reset_members(guild.id, member_id)
+            # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
             cog = request.app["bot"].get_cog("SwearJar")
+            if cog is not None:
+                cog.forget_member(guild.id, member_id)
+            await db.jar_reset_members(guild.id, member_id)
             if cog is not None:
                 cog.forget_member(guild.id, member_id)
             refresh_jar(request, guild.id)
             result = "jar_reset"
-    return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'expired_form'}")
+    return redirect(f"/dashboard/{guild.id}/members/{member_id}?msg={result or 'bad_action'}")
 
 
 @routes.get(r"/dashboard/{guild_id:[0-9]{1,19}}/settings")
@@ -530,6 +683,7 @@ async def settings_action(request: web.Request) -> web.Response:
     result = "expired_form"
     # Same as member_action: no change without a valid CSRF token, and every outcome redirects with a `?msg=` code.
     if csrf_ok:
+        result = "bad_action"
         watched, _ = await db.get_guild_tracking_config(guild.id)
         whole = 1 in watched
         if action == "mode" and form.get("mode") in ("whole", "specific"):
@@ -546,9 +700,12 @@ async def settings_action(request: web.Request) -> web.Response:
             await (db.remove_ignored_channels(guild.id, ids) if whole else db.remove_watched_channels(guild.id, ids))
             result = "channels_saved"
         elif action == "keywords":
-            # The same 2000 character limit as the keyword list in Discord's edit modal.
-            await db.replace_keywords(guild.id, parse_keywords(str(form.get("keywords", ""))[:2000]))
-            result = "keywords_saved"
+            raw_keywords = str(form.get("keywords", ""))
+            if len(raw_keywords) > 16000:
+                result = "keywords_too_long"
+            else:
+                await db.replace_keywords(guild.id, parse_keywords(raw_keywords))
+                result = "keywords_saved"
         elif action == "tracking_off":
             # running_only: turning tracking off and resetting the server are blocked only by an analysis that is running now, while the count resets below also wait for an interrupted one.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "tracking_off"
@@ -568,12 +725,14 @@ async def settings_action(request: web.Request) -> web.Response:
             result = "bad_reset" if what not in WIPES else await confirmed_and_free(request, form, guild, running_only=True) or f"reset_{what}"
             if what in WIPES and result == f"reset_{what}":
                 counts, jar, _ = WIPES[what]
+                cog = request.app["bot"].get_cog("SwearJar") if jar else None
+                if cog is not None:
+                    # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
+                    cog.forget(guild.id)
                 await db.reset_entire_server(guild.id, counts=counts, jar=jar)
-                if jar:
-                    # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
-                    cog = request.app["bot"].get_cog("SwearJar")
-                    if cog is not None:
-                        cog.forget(guild.id)
-        # Drops the swear jar cog's cached tracking config so changes take effect in Discord at once.
-        refresh_jar(request, guild.id)
+                if cog is not None:
+                    cog.forget(guild.id)
+        # Drops the swear jar cog's cached tracking config only when a recognized action ran.
+        if result != "bad_action":
+            refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/settings?msg={result}")

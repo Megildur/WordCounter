@@ -5,9 +5,16 @@ The accent colours, the container and view builders every reply uses, button and
 
 from __future__ import annotations
 import asyncio
+from collections import OrderedDict
+import logging
+import os
+import re
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+import weakref
 import discord
+
+log = logging.getLogger(__name__)
 
 # Accent colours for container stripes, taken from the bot avatar's palette.
 BRAND_COLOR = discord.Colour(0xF08A3A)
@@ -22,6 +29,7 @@ TRACKING_OFF_MESSAGE = "Tracking is off in this server. An admin can turn it on 
 SERVER_ONLY_MESSAGE = "This command only works in a server."
 
 Callback = Callable[[discord.Interaction], Awaitable[None]]
+SELECT_TYPES = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect, discord.ui.UserSelect, discord.ui.MentionableSelect)
 
 
 def make_button(
@@ -52,22 +60,40 @@ FORMER_MEMBER = "Former member"
 NAME_TTL = 3600.0
 NAME_WAIT = 1.5
 NAME_CACHE_LIMIT = 5000
-# Names fetched from Discord for people no cache knows: user id to (time fetched, name). Entries last NAME_TTL seconds, and the whole dict is emptied when it reaches NAME_CACHE_LIMIT.
-_fetched_names: Dict[int, Tuple[float, str]] = {}
+FETCH_CONCURRENCY = 4
+# Names fetched from Discord for people no cache knows: user id to (time fetched, name). Entries last NAME_TTL seconds and evict oldest first beyond NAME_CACHE_LIMIT.
+_fetched_names: "OrderedDict[int, Tuple[float, str]]" = OrderedDict()
+# In-flight user lookups keyed by user id so concurrent callers share one Discord fetch.
+_fetching: Dict[int, asyncio.Task] = {}
 # Keeps the lookup tasks referenced until they finish, since asyncio only holds weak references to running tasks.
 _name_lookups: Set[asyncio.Task] = set()
+_fetch_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _fetch_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _fetch_semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+        _fetch_semaphores[loop] = sem
+    return sem
 
 
 def _cached_name(user_id: int) -> Optional[str]:
     entry = _fetched_names.get(user_id)
-    if entry and time.monotonic() - entry[0] < NAME_TTL:
+    if entry is None:
+        return None
+    if time.monotonic() - entry[0] < NAME_TTL:
+        _fetched_names.move_to_end(user_id)
         return entry[1]
+    _fetched_names.pop(user_id, None)
     return None
 
 
 async def _fetch_name(client: discord.Client, user_id: int) -> None:
     try:
-        user = await client.fetch_user(user_id)
+        async with _fetch_semaphore():
+            user = await client.fetch_user(user_id)
     except discord.NotFound:
         name = FORMER_MEMBER
     except discord.HTTPException:
@@ -75,9 +101,11 @@ async def _fetch_name(client: discord.Client, user_id: int) -> None:
         return
     else:
         name = user.display_name
-    if len(_fetched_names) >= NAME_CACHE_LIMIT:
-        _fetched_names.clear()
+    if user_id not in _fetched_names:
+        while len(_fetched_names) >= NAME_CACHE_LIMIT:
+            _fetched_names.popitem(last=False)
     _fetched_names[user_id] = (time.monotonic(), name)
+    _fetched_names.move_to_end(user_id)
 
 
 # A private-use character that stands in for the backslash while escape_markdown runs, because a real one would be escaped itself.
@@ -107,15 +135,28 @@ async def display_names(client: discord.Client, guild: discord.Guild, user_ids: 
         user = member or client.get_user(user_id)
         if user is not None:
             names[user_id] = user.display_name
-        elif _cached_name(user_id):
-            names[user_id] = _cached_name(user_id)
+            continue
+        cached = _cached_name(user_id)
+        if cached:
+            names[user_id] = cached
         else:
             missing.append(user_id)
     if missing:
-        lookups = [asyncio.ensure_future(_fetch_name(client, user_id)) for user_id in missing]
-        _name_lookups.update(lookups)
-        for lookup in lookups:
-            lookup.add_done_callback(_name_lookups.discard)
+        lookups: List[asyncio.Task] = []
+        for user_id in missing:
+            task = _fetching.get(user_id)
+            if task is None or task.done():
+                task = asyncio.ensure_future(_fetch_name(client, user_id))
+                _fetching[user_id] = task
+                _name_lookups.add(task)
+
+                def _done(done_task: asyncio.Task, uid: int = user_id) -> None:
+                    _name_lookups.discard(done_task)
+                    if _fetching.get(uid) is done_task:
+                        _fetching.pop(uid, None)
+
+                task.add_done_callback(_done)
+            lookups.append(task)
         await asyncio.wait(lookups, timeout=NAME_WAIT)
         for user_id in missing:
             names[user_id] = _cached_name(user_id) or FORMER_MEMBER
@@ -191,6 +232,41 @@ def clip_text(text: str, limit: int) -> str:
     if cut <= 0:
         cut = limit - 2
     return text[:cut].rstrip() + "\n…"
+
+
+def summarize_channels(
+    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
+) -> str:
+    sorted_ids = sorted(channel_ids)
+    if not sorted_ids:
+        return empty
+    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
+    remaining = len(sorted_ids) - limit
+    if remaining > 0:
+        shown.append(f"{prefix}and {remaining} more")
+    return sep.join(shown)
+
+
+def fit_container_text(container: discord.ui.Container, budget: int = TEXT_BUDGET) -> None:
+    """Clips TextDisplay contents inside `container` so their total stays within Discord's 4,000-character Components v2 ceiling."""
+    displays: List[discord.ui.TextDisplay] = []
+    for child in container.children:
+        if isinstance(child, discord.ui.TextDisplay):
+            displays.append(child)
+        elif isinstance(child, discord.ui.Section):
+            for sub in child.children:
+                if isinstance(sub, discord.ui.TextDisplay):
+                    displays.append(sub)
+    if sum(len(td.content) for td in displays) <= budget:
+        return
+    remaining = budget
+    for idx, td in enumerate(displays):
+        # Leave at least 1 character ("…") for each following TextDisplay so none becomes empty.
+        reserve = len(displays) - 1 - idx
+        avail = max(1, remaining - reserve)
+        if len(td.content) > avail:
+            td.content = clip_text(td.content, avail) if avail >= 2 else "…"
+        remaining -= len(td.content)
 
 
 def create_v2_container(
@@ -270,7 +346,64 @@ def error_view(description: str, title: str = "Something went wrong", footer: Op
     return create_v2_view(title=title, description=description, footer=footer, color=ERROR_COLOR)
 
 
-class AuthorOnlyView(discord.ui.LayoutView):
+def _action_name(item: discord.ui.Item) -> str:
+    """What the control does: its callback's name, else its label or placeholder."""
+    name = getattr(getattr(item, "callback", None), "__name__", "")
+    if name in ("", "callback", "<lambda>"):
+        name = getattr(item, "label", None) or getattr(item, "placeholder", None) or type(item).__name__
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(name)).strip("_")[:40] or "item"
+
+
+class SteadyIds:
+    """Keeps each control's custom_id the same when a view redraws itself.
+
+    discord.py gives every control a random custom_id. When a view rebuilds its controls (a settings menu after a click, a paginator after Next), Discord is still tracking the control that was pressed; if its id changed, Discord shows "This interaction failed" on a press that worked and turns away a quick second press. Each id is built from what the control does after a short code made once per message, so ids stay put across redraws and never clash between messages. Controls given their own custom_id are left alone.
+    """
+    id_scope: str = ""
+    _steady_prefix: Optional[str] = None
+
+    def steady_ids_from(self, other: Any) -> None:
+        prefix = getattr(other, "_steady_prefix", None)
+        if prefix:
+            self._steady_prefix = prefix
+
+    def to_components(self) -> List[Dict[str, Any]]:
+        self._assign_steady_ids()
+        return super().to_components()  # type: ignore[misc]
+
+    def _assign_steady_ids(self) -> None:
+        if self._steady_prefix is None:
+            self._steady_prefix = os.urandom(4).hex()
+        base = f"{self._steady_prefix}:{type(self).__name__}"
+        if self.id_scope:
+            base += f":{re.sub(r'[^A-Za-z0-9_]+', '_', str(self.id_scope))[:30]}"
+        seen: Dict[str, int] = {}
+        for item in self.walk_children():  # type: ignore[attr-defined]
+            # Link buttons aren't dispatchable; a provided id is already steady.
+            if not item.is_dispatchable() or getattr(item, "_provided_custom_id", True):
+                continue
+            action = _action_name(item)
+            count = seen.get(action, 0)
+            seen[action] = count + 1
+            item.custom_id = (f"{base}:{action}" + (f":{count}" if count else ""))[:100]
+
+
+async def acknowledge(interaction: discord.Interaction, what: str = "a press") -> None:
+    """Answers a press with a defer unless it was answered already, carrying on if the 3-second window already expired (10062)."""
+    extras = getattr(interaction, "extras", None)
+    if interaction.response.is_done() or (extras is not None and extras.get("answered_too_late")):
+        return
+    try:
+        await interaction.response.defer()
+    except discord.NotFound as error:
+        if error.code != 10062:
+            raise
+        if extras is not None:
+            extras["answered_too_late"] = True
+        log.warning("%s was already too late to answer", what[:1].upper() + what[1:])
+
+
+class AuthorOnlyView(SteadyIds, discord.ui.LayoutView):
     """A LayoutView that only `author_id` can press, or anyone when it is None. Anyone else gets `denied_message` as a private reply. With `needs_manager` the author must also still have Manage Server on every press, so someone who loses it while the menu is open can't go on using it."""
     def __init__(
         self,

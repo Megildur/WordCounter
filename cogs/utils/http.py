@@ -11,7 +11,8 @@ def get_session() -> aiohttp.ClientSession:
     """Returns the shared session, creating it on first use or after it was closed. Requests time out after 10 seconds."""
     global _session
     if _session is None or _session.closed:
-        _session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        connector = aiohttp.TCPConnector(ttl_dns_cache=300.0)
+        _session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10))
     return _session
 
 

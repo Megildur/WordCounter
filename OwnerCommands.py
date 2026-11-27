@@ -16,7 +16,7 @@ from discord.ext import commands
 from cogs.utils import blacklist, stored_data
 from cogs.utils.components import (
     BRAND_COLOR, ERROR_COLOR, NEUTRAL_COLOR, SUCCESS_COLOR, WARNING_COLOR, AuthorOnlyView,
-    code_span, create_v2_container, create_v2_view, error_view, is_member_timed_out, make_button, private_followup, safe_name,
+    acknowledge, code_span, create_v2_container, create_v2_view, error_view, is_member_timed_out, make_button, private_followup, safe_name,
 )
 from cogs.utils.config import ALLOWED_GUILD_IDS, PRIVACY_URL
 from paginator import ButtonPaginator
@@ -24,6 +24,8 @@ from paginator import ButtonPaginator
 log = logging.getLogger(__name__)
 
 ALLOWED_GUILDS = [discord.Object(id=guild_id) for guild_id in ALLOWED_GUILD_IDS]
+# Kept in sync with main.py's CORE_EXTENSIONS so unloaded core extensions remain discoverable to `/owner ext load`.
+CORE_EXTENSIONS = ("Quicksync", "Status", "Errors", "Server_log", "OwnerCommands", "web", "cogs.utils.timing")
 Kind = Literal["User", "Server"]
 NO_PINGS = discord.AllowedMentions.none()
 LISTED_TABLES = 40
@@ -92,6 +94,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
             discord.ui.TextDisplay(f"### Nothing kept\nWordCounter stores nothing about {target.label} any more."),
             accent_colour=NEUTRAL_COLOR,
         ))
+        view.stop()
         return view
     view.add_item(discord.ui.Container(
         discord.ui.TextDisplay(
@@ -104,6 +107,7 @@ def kept_view(target: Target, banned: Optional[stored_data.BlacklistEntry]) -> d
         discord.ui.TextDisplay(f"-# The whole policy: [Privacy Policy](<{PRIVACY_URL}#kept>)"),
         accent_colour=BRAND_COLOR,
     ))
+    view.stop()
     return view
 
 
@@ -115,6 +119,8 @@ class DataConfirmView(AuthorOnlyView):
     ) -> None:
         super().__init__(author_id=author_id, timeout=600)
         self.bot, self.target, self.found, self.ban, self.reason = bot, target, found, ban, reason
+        # Guards against a rapid double-click firing _confirm or _cancel twice before Discord disables the button.
+        self._busy = False
         # The command sets this after sending the panel, so on_timeout can edit that response.
         self.interaction: Optional[discord.Interaction] = None
         who = f"{target.label[0].upper()}{target.label[1:]}"
@@ -166,16 +172,20 @@ class DataConfirmView(AuthorOnlyView):
         return False
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
+        if self._busy:
+            await acknowledge(interaction, "a duplicate confirm press")
+            return
+        self._busy = True
+        self.stop()
         # Defer first: the delete searches every table, which can take longer than the 3 seconds Discord gives for a reply.
         await interaction.response.defer()
-        self.stop()
         if self.ban:
             # The ban goes in first, saved and in `bot.blacklisted`. From then on this ID's events are screened (`blacklist.screen`), so the live counter stops saving anything new for it. The delete never touches the blacklist table.
             await self.bot.db.add_to_blacklist(self.target.id, self.target.kind, self.reason, interaction.user.id)
             self.bot.blacklisted.add(self.target.id)
         # Counts that are only in memory, waiting for the next batch, can't be reached by the database delete, so they are dropped first.
         self.bot.db.forget_activity(self.target.id)
-        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID, before the delete and again after it: a day-count write that was already waiting for the database lock then finds the ID refused whenever it runs.
+        # The swear jar also keeps counts in memory before it saves them, which the database delete can't reach, so it is told to forget this ID, before the delete and again after it: a day-count write that starts after the first call leaves the ID out, one already waiting for the database lock is ahead of the delete, which removes what it wrote, and the second call drops counts that came in meanwhile.
         jar = self.bot.get_cog("SwearJar")
         if jar is not None:
             jar.forget(self.target.id)
@@ -198,6 +208,10 @@ class DataConfirmView(AuthorOnlyView):
         await interaction.edit_original_response(view=view)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
+        if self._busy:
+            await acknowledge(interaction, "a duplicate cancel press")
+            return
+        self._busy = True
         self.stop()
         await interaction.response.edit_message(view=create_v2_view("Cancelled", "Nothing was changed.", color=NEUTRAL_COLOR))
 
@@ -227,7 +241,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
     def all_extensions(self) -> List[str]:
         # "cogs" is relative to the working directory, so the bot has to be started from the repository root.
         found = {f"cogs.{name[:-3]}" for name in os.listdir("cogs") if name.endswith(".py")}
-        return sorted(found | set(self.bot.extensions))
+        return sorted(found | set(CORE_EXTENSIONS) | set(self.bot.extensions))
 
     @app_commands.command(name="sync", description="Sync slash commands")
     async def sync(self, interaction: discord.Interaction, sync_type: Literal["Global", "Guild"]) -> None:
@@ -281,8 +295,8 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         await interaction.followup.send(
             view=create_v2_view(
                 "Commands cleared",
-                f"Removed **{removed}** command(s) {target}. Nobody will see them until you sync again.",
-                footer="Run /owner sync to add them back",
+                f"Removed **{removed}** command(s) {target} from the local command tree. Nothing changes on Discord until you sync, and syncing right now would push an empty tree (including `/owner`).",
+                footer="Reload cogs (/owner ext reload) or restart the bot before running /owner sync or !wcquicksync",
                 color=SUCCESS_COLOR,
             )
         )
@@ -292,6 +306,15 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
         if not await self._admin_only(interaction):
             return
         await interaction.response.defer()
+        if action == "unload" and extension == "OwnerCommands":
+            await interaction.followup.send(
+                view=create_v2_view(
+                    "Couldn't unload `OwnerCommands`",
+                    "Unloading `OwnerCommands` would turn off `/owner` commands until the bot restarts. Use `reload` instead.",
+                    color=ERROR_COLOR,
+                )
+            )
+            return
         # A name is imported as a module when it is loaded, so only a cog on disk or one that is already loaded is accepted.
         if extension not in self.all_extensions():
             await interaction.followup.send(
@@ -488,6 +511,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
             discord.ui.TextDisplay(f"-# {note}"),
             accent_colour=BRAND_COLOR,
         ))
+        view.stop()
         await interaction.followup.send(view=view, file=discord.File(io.BytesIO(data), filename=filename), allowed_mentions=NO_PINGS)
         log.info("Exported the data of a %s: %s", target.what, summary)
 
@@ -626,4 +650,7 @@ class OwnerCog(commands.GroupCog, group_name="owner"):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(OwnerCog(bot))
+    if not ALLOWED_GUILD_IDS:
+        log.error("ALLOWED_GUILDS is empty; skipping OwnerCog registration so /owner is never registered globally")
+        return
+    await bot.add_cog(OwnerCog(bot), guilds=[discord.Object(id=gid) for gid in ALLOWED_GUILD_IDS])

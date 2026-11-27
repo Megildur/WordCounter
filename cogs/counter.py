@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 from cogs.utils.components import (
     BRAND_COLOR,
+    SERVER_ONLY_MESSAGE,
     TRACKING_OFF_MESSAGE,
     activity_line,
     can_attach,
@@ -79,7 +80,10 @@ class UserStatsPaginator(ButtonPaginator):
                     line += f"\n-# Keywords: {keyword_summary(channel_keywords)}"
                 channel_lines.append(line)
             if channel_lines:
-                fields.append((f"Channels in {label}", "\n".join(channel_lines)))
+                shown_channels = channel_lines[:20]
+                if len(channel_lines) > 20:
+                    shown_channels.append(f"…and {len(channel_lines) - 20} more channel(s)")
+                fields.append((f"Channels in {label}", "\n".join(shown_channels)))
             footer = f"Month {self.current_page + 1} of {len(self.months)}, newest first · {safe_name(self.guild.name)}"
 
         container = create_v2_container(
@@ -147,15 +151,15 @@ class Counter(commands.Cog):
 
     async def message_word_count(self, interaction: discord.Interaction, message: discord.Message) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
         if message.author.bot:
-            await interaction.response.send_message(view=error_view("Bot messages aren't counted."))
+            await interaction.response.send_message(view=error_view("Bot messages aren't counted."), ephemeral=True)
             return
         # Every reply here is public, so deferring before the database check costs nothing and keeps the check inside Discord's 3 second window.
         await interaction.response.defer()
         if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
-            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            await private_followup(interaction, error_view(TRACKING_OFF_MESSAGE))
             return
         words = len(message.content.split())
         await interaction.followup.send(
@@ -168,10 +172,10 @@ class Counter(commands.Cog):
 
     async def _send_user_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message(view=error_view(TRACKING_OFF_MESSAGE))
+            await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return
         if user.bot:
-            await interaction.response.send_message(view=error_view("Bots don't have stats."))
+            await interaction.response.send_message(view=error_view("Bots don't have stats."), ephemeral=True)
             return
         # can_attach answers the interaction itself when it fails, so it has to run before the defer.
         if not await can_attach(interaction, "Can't show the stats card here"):
@@ -180,7 +184,7 @@ class Counter(commands.Cog):
         # A slash command must answer within 3 seconds and the database reads and card drawing below can take longer, so defer before any of them.
         await interaction.response.defer()
         if not await self.bot.db.has_tracking_enabled(interaction.guild_id):
-            await interaction.followup.send(view=error_view(TRACKING_OFF_MESSAGE))
+            await private_followup(interaction, error_view(TRACKING_OFF_MESSAGE))
             return
         overall = await self.bot.db.get_user_full_stats(interaction.guild_id, user.id)
         if not any(overall):
@@ -208,7 +212,7 @@ class Counter(commands.Cog):
         name="user",
         description="Show detailed statistics for a user",
         extras={
-            "details": "Your stats card, or another member's when you pick one: their picture and name, their words on WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to see your own. Under it come their totals (keywords too), then a page for each month with a channel-by-channel breakdown. Pick a month from the menu or page through with Previous and Next. Only you can use the controls. It works once tracking is on in /settings.",
+            "details": "Your stats card, or another member's when you pick one: their picture and name, their words on WordCounter's flip counter, and their messages, attachments and emojis. Leave the member out to see your own. Under it come their totals (keywords too), then a page for each month with a channel-by-channel breakdown. Pick a month from the menu or page through with Newer and Older. Only you can use the controls. It works once tracking is on in /settings.",
             "bot_perms": (
                 "Attach Files, for the stats card"
             ),
@@ -279,6 +283,13 @@ class Counter(commands.Cog):
     # Also only called for cached messages. An edit adds the difference between the old and new text, and never changes the message count. A message whose counts were never saved (see `_was_counted`) is left alone.
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        # Embed unfurls and pin toggles fire MESSAGE_UPDATE with unchanged text, attachments, and stickers.
+        if (
+            before.content == after.content
+            and [a.id for a in before.attachments] == [a.id for a in after.attachments]
+            and [s.id for s in before.stickers] == [s.id for s in after.stickers]
+        ):
+            return
         channel_id = await self._tracked_channel(before)
         if channel_id is None or not await self._was_counted(before, channel_id):
             return

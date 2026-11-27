@@ -1,7 +1,7 @@
 # WordCounter
 
 <p align="center">
-  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0">
+  <a href="https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277295131712&scope=bot+applications.commands&integration_type=0">
     <img src="https://img.shields.io/badge/Invite%20Bot-Discord%20App-B85A24?style=for-the-badge&logo=discord&logoColor=white" alt="Invite Bot" />
   </a>
   &nbsp;
@@ -13,8 +13,8 @@
     <img src="https://img.shields.io/badge/Website-wordcounter.dev-1D335B?style=for-the-badge" alt="Website" />
   </a>
   &nbsp;
-  <a href="https://github.com/Megildur/WordCounter/releases/tag/v4.1.4">
-    <img src="https://img.shields.io/badge/Release-v4.1.4-8C96AC?style=for-the-badge" alt="Release v4.1.4" />
+  <a href="https://github.com/Megildur/WordCounter/releases/tag/v4.2.0">
+    <img src="https://img.shields.io/badge/Release-v4.2.0-8C96AC?style=for-the-badge" alt="Release v4.2.0" />
   </a>
 </p>
 
@@ -24,7 +24,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 
 | | |
 | :--- | :--- |
-| Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0) |
+| Invite WordCounter | [Add the bot to a server](https://discord.com/oauth2/authorize?client_id=1551875701748277299&permissions=277295131712&scope=bot+applications.commands&integration_type=0) |
 | Website and dashboard | [wordcounter.dev](https://wordcounter.dev) |
 | Support server | [discord.gg/prUsgFHvRS](https://discord.gg/prUsgFHvRS) |
 | Support email | [support@wordcounter.dev](mailto:support@wordcounter.dev) |
@@ -75,7 +75,7 @@ A Discord bot that counts **words**, **messages**, **attachments** (including st
 | `/swearjar settings` | Manage Server | Turn the swear jar on, and set fines, words, channels, roles and a goal. |
 | `/owner delete_data <User/Server> <id>` | Administrator | Find everything stored under a user's or server's ID in every table, and delete it once you confirm. |
 | `/owner export_data <User/Server> <id>` | Administrator | Post a text file in the channel with every row stored under the ID, table by table. |
-| `/owner stats_panel [channel] [remove]` | Administrator | Post WordCounter's live stats in a channel, or move the panel there if this server already has one. The panel is a pixel-art card with the numbers on it and the same numbers in text under it: servers, unique users (each person once, bots never counted, the same count the home page shows), slash commands, words and messages counted, latency and how long WordCounter has been up since it last started. It is edited every 5 minutes, posted again if its message is deleted, and forgotten if its channel is deleted while WordCounter is running or WordCounter leaves the server. Use either `channel` or `remove`, not both. With no options it says where the panel is, and `remove` deletes it. |
+| `/owner stats_panel [channel] [remove]` | Administrator | Post WordCounter's live stats in a channel, or move the panel there if this server already has one. The panel is a pixel-art card with the numbers on it and the same numbers in text under it: servers, unique users (each person once, bots never counted, the same count the home page shows), slash commands, words and messages counted, latency and how long WordCounter has been up since it last started. It is edited every 5 minutes, posted again if its message is deleted, and forgotten if its channel is deleted (one deleted while WordCounter was offline is noticed once it's back) or WordCounter leaves the server. Use either `channel` or `remove`, not both. With no options it says where the panel is, and `remove` deletes it. |
 | `/owner kept_data <User/Server> <id>` | Administrator | After a deletion, post in the channel what WordCounter still keeps under the ID (a ban from WordCounter) and why, quoting the Privacy Policy's "What we keep after a deletion request" and the GDPR articles it relies on. Refuses until everything a deletion removes is gone. |
 | `/owner blacklist <Add/Remove/List> [kind] [id] [reason]` | Administrator | Ban a user or server from WordCounter, lift a ban, or list them. A banned user's messages aren't counted, and their commands, buttons and dashboard answer that they're banned. In servers where the swear jar removes swearing, it still removes theirs, without a fine. Adding a ban deletes their data once you confirm. |
 
@@ -89,7 +89,7 @@ Right-click menus:
 ### Requirements
 - Python 3.10 or newer
 - A MySQL 8 (or MariaDB 10.5+) database for WordCounter, separate from Botzilla's
-- A [Discord application](https://discord.com/developers/applications) with the **Message Content** and **Server Members** intents turned on
+- A [Discord application](https://discord.com/developers/applications) with the **Message Content**, **Server Members**, and **Presence** intents turned on (Presence is used for the home-page developer card)
 
 ### Install
 
@@ -137,10 +137,10 @@ Right-click menus:
    - `BASE_URL`: the public address of the website, without a trailing slash.
    - `WEB_PORT`: the port the website listens on. If it isn't set, `SERVER_PORT` is used, then `8080`. `WEB_HOST` defaults to `0.0.0.0`.
    - `DISCORD_CLIENT_SECRET`: from **OAuth2** in the Developer Portal. Without it the website still runs, but logging in is turned off.
-   - `SESSION_SECRET`: signs login cookies. Changing it logs everyone out.
+   - `SESSION_SECRET` and `SESSION_SECRET_PREVIOUS`: `SESSION_SECRET` (at least 32 random characters) signs login cookies, CSRF tokens and OAuth states via isolated HMAC subkeys. Set `SESSION_SECRET_PREVIOUS` to the old value while rotating keys so active sessions stay valid without logging people out.
    - `ACTIVITY_FLUSH_SECONDS`: how long the counts from new messages wait in memory so they are written to the database together, `2` if it isn't set. `0` writes every message at once. A crash or a kill can lose the counts from the last few seconds.
-   - `CLIENT_IP_HEADER`: optional, and it turns on limiting requests for each visitor's address. Give it the name of the request header your proxy fills in with the visitor's address, such as `CF-Connecting-IP`, and set it only if the website can't be reached except through that proxy. Give it `peer` instead if nothing stands in front of the website, or `cloudflare` if the website is behind Cloudflare: that reads `CF-Connecting-IP` and only believes it on a connection from Cloudflare's published address ranges, so a visitor who reaches the website without Cloudflare can't make the header count them as someone else, and that request just isn't limited. Without it nothing is limited by address, and the log says why and which headers a request carries (their names only, never an address).
-   - `ORIGIN_SECRET` and `ORIGIN_SECRET_MODE`: optional, for a website behind Cloudflare whose server address can also be reached directly. Add a Cloudflare request-header rule (Rules > Transform Rules > Modify Request Header) that sets `X-Origin-Secret` to a long random value on every request to your domain, and give the same value to `ORIGIN_SECRET`. In the default mode, `log`, the website only says in the log whether requests carry the secret. Once the log shows that requests through Cloudflare do, set `ORIGIN_SECRET_MODE=enforce` and every request without the secret (anyone using the server's address directly) gets a bare 403. The start-up log says which of the three states is in force (off, logging or enforcing), and while enforcing it notes the first few refusals and then how many were refused, at most every 10 minutes. Switching to `enforce` before the rule exists takes the website down for everyone.
+   - `CLIENT_IP_HEADER` and `TRUSTED_PROXY_CIDRS`: optional, turning on limiting requests for each visitor's address. Give `CLIENT_IP_HEADER` `cloudflare` behind Cloudflare: it reads `CF-Connecting-IP` on connections from Cloudflare's published address ranges or carrying a verified enforcing `X-Origin-Secret` (for NATted origins), and otherwise limits nothing by address, because the connecting address can be one shared by every visitor. Give it `peer` if nothing stands in front of the website, or a custom header name paired with `TRUSTED_PROXY_CIDRS` (comma-separated trusted proxy CIDRs). Without `CLIENT_IP_HEADER` nothing is limited by address.
+   - `ORIGIN_SECRET` and `ORIGIN_SECRET_MODE`: optional, for a website behind Cloudflare whose server address can also be reached directly. Add a Cloudflare request-header rule (Rules > Transform Rules > Modify Request Header) that sets `X-Origin-Secret` to a long random value on every request to your domain, and give the same value to `ORIGIN_SECRET`. When `ORIGIN_SECRET` is set, `ORIGIN_SECRET_MODE` defaults to `enforce` (requests without the secret get a bare 403). Set `ORIGIN_SECRET_MODE=log` explicitly while testing a new rule; switching to `enforce` before the rule exists takes the website down for everyone. The start-up log says which state is in force (off, logging or enforcing), and while enforcing it notes the first few refusals and then how many were refused, at most every 10 minutes.
    - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`: the MySQL database WordCounter keeps everything in (the same names Botzilla uses). Give it its own database; WordCounter creates its tables on first start. `MYSQL_PORT` defaults to 3306 and `MYSQL_DB` to `wordcounter`.
 
 5. Moving from SQLite: WordCounter used to keep its data in `Data/WordCounter.db`. The first time it starts on MySQL with that file in place, it copies every table into MySQL, checks each one's row count and records that it's done, then starts. If anything doesn't copy, it stops with the reason instead of starting on half the data; restart it to try again (rows are replaced, never counted twice).
@@ -150,24 +150,24 @@ Right-click menus:
    python main.py
    ```
 
-7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `1126177200925776`):
-   - View Channels, Read Message History, Send Messages, Send Messages in Threads
-   - Embed Links, Attach Files, Add Reactions, Use Slash Commands, Use External Apps
-   - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings), Manage Channels
+7. Invite the bot to a server in `ALLOWED_GUILDS`. In the Developer Portal, under **OAuth2 > URL Generator**, pick the `bot` and `applications.commands` scopes and these permissions (integer `277295131712`):
+   - View Channels, Read Message History, Send Messages, Send Messages in Threads, Connect (for reading tracked voice channel chats in `/analyze_chat`)
+   - Embed Links, Attach Files, Add Reactions, Use Slash Commands
+   - Manage Messages (swear jar delete mode), Manage Roles (swear jar roles), Mention Everyone (swear jar goal pings)
 
    ```text
-   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1126177200925776&scope=bot+applications.commands&integration_type=0
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=277295131712&scope=bot+applications.commands&integration_type=0
    ```
 
    `/analyze_chat whole_server` can read private archived threads only if the bot has **Manage Threads** or was added to those threads.
 
-7. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
+8. Set up website logins. In the Developer Portal, under **OAuth2 > Redirects**, add `BASE_URL` followed by `/callback`, for example:
    ```text
    https://wordcounter.dev/callback
    ```
    The website starts with the bot and asks Discord who you are and which servers you are in (the `identify` and `guilds` scopes). The server list is only used to show the servers you manage on the dashboard, and is kept in memory for an hour.
 
-8. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
+9. Sync slash commands. In a server listed in `ALLOWED_GUILDS`, send:
    ```text
    !wcquicksync
    ```

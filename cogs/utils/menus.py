@@ -4,10 +4,11 @@ One message with a select to switch between sections, a body that changes with t
 """
 
 from __future__ import annotations
-from typing import List, Optional, Sequence, Tuple
+import asyncio
+from typing import List, Optional, Sequence, Tuple, Union
 import discord
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, AuthorOnlyView, Callback, create_v2_view, make_button
+from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, SELECT_TYPES, AuthorOnlyView, Callback, acknowledge, create_v2_view, fit_container_text, make_button
 
 # (key, label, description) of one section, as shown in the section select.
 Section = Tuple[str, str, str]
@@ -29,6 +30,9 @@ class SectionMenu(AuthorOnlyView):
         self.active_tab = self.sections[0][0]
         self.pending_confirmation: Optional[str] = None
         self.status_banner: Optional[Tuple[str, discord.Colour]] = None
+        self.message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
+        # Serializes clicks that reload state and rebuild items so two rapid presses can't clear or overwrite each other mid-edit.
+        self._update_lock = asyncio.Lock()
 
     async def load_state(self) -> None:
         return None
@@ -71,7 +75,9 @@ class SectionMenu(AuthorOnlyView):
         bottom.append(make_button("Close", discord.ButtonStyle.secondary, self._on_close_menu))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(*bottom))
+        fit_container_text(container)
         self.add_item(container)
+        self._assign_steady_ids()
 
     def _confirmation(
         self, container: discord.ui.Container, text: str, confirm_label: str, style: discord.ButtonStyle, on_confirm: Callback,
@@ -122,19 +128,44 @@ class SectionMenu(AuthorOnlyView):
     async def refresh_and_edit(self, interaction: discord.Interaction) -> None:
         """Redraws the menu in place: defers if the handler hasn't answered yet, reloads the state from the database, rebuilds the items and edits the original response.
 
-        Handlers that write to the database defer first themselves, because the write can take longer than the 3 seconds Discord gives for a reply.
+        Handlers that write to the database defer first themselves, because the write can take longer than the 3 seconds Discord gives for a reply. A press that arrives while another redraw is running defers immediately and waits its turn so items are never cleared under an in-flight edit.
         """
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        await self.load_state()
-        self.build_ui()
-        await interaction.edit_original_response(view=self)
+            await acknowledge(interaction, f"a press on {self.title or 'a settings menu'}")
+        async with self._update_lock:
+            await self.load_state()
+            self.build_ui()
+            try:
+                await interaction.edit_original_response(view=self)
+            except discord.NotFound as error:
+                if error.code != 10062 or self.message is None:
+                    raise
+                await self.message.edit(view=self)
+
+    async def on_timeout(self) -> None:
+        message, self.message = self.message, None
+        if message is None:
+            return
+        changed = False
+        for item in self.walk_children():
+            if isinstance(item, discord.ui.Button) and item.style != discord.ButtonStyle.link and not item.disabled:
+                item.disabled = True
+                changed = True
+            elif isinstance(item, SELECT_TYPES) and not item.disabled:
+                item.disabled = True
+                changed = True
+        if not changed:
+            return
+        try:
+            await message.edit(view=self)
+        except discord.HTTPException:
+            pass
 
     async def _on_close_menu(self, interaction: discord.Interaction) -> None:
         self.stop()
-        await interaction.response.defer()
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            # If the delete is refused, replace the menu with a short closed notice so it doesn't stay on screen as a dead menu.
-            await interaction.edit_original_response(view=create_v2_view(f"{self.title} closed", self.closed_hint, color=NEUTRAL_COLOR))
+        self.message = None
+        closed = create_v2_view(f"{self.title} closed", self.closed_hint, color=NEUTRAL_COLOR)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=closed)
+        else:
+            await interaction.response.edit_message(view=closed)

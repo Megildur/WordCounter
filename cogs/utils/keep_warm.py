@@ -11,6 +11,8 @@ log = logging.getLogger(__name__)
 # Checked every minute, a connection unused for 100 seconds is pinged by its 160th second at the latest, before the pool's 170.
 EVERY_SECONDS = 60.0
 IDLE_SECONDS = 100.0
+# A ping is one round trip of about 90 ms; one with no answer by then is on a socket that died without closing, which would otherwise hold the database lock until TCP gives up.
+PING_TIMEOUT_SECONDS = 10.0
 
 
 def fresh(connection: Any) -> None:
@@ -18,6 +20,11 @@ def fresh(connection: Any) -> None:
     loop = getattr(connection, "_loop", None)
     if loop is not None and hasattr(connection, "_last_usage"):
         connection._last_usage = loop.time()
+
+
+async def ping(connection: Any, timeout: float = PING_TIMEOUT_SECONDS) -> None:
+    """Pings without reconnecting; raises when the connection doesn't answer within `timeout` seconds, and the caller then closes it. Botzilla's KeepWarm.ping is the same."""
+    await asyncio.wait_for(connection.ping(reconnect=False), timeout)
 
 
 async def keep_warm(lock: Any, every: float = EVERY_SECONDS, idle: float = IDLE_SECONDS) -> None:

@@ -9,12 +9,11 @@ The database is about 90 ms away, so round trips are what a block costs: `Sessio
 
 from __future__ import annotations
 import asyncio
-import decimal
 import logging
 import re
 import time
 import warnings
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
 import aiomysql
 import pymysql
 from pymysql.constants import CLIENT
@@ -59,9 +58,7 @@ def mysql_sql(sql: str) -> str:
 
 def _plain(value: Any) -> Any:
     """MySQL returns SUM() and some arithmetic as Decimal, so whole values become int and the rest float."""
-    if isinstance(value, decimal.Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    return value
+    return sql_batch.plain(value)
 
 
 def _row(row: Optional[Sequence[Any]]) -> Optional[Tuple[Any, ...]]:
@@ -87,6 +84,15 @@ class Cursor:
     async def fetchall(self) -> List[Tuple[Any, ...]]:
         return [_row(row) for row in await self._cursor.fetchall()]
 
+    async def close(self) -> None:
+        await self._cursor.close()
+
+    async def __aenter__(self) -> Cursor:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        await self.close()
+
 
 class Session:
     def __init__(self, connection: aiomysql.Connection) -> None:
@@ -95,8 +101,14 @@ class Session:
         self.first_sql: Optional[str] = None
         # True once the block has written to a table whose rows the database layer keeps in memory.
         self.touches_kept = False
+        # When every kept-table write in the block sets `kept_scope = guild_id`, only those guilds are invalidated instead of every server.
+        self.kept_scope: Optional[int] = None
+        self._kept_guilds: Set[int] = set()
+        self._kept_all = False
         # How many round trips went to the server, so a slow block's warning can tell many trips from one slow one.
         self.trips = 0
+        # Open raw cursors from execute/executemany, closed when the session ends so unread results can't poison the next block.
+        self._cursors: List[aiomysql.Cursor] = []
 
     def _note(self, sql: str) -> bool:
         """Keeps what the warnings and the kept tables need, and says whether this statement has to run inside the block's transaction (a write or a locking read)."""
@@ -104,24 +116,52 @@ class Session:
         if self.first_sql is None:
             self.first_sql = " ".join(cleaned.split())[:80]
         writes = bool(_WRITES.match(cleaned))
-        if not self.touches_kept and writes and _KEPT_TABLE.search(cleaned):
+        if writes and _KEPT_TABLE.search(cleaned):
             self.touches_kept = True
+            if self.kept_scope is not None:
+                self._kept_guilds.add(self.kept_scope)
+            else:
+                self._kept_all = True
         return writes or bool(_LOCKING_READ.search(cleaned))
 
     def _beginning(self, needs_transaction: bool) -> bool:
         """Whether this round trip has to open the block's transaction first: it needs one and none is open yet."""
         return needs_transaction and not self.connection.get_transaction_status()
 
+    async def _close_cursor(self, cursor: Any) -> None:
+        close = getattr(cursor, "close", None)
+        if callable(close):
+            await close()
+
+    def _close_connection(self) -> None:
+        close = getattr(self.connection, "close", None)
+        if callable(close) and not getattr(self.connection, "closed", False):
+            close()
+
+    async def _run_single(self, cursor: aiomysql.Cursor, sql: str, params: Tuple[Any, ...], begin: bool) -> None:
+        try:
+            if begin:
+                # START TRANSACTION and the statement in one query; the cursor then moves on to the statement's own result.
+                await cursor.execute("START TRANSACTION;\n" + cursor.mogrify(sql, params))
+                await cursor.nextset()
+            else:
+                await cursor.execute(sql, params)
+        except BaseException as error:
+            if sql_batch.must_close_connection(cursor, error):
+                sql_batch.close_connection(cursor)
+            else:
+                try:
+                    await self._close_cursor(cursor)
+                except BaseException:
+                    sql_batch.close_connection(cursor)
+            raise
+
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
         begin = self._beginning(self._note(sql))
         self.trips += 1
         cursor = await self.connection.cursor()
-        if begin:
-            # START TRANSACTION and the statement in one query; the cursor then moves on to the statement's own result.
-            await cursor.execute("START TRANSACTION;\n" + cursor.mogrify(mysql_sql(sql), tuple(params)))
-            await cursor.nextset()
-        else:
-            await cursor.execute(mysql_sql(sql), tuple(params))
+        await self._run_single(cursor, mysql_sql(sql), tuple(params), begin)
+        self._cursors.append(cursor)
         return Cursor(cursor)
 
     async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> Optional[Cursor]:
@@ -137,17 +177,25 @@ class Session:
         if len(statements) == 1:
             self.trips += 1
             cursor = await self.connection.cursor()
-            await cursor.execute(("START TRANSACTION;\n" if begin else "") + cursor.mogrify(*statements[0]))
-            if begin:
-                await cursor.nextset()
+            await self._run_single(cursor, statements[0][0], tuple(statements[0][1]), begin)
+            self._cursors.append(cursor)
             return Cursor(cursor)
         batch = ([("START TRANSACTION", ())] if begin else []) + statements
         cursor = await self.connection.cursor()
-        self.trips += (await sql_batch.run_many(cursor, batch)).queries
+        try:
+            self.trips += (await sql_batch.run_many(cursor, batch)).queries
+        except BaseException:
+            if not getattr(self.connection, "closed", False):
+                try:
+                    await self._close_cursor(cursor)
+                except BaseException:
+                    sql_batch.close_connection(cursor)
+            raise
+        self._cursors.append(cursor)
         return Cursor(cursor)
 
     async def run_many(self, statements: Sequence[Tuple[str, Sequence[Any]]]) -> List[sql_batch.Outcome]:
-        """Runs `statements` (with `?` placeholders) in one round trip (more only past sql_batch.MAX_BYTES), opening the block's transaction in it if one of them needs it, and returns each one's outcome (rows as they come from the driver)."""
+        """Runs `statements` (with `?` placeholders) in one round trip (more only past sql_batch.MAX_BYTES), opening the block's transaction in it if one of them needs it, and returns each one's outcome with Decimal values normalized."""
         statements = [(sql, tuple(params)) for sql, params in statements]
         if not statements:
             return []
@@ -155,9 +203,29 @@ class Session:
         begin = self._beginning(any(needs))
         batch = ([("START TRANSACTION", ())] if begin else []) + [(mysql_sql(sql), params) for sql, params in statements]
         cursor = await self.connection.cursor()
-        outcomes = await sql_batch.run_many(cursor, batch)
+        try:
+            outcomes = await sql_batch.run_many(cursor, batch)
+        finally:
+            if not getattr(self.connection, "closed", False):
+                try:
+                    await self._close_cursor(cursor)
+                except BaseException:
+                    self._close_connection()
+                    raise
         self.trips += outcomes.queries
         return outcomes[1:] if begin else outcomes
+
+    async def close(self) -> None:
+        """Closes every cursor opened during this block, discarding the connection if closing fails so unread results never leak."""
+        cursors, self._cursors = self._cursors, []
+        if not cursors or getattr(self.connection, "closed", False):
+            return
+        for cursor in cursors:
+            try:
+                await self._close_cursor(cursor)
+            except BaseException:
+                self._close_connection()
+                raise
 
     async def commit(self) -> None:
         """Commits the block's transaction; with none open (nothing written yet) there is nothing to send."""
@@ -224,10 +292,14 @@ class SessionLock:
                 try:
                     await flush(flushing)
                 finally:
-                    self._flush_took = time.monotonic() - started
-                    self._flush_trips = flushing.trips
+                    try:
+                        await flushing.close()
+                    finally:
+                        self._flush_took = time.monotonic() - started
+                        self._flush_trips = flushing.trips
         except BaseException:
             # Also covers a cancelled task, and counts that couldn't be written. Give the lock back or every later caller waits forever.
+            self._close_connection()
             self._needs_ping = True
             await self._release()
             raise
@@ -235,27 +307,43 @@ class SessionLock:
         self.owner.db = Session(self.connection)
         return self.owner.db
 
+    def _close_connection(self) -> None:
+        if self.connection is not None and not getattr(self.connection, "closed", False):
+            close = getattr(self.connection, "close", None)
+            if callable(close):
+                close()
+
     async def __aexit__(self, kind, error, trace) -> None:
         held = time.monotonic() - self._held_since
+        session = self.owner.db
         try:
             if held > LOCK_SLOW_SECONDS:
-                began = getattr(self.owner.db, "first_sql", None)
+                began = getattr(session, "first_sql", None)
                 _warn(
                     "The database lock was held for %.1f s by a block that began with: %s (ping %.2f s; waiting counts %.2f s in %d round trips; the block's own %d round trips)",
-                    held, began or "no statement", self._ping_took, self._flush_took, self._flush_trips, getattr(self.owner.db, "trips", 0),
+                    held, began or "no statement", self._ping_took, self._flush_took, self._flush_trips, getattr(session, "trips", 0),
                 )
-            if kind is not None and issubclass(kind, BROKEN_CONNECTION):
+            if kind is not None and not issubclass(kind, Exception):
+                # A cancelled block can leave an in-flight read on the socket; discard the connection so the pool opens a clean one.
+                self._close_connection()
+                self._needs_ping = True
+            elif kind is not None and issubclass(kind, BROKEN_CONNECTION):
                 # The next block checks the connection before trusting it.
                 self._needs_ping = True
+            if session is not None:
+                await session.close()
+            if self.connection is not None and getattr(self.connection, "closed", False):
+                self._needs_ping = True
             # Only a block that opened a transaction has one to end; one that only read sends nothing here.
-            if self.connection is not None and not self.connection.closed and self.connection.get_transaction_status():
+            elif self.connection is not None and self.connection.get_transaction_status():
                 if kind is None:
                     await self.connection.commit()
                 else:
                     await self.connection.rollback()
             self._last_connection, self._last_used = self.connection, time.monotonic()
         except BaseException:
-            # A commit or rollback that failed leaves the connection in an unknown state.
+            # A cursor close, commit or rollback that failed leaves the connection in an unknown state, so close it and force a fresh one.
+            self._close_connection()
             self._needs_ping = True
             raise
         finally:
@@ -264,7 +352,12 @@ class SessionLock:
                 if getattr(self.owner.db, "touches_kept", False):
                     forget = getattr(self.owner, "forget_kept", None)
                     if forget is not None:
-                        forget()
+                        kept_guilds = getattr(self.owner.db, "_kept_guilds", None)
+                        if not getattr(self.owner.db, "_kept_all", True) and kept_guilds:
+                            for guild_id in kept_guilds:
+                                forget(guild_id)
+                        else:
+                            forget()
             finally:
                 await self._release()
 
@@ -276,8 +369,13 @@ class SessionLock:
         async with self.lock:
             connection = await pool.acquire()
             try:
-                await connection.ping(reconnect=False)
+                await keep_warm.ping(connection)
                 keep_warm.fresh(connection)
+            except asyncio.CancelledError:
+                # Cancelled mid-ping (the keeper stopped at shutdown): its answer may be unread, so the connection mustn't go back to the pool open.
+                connection.close()
+                self._needs_ping = True
+                raise
             except Exception:
                 connection.close()
                 self._needs_ping = True

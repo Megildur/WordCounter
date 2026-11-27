@@ -5,13 +5,15 @@ Draws the leaderboard podium, the /stats card, the swear jar card and the live s
 
 from __future__ import annotations
 import asyncio
+from collections import OrderedDict
 import io
 import logging
 import math
 import re
-from functools import lru_cache
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
+import aiohttp
 import discord
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -57,16 +59,47 @@ LIVE_GREEN = (34, 197, 94)
 
 # Whether the font has a glyph for a character, per (bold, character). Stops growing at 5000 entries.
 _glyphs: Dict[Tuple[bool, str], bool] = {}
+_glyph_lock = threading.Lock()
+_base_images: Dict[str, Image.Image] = {}
+_scaled_images: Dict[str, Image.Image] = {}
+_image_lock = threading.Lock()
 
 
-@lru_cache(maxsize=32)
+def _base_image(name: str) -> Image.Image:
+    with _image_lock:
+        cached = _base_images.get(name)
+        if cached is not None:
+            return cached.copy()
+    with Image.open(CARDS / name) as img:
+        decoded = img.convert("RGBA")
+    with _image_lock:
+        cached = _base_images.setdefault(name, decoded)
+        return cached.copy()
+# FreeType faces hold mutable per-glyph C state and are not safe to share across worker threads, so each thread keeps its own bounded font cache and missing-glyph reference.
+_thread_fonts = threading.local()
+_FONT_CACHE_SIZE = 32
+
+
 def font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
+    cache: "OrderedDict[Tuple[bool, int], ImageFont.FreeTypeFont]" = getattr(_thread_fonts, "fonts", None)
+    if cache is None:
+        cache = OrderedDict()
+        _thread_fonts.fonts = cache
+    key = (bold, size)
+    cached = cache.get(key)
+    if cached is not None:
+        cache.move_to_end(key)
+        return cached
     path = FONTS / ("Poppins-Bold.ttf" if bold else "Poppins-Regular.ttf")
     try:
-        return ImageFont.truetype(str(path), size)
+        face = ImageFont.truetype(str(path), size)
     except OSError:
         log.warning("Font %s is missing; using Pillow's default font", path)
-        return ImageFont.load_default(size=size)
+        face = ImageFont.load_default(size=size)
+    cache[key] = face
+    if len(cache) > _FONT_CACHE_SIZE:
+        cache.popitem(last=False)
+    return face
 
 
 def _glyph(face: ImageFont.FreeTypeFont, char: str) -> Tuple[Tuple[int, int], bytes]:
@@ -79,8 +112,22 @@ def _glyph(face: ImageFont.FreeTypeFont, char: str) -> Tuple[Tuple[int, int], by
     return size, image.tobytes()
 
 
+def _missing_glyph(bold: bool) -> Tuple[Tuple[int, int], bytes]:
+    missing: Dict[bool, Tuple[Tuple[int, int], bytes]] = getattr(_thread_fonts, "missing", None)
+    if missing is None:
+        missing = {}
+        _thread_fonts.missing = missing
+    cached = missing.get(bold)
+    if cached is None:
+        cached = _glyph(font(bold, 48), "\uffff")
+        missing[bold] = cached
+    return cached
+
+
 def _has_glyph(bold: bool, char: str) -> bool:
-    cached = _glyphs.get((bold, char))
+    key = (bold, char)
+    with _glyph_lock:
+        cached = _glyphs.get(key)
     if cached is not None:
         return cached
     if char.isspace():
@@ -89,9 +136,10 @@ def _has_glyph(bold: bool, char: str) -> bool:
         face = font(bold, 48)
         pixels = _glyph(face, char)
         # A character the font lacks is drawn as the same placeholder box that U+FFFF gets, so a glyph that matches that box counts as missing.
-        result = pixels[0] != (0, 0) and pixels != _glyph(face, "￿")
-    if len(_glyphs) < 5000:
-        _glyphs[(bold, char)] = result
+        result = pixels[0] != (0, 0) and pixels != _missing_glyph(bold)
+    with _glyph_lock:
+        if len(_glyphs) < 5000:
+            _glyphs[key] = result
     return result
 
 
@@ -136,10 +184,17 @@ def png_bytes(card: Image.Image) -> bytes:
 
 
 def scaled(name: str) -> Image.Image:
-    """Loads a card from `assets/cards/` and enlarges it by SCALE without smoothing, so the pixels stay sharp."""
+    """Loads and caches a card from `assets/cards/` enlarged by SCALE without smoothing, returning a fresh copy per render."""
+    with _image_lock:
+        cached = _scaled_images.get(name)
+        if cached is not None:
+            return cached.copy()
     with Image.open(CARDS / name) as small:
         small = small.convert("RGBA")
-    return small.resize((small.width * SCALE, small.height * SCALE), Image.Resampling.NEAREST)
+    enlarged = small.resize((small.width * SCALE, small.height * SCALE), Image.Resampling.NEAREST)
+    with _image_lock:
+        cached = _scaled_images.setdefault(name, enlarged)
+        return cached.copy()
 
 
 def picture_file(data: bytes, filename: str) -> discord.File:
@@ -152,12 +207,12 @@ def gallery(filename: str, description: str) -> discord.ui.MediaGallery:
 
 
 async def avatar(user: Optional[discord.abc.User], size: int = 128) -> Optional[bytes]:
-    """Returns the bytes of a user's avatar image (a GIF for an animated one, otherwise PNG), or None when there is no user, Discord answers with an HTTP error, or the download takes longer than AVATAR_WAIT seconds. A connection error is raised. The card draws a plain tile when it gets None."""
+    """Returns the bytes of a user's avatar image as PNG, or None when there is no user, Discord answers with an HTTP/network error, or the download takes longer than AVATAR_WAIT seconds. The card draws a plain tile when it gets None."""
     if user is None:
         return None
     try:
-        return await asyncio.wait_for(user.display_avatar.replace(size=size, static_format="png").read(), AVATAR_WAIT)
-    except (asyncio.TimeoutError, discord.HTTPException, ValueError):
+        return await asyncio.wait_for(user.display_avatar.with_format("png").with_size(size).read(), AVATAR_WAIT)
+    except (asyncio.TimeoutError, discord.HTTPException, aiohttp.ClientError, OSError, ValueError):
         return None
 
 
@@ -167,8 +222,7 @@ def _label(draw: ImageDraw.ImageDraw, xy: Tuple[int, int], text: str, face: Imag
 
 def podium(entries: Sequence[Tuple[str, Optional[bytes], str]]) -> bytes:
     """Draws the top three onto the podium art and returns PNG bytes. `entries` holds (name, avatar bytes or None, caption) in rank order, and only the first three are used."""
-    with Image.open(CARDS / "podium.png") as base:
-        card = base.convert("RGBA")
+    card = _base_image("podium.png")
     draw = ImageDraw.Draw(card)
     size = 28
     for place, (name, face, caption) in enumerate(entries[:3], start=1):
@@ -194,10 +248,8 @@ def podium(entries: Sequence[Tuple[str, Optional[bytes], str]]) -> bytes:
 
 def stats_card(name: str, server: str, face: Optional[bytes], words: int, messages: int, attachments: int, emojis: int) -> bytes:
     """Draws a member's stats card and returns PNG bytes: their avatar, name and the server's name, the word count on the flip counter, and chips for messages, attachments and emojis."""
-    with Image.open(CARDS / "stats.png") as base:
-        small = base.convert("RGBA")
-    with Image.open(CARDS / "digits.png") as sheet:
-        digits = sheet.convert("RGBA")
+    small = _base_image("stats.png")
+    digits = _base_image("digits.png")
     # The flip counter has STATS_DIGITS digits, so a bigger word count shows as all nines.
     shown = str(min(words, 10 ** STATS_DIGITS - 1)).rjust(STATS_DIGITS, "0")
     for i, digit in enumerate(shown):

@@ -16,7 +16,7 @@ import time
 from typing import Any, Collection, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 import aiohttp
-from cogs.utils.config import DISCORD_CLIENT_SECRET, SESSION_SECRET, SITE_URL
+from cogs.utils.config import DISCORD_CLIENT_SECRET, SESSION_SECRET, SESSION_SECRET_PREVIOUS, SESSION_SECRET_RAW, SITE_URL
 from cogs.utils.http import get_session
 
 log = logging.getLogger("web.auth")
@@ -28,6 +28,8 @@ SESSION_COOKIE = f"{_PREFIX}wordcounter_session"
 STATE_COOKIE = f"{_PREFIX}wordcounter_login"
 SESSION_MAX_AGE = 86400 * 30
 STATE_MAX_AGE = 600
+STATE_CLOCK_SKEW = 30
+MIN_SECRET_LENGTH = 32
 API = "https://discord.com/api/v10"
 REDIRECT_URI = f"{SITE_URL}/callback"
 CONSENT_ERRORS = ("consent_required", "interaction_required", "login_required")
@@ -40,14 +42,50 @@ ICON_HASH = re.compile(r"[a-z0-9_]{1,64}")
 User = Dict[str, Any]
 
 
+def secret_keys() -> Tuple[str, ...]:
+    """(primary,) or (primary, previous) signing secrets for dual-key verification during rotation."""
+    if not SESSION_SECRET:
+        return ()
+    if SESSION_SECRET_PREVIOUS and not _same(SESSION_SECRET_PREVIOUS, SESSION_SECRET):
+        return (SESSION_SECRET, SESSION_SECRET_PREVIOUS)
+    return (SESSION_SECRET,)
+
+
+def secret_status() -> Optional[str]:
+    """Startup warning when SESSION_SECRET is unset or shorter than MIN_SECRET_LENGTH characters."""
+    if not SESSION_SECRET_RAW:
+        return "SESSION_SECRET isn't set: cookie signing is derived from API_TOKEN. Set a dedicated SESSION_SECRET of at least 32 random characters."
+    if len(SESSION_SECRET_RAW) < MIN_SECRET_LENGTH:
+        return f"SESSION_SECRET is only {len(SESSION_SECRET_RAW)} characters long; use at least {MIN_SECRET_LENGTH} random characters."
+    return None
+
+
 def _same(first: str, second: str) -> bool:
     """Compares two strings in constant time. They are compared as bytes, because compare_digest raises TypeError for a str with non-ASCII characters, and a cookie or form field can hold any text, even a lone surrogate."""
     return hmac.compare_digest(first.encode("utf-8", "surrogatepass"), second.encode("utf-8", "surrogatepass"))
 
 
-def _sign(value: str) -> str:
+def _subkey(secret: str, purpose: str) -> bytes:
+    """Derives an isolated HMAC subkey for `purpose` ('session-key', 'csrf-key', 'oauth-state-key') from `secret`."""
+    return hmac.new(secret.encode("utf-8"), purpose.encode("ascii"), hashlib.sha256).digest()
+
+
+def _sign(value: str, purpose: str = "session-key", secret: Optional[str] = None) -> str:
+    master = SESSION_SECRET if secret is None else secret
+    if not master:
+        raise RuntimeError("SESSION_SECRET must be set to sign login cookies")
     # surrogatepass, because aiohttp turns a byte that isn't valid UTF-8 into a lone surrogate, which a strict encode refuses.
-    return hmac.new(SESSION_SECRET.encode(), value.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()
+    return hmac.new(_subkey(master, purpose), value.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()
+
+
+def _verify_any(value: str, signature: str, purpose: str, *, hex_len: Optional[int] = None) -> bool:
+    for master in secret_keys():
+        expected = _sign(value, purpose=purpose, secret=master)
+        if hex_len is not None:
+            expected = expected[:hex_len]
+        if _same(signature, expected):
+            return True
+    return False
 
 
 def new_session_id() -> str:
@@ -60,9 +98,9 @@ def session_hash(session_id: str) -> str:
 
 
 def sign_session(user: User, session_id: str) -> str:
-    """Returns the cookie value "payload.signature": the user, the session id and a timestamp as base64 JSON, signed with HMAC-SHA256. It is signed, not encrypted, so the browser can read the contents but can't change them."""
+    """Returns the cookie value "payload.signature": the user, the session id and a timestamp as base64 JSON, signed with the session subkey. It is signed, not encrypted, so the browser can read the contents but can't change them."""
     payload = base64.urlsafe_b64encode(json.dumps({**user, "sid": session_id, "ts": int(time.time())}).encode()).decode()
-    return f"{payload}.{_sign(payload)}"
+    return f"{payload}.{_sign(payload, purpose='session-key')}"
 
 
 def _whole(value: Any, limit: int) -> Optional[int]:
@@ -79,12 +117,12 @@ def _whole(value: Any, limit: int) -> Optional[int]:
 
 
 def read_session(token: Optional[str]) -> Optional[User]:
-    """Returns the user from a session cookie whose signature matches, which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `check_session` also asks whether the session still exists."""
-    if not token or "." not in token:
+    """Returns the user from a session cookie whose signature matches (primary or previous rotation key), which is under SESSION_MAX_AGE (30 days) old and has a session id. A missing cookie, a wrong signature, bad contents, an old one or one from before sessions were kept in the table gives None. This only reads the cookie: `check_session` also asks whether the session still exists."""
+    if not token or "." not in token or not secret_keys():
         return None
     payload, signature = token.rsplit(".", 1)
     # compare_digest takes the same time wherever the strings differ, so the signature can't be found out a piece at a time.
-    if not _same(signature, _sign(payload)):
+    if not _verify_any(payload, signature, "session-key"):
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(payload.encode()))
@@ -117,12 +155,12 @@ async def check_session(db: Any, token: Optional[str]) -> Tuple[Optional[User], 
 
 
 def csrf_token(user: User) -> str:
-    """The form token for a signed-in user: an HMAC of their id and their session id, so each login has its own and nothing is stored. Forms send it as `csrf` and `check_csrf` compares it."""
-    return _sign(f"csrf:{user['id']}:{user['sid']}")
+    """The form token for a signed-in user: an HMAC of their id and session id using the isolated CSRF subkey, so each login has its own and nothing is stored."""
+    return _sign(f"csrf:{user['id']}:{user['sid']}", purpose="csrf-key")
 
 
 def check_csrf(user: User, token: Optional[str]) -> bool:
-    return isinstance(token, str) and bool(token) and _same(token, csrf_token(user))
+    return isinstance(token, str) and bool(token) and _verify_any(f"csrf:{user['id']}:{user['sid']}", token, "csrf-key")
 
 
 def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
@@ -134,23 +172,56 @@ def safe_next(path: Optional[str], default: str = "/dashboard") -> str:
     return path
 
 
-def new_state(next_url: str) -> Tuple[str, str]:
-    """Returns (nonce, state). The nonce goes in a cookie and `state` goes to Discord with the next page inside it, so `check_state` can prove the callback belongs to the browser that started the login."""
-    nonce = secrets.token_urlsafe(16)
-    return nonce, f"{nonce}:{next_url}"
+def pkce_challenge(verifier: str) -> str:
+    """Computes the RFC 7636 S256 PKCE code_challenge for `verifier`."""
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
 
 
-def check_state(state: Optional[str], nonce: Optional[str]) -> Optional[str]:
-    """Returns the safe next page when the state's nonce matches the cookie's, otherwise None."""
-    if not state or not nonce or ":" not in state:
+def state_verifier(cookie_value: Optional[str]) -> Optional[str]:
+    """Extracts the PKCE code_verifier stored alongside the state nonce in STATE_COOKIE, or None if malformed."""
+    if not cookie_value or "." not in cookie_value:
         return None
-    sent_nonce, next_url = state.split(":", 1)
-    if not _same(sent_nonce, nonce):
+    _, verifier = cookie_value.split(".", 1)
+    if not (32 <= len(verifier) <= 128) or not all(ch.isalnum() or ch in "-_" for ch in verifier):
+        return None
+    return verifier
+
+
+def new_state(next_url: str, *, now: Optional[float] = None) -> Tuple[str, str]:
+    """Returns (cookie value 'nonce.verifier', signed state 'nonce.issued.mac:next_url') enforcing server-side STATE_MAX_AGE expiry and binding PKCE to this browser's STATE_COOKIE."""
+    clean_next = safe_next(next_url)
+    nonce = secrets.token_urlsafe(16)
+    verifier = secrets.token_urlsafe(32)
+    issued = int(time.time() if now is None else now)
+    mac = _sign(f"{nonce}:{issued}:{clean_next}", purpose="oauth-state-key")[:32]
+    return f"{nonce}.{verifier}", f"{nonce}.{issued}.{mac}:{clean_next}"
+
+
+def check_state(state: Optional[str], cookie_value: Optional[str], *, now: Optional[float] = None) -> Optional[str]:
+    """Returns the safe next page when `state` matches `cookie_value`'s nonce, has a valid HMAC signature, and was issued within STATE_MAX_AGE seconds; otherwise None."""
+    if not state or not cookie_value or ":" not in state or not secret_keys():
+        return None
+    header, next_url = state.split(":", 1)
+    parts = header.split(".")
+    if len(parts) != 3:
+        return None
+    sent_nonce, issued_raw, sent_mac = parts
+    cookie_nonce = cookie_value.split(".", 1)[0]
+    if not sent_nonce or not cookie_nonce or not _same(sent_nonce, cookie_nonce):
+        return None
+    issued = _whole(issued_raw, 2 ** 63)
+    if issued is None:
+        return None
+    current = time.time() if now is None else now
+    age = current - issued
+    if age < -STATE_CLOCK_SKEW or age > STATE_MAX_AGE:
+        return None
+    if not _verify_any(f"{sent_nonce}:{issued}:{next_url}", sent_mac, "oauth-state-key", hex_len=32):
         return None
     return safe_next(next_url)
 
 
-def login_url(client_id: int, state: str, prompt: str = "none") -> str:
+def login_url(client_id: int, state: str, prompt: str = "none", code_challenge: Optional[str] = None) -> str:
     # The default value asks Discord to skip its consent screen when it can. If Discord answers with one of CONSENT_ERRORS, the callback builds this URL again with "consent".
     query = {
         "client_id": client_id,
@@ -160,6 +231,9 @@ def login_url(client_id: int, state: str, prompt: str = "none") -> str:
         "prompt": prompt,
         "state": state,
     }
+    if code_challenge:
+        query["code_challenge"] = code_challenge
+        query["code_challenge_method"] = "S256"
     return f"https://discord.com/oauth2/authorize?{urlencode(query)}"
 
 
@@ -196,7 +270,7 @@ def managed_servers(raw: Any) -> Optional[List[Dict[str, Any]]]:
     return servers
 
 
-async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -> Tuple[Optional[User], Optional[List[Dict[str, Any]]]]:
+async def fetch_login(code: str, client_id: int, banned: Collection[int] = (), code_verifier: Optional[str] = None) -> Tuple[Optional[User], Optional[List[Dict[str, Any]]]]:
     """Trades the OAuth `code` for a token, reads the Discord user and the servers they manage, and returns (user, servers).
 
     The user is {id, username, name, avatar_url}, or None when the login failed. The servers are `managed_servers` of the list, or None when Discord didn't give a list (an error, a timeout or an answer that isn't a list), which doesn't fail the login: the dashboard just offers to load it again. A person in `banned` gets None for the servers without asking Discord, since nothing is kept for them.
@@ -212,6 +286,8 @@ async def fetch_login(code: str, client_id: int, banned: Collection[int] = ()) -
         "code": code,
         "redirect_uri": REDIRECT_URI,
     }
+    if code_verifier:
+        form["code_verifier"] = code_verifier
     session = get_session()
     headers: Dict[str, str] = {}
     try:

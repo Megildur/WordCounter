@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 # Drops all but a person's newest sessions. MySQL won't delete from a table it is also reading in a subquery, so the ones to keep are listed in a derived table, and the LIMIT inside it keeps MySQL from folding it back into the DELETE.
 KEEP_NEWEST = """DELETE FROM web_sessions WHERE user_id = ? AND token_hash NOT IN (
     SELECT token_hash FROM (SELECT token_hash FROM web_sessions WHERE user_id = ? ORDER BY created DESC, token_hash LIMIT ?) AS newest)"""
+INSERT_SESSION = "INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)"
 
 # How long a session found in the table is trusted without asking again, and how long one found missing is remembered. A session can't come back, so a missing one is remembered longer.
 ALIVE_SECONDS = 30.0
@@ -31,8 +32,9 @@ GONE_SECONDS = 300.0
 KEPT_LIMIT = 5000
 # Someone who signs in on more browsers than this loses the oldest sessions.
 SESSIONS_PER_USER = 10
-# Clears at most this many ended rows on each login, so a big backlog never stalls the database.
+# Clears at most this many ended rows, at most once per EXPIRED_PRUNE_SECONDS, so concurrent logins don't contend on idx_web_sessions_expires.
 EXPIRED_BATCH = 500
+EXPIRED_PRUNE_SECONDS = 300.0
 # How long a person's server list from Discord is kept, and how many people's lists at most. The oldest is dropped first when the limit is reached.
 SERVERS_SECONDS = 3600.0
 SERVERS_LIMIT = 2000
@@ -42,16 +44,32 @@ class WebSessionQueries:
     """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers, the timer that drops them)}."""
 
     async def create_web_session(self, token_hash: str, user_id: int, lifetime: int) -> None:
-        """Records a new session that ends `lifetime` seconds from now, and clears out up to EXPIRED_BATCH sessions that have ended. Raises when the session couldn't be saved. Someone's oldest sessions beyond SESSIONS_PER_USER are then dropped, which is only tidying: if it fails the login still stands."""
+        """Records a new session that ends `lifetime` seconds from now, clears out up to EXPIRED_BATCH ended sessions at most once per EXPIRED_PRUNE_SECONDS, and drops someone's oldest sessions beyond SESSIONS_PER_USER, all in one round trip. Raises only when the session couldn't be saved: clearing and dropping are tidying, and if they fail the login still stands."""
         now = int(time.time())
-        await self._write([
-            ("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", [(now, EXPIRED_BATCH)]),
-            ("INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)", [(token_hash, user_id, now, now + lifetime)]),
-        ])
+        last_prune = getattr(self, "_last_expired_prune", 0.0)
+        should_prune = now - last_prune >= EXPIRED_PRUNE_SECONDS
+        statements: List[Tuple[str, Tuple[Any, ...]]] = []
+        if should_prune:
+            statements.append(("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", (now, EXPIRED_BATCH)))
+        row = (token_hash, user_id, now, now + lifetime)
+        statements.extend([(INSERT_SESSION, row), (KEEP_NEWEST, (user_id, user_id, SESSIONS_PER_USER))])
+        await self.ensure_connected()
         try:
-            await self._write([(KEEP_NEWEST, [(user_id, user_id, SESSIONS_PER_USER)])])
+            async with self.db_lock:
+                await self.db.run_many(statements)
+                await self.db.commit()
         except Exception as error:
-            log.warning("Couldn't drop a person's oldest login sessions: %s", error)
+            # The batch can fail without the session being the problem: the connection dropping, or a tidying statement failing. The block was rolled back, so the session is saved by itself in a block of its own (unless the commit went through after all), and only a failure there fails the login.
+            await self.ensure_connected()
+            async with self.db_lock:
+                cursor = await self.db.execute("SELECT 1 FROM web_sessions WHERE token_hash = ?", (token_hash,))
+                if await cursor.fetchone() is None:
+                    await self.db.execute(INSERT_SESSION, row)
+                    await self.db.commit()
+            log.warning("Saved a login session but couldn't tidy the old ones: %s", error)
+        else:
+            if should_prune:
+                self._last_expired_prune = now
         # A session that was dropped by the last statement is no longer alive, so nothing in memory may still say it is.
         self.forget_web_sessions(user_id)
 
@@ -59,8 +77,11 @@ class WebSessionQueries:
         """Returns the user ID a session belongs to, or None when it doesn't exist or has ended. Raises when the database can't be read, and the caller decides what that means."""
         now = time.monotonic()
         kept = self._web_kept.get(token_hash)
-        if kept is not None and now - kept[0] < (ALIVE_SECONDS if kept[1] is not None else GONE_SECONDS):
-            return kept[1]
+        if kept is not None:
+            if now - kept[0] < (ALIVE_SECONDS if kept[1] is not None else GONE_SECONDS):
+                self._web_kept.move_to_end(token_hash)
+                return kept[1]
+            self._web_kept.pop(token_hash, None)
         await self.ensure_connected()
         epoch = self._web_epoch
         async with self.db_lock:
@@ -69,9 +90,11 @@ class WebSessionQueries:
         owner = int(row[0]) if row else None
         # A look-up that began before a revoke or a deletion and ended after it may have read the row just before it went, so its answer is used once and not kept.
         if epoch == self._web_epoch:
-            if len(self._web_kept) >= KEPT_LIMIT:
-                self._web_kept.clear()
+            if token_hash not in self._web_kept:
+                while len(self._web_kept) >= KEPT_LIMIT:
+                    self._web_kept.popitem(last=False)
             self._web_kept[token_hash] = (time.monotonic(), owner)
+            self._web_kept.move_to_end(token_hash)
         return owner
 
     async def revoke_web_session(self, token_hash: str) -> None:

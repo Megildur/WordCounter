@@ -44,13 +44,16 @@ def count_emojis(text: str) -> int:
 
 
 def count_links(text: str) -> int:
-    return sum(1 for word in text.split() if word.strip('<>()"\'').startswith(LINK_PREFIXES))
+    return sum(1 for word in text.split() if word.strip('<>()"\'').lower().startswith(LINK_PREFIXES))
 
 
 @lru_cache(maxsize=4096)
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
-    # Every message is checked against every keyword, so each pattern is compiled once and kept in a cache of 4096 patterns. Matching is by whole word, so `gg` skips `eggs`, and a keyword that starts or ends with a symbol only matches next to a letter, digit or underscore.
-    return re.compile(r"\b" + re.escape(keyword.lower()) + r"\b")
+    # Every message is checked against every keyword, so each pattern is compiled once and kept in a cache of 4096 patterns. Edges that start/end on a word character require `\b`; edges that start/end on a symbol (such as `c++` or `:3`) require whitespace/string boundaries so symbols still match standalone tokens without matching inside words.
+    lowered = keyword.lower()
+    left = r"\b" if re.match(r"\w", lowered[0]) else r"(?<!\S)"
+    right = r"\b" if re.match(r"\w", lowered[-1]) else r"(?!\S)"
+    return re.compile(left + re.escape(lowered) + right)
 
 
 def count_keywords(text: str, keywords: Iterable[str]) -> Dict[str, int]:

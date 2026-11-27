@@ -23,6 +23,7 @@ from cogs.utils.components import (
     SUCCESS_COLOR,
     WARNING_COLOR,
     Callback,
+    acknowledge,
     can_attach,
     create_v2_container,
     create_v2_view,
@@ -34,6 +35,7 @@ from cogs.utils.components import (
     private_followup,
     rank_prefix,
     safe_name,
+    summarize_channels,
     tab_rows,
 )
 from cogs.utils.jar import (
@@ -93,12 +95,20 @@ SPAM_EMOJI = "🚫"
 # How long the "message removed" notice stays up in delete mode.
 NOTICE_SECONDS = 5
 # Seconds a server's cached JarState is reused before it is rebuilt from the database.
-STATE_TTL = 15.0
-# How long an ID that the owner commands deleted stays refused for day counts, so a write that was already waiting for the database lock can't put its rows back after the delete.
+STATE_TTL = 300.0
+# How long a forgotten ID stays refused for day counts, so a flush that starts while its delete waits for the database lock leaves the ID out.
 FORGET_SECONDS = 60.0
 # Seconds between daily credit checks. The upkeep loop itself runs every minute.
 DAILY_INTERVAL = 600.0
 WORDS_PER_PAGE = 60
+# Offload swear matching to a worker thread when a message is long enough to tie up the event loop.
+OFFLOAD_LENGTH = 1000
+
+
+async def _find_swears(matcher: SwearMatcher, text: str) -> List[int]:
+    if len(text) > OFFLOAD_LENGTH:
+        return await asyncio.to_thread(matcher.find, text)
+    return matcher.find(text)
 
 TOP_TABS = {"swears": "Swears", "debt": "Debt", "wallet": "Wallet", "streak": "Streak"}
 TOP_DESCRIPTIONS = {
@@ -250,18 +260,17 @@ class JarTopPaginator(ButtonPaginator):
 
     async def update_page(self, interaction: discord.Interaction) -> None:
         # Reading the ranking and the names can take longer than the 3 seconds Discord gives a press, so it is answered first and the message is edited afterwards.
-        if self.message is None:
-            self.message = interaction.message
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
-        await interaction.edit_original_response(**kwargs)
+            await acknowledge(interaction, "a swear jar leaderboard press")
+        async with self._update_lock:
+            await self._apply_page(interaction)
 
     def _switch_to(self, kind: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
-            await interaction.response.defer()
-            await self.load(kind)
-            await self.update_page(interaction)
+            await acknowledge(interaction, "a swear jar tab press")
+            async with self._update_lock:
+                await self.load(kind)
+                await self._apply_page(interaction)
 
         return callback
 
@@ -282,10 +291,17 @@ class JarSettingsView(SectionMenu):
 
     async def load_state(self) -> None:
         db = self.bot.db
-        self.settings = await db.jar_settings(self.guild.id)
-        self.overrides = await db.jar_word_overrides(self.guild.id)
-        self.rules = await db.jar_channel_rules(self.guild.id)
-        self.goal = await db.jar_goal(self.guild.id)
+        if hasattr(db, "jar_bundle"):
+            bundle = await db.jar_bundle(self.guild.id, include_goal=True)
+            self.settings = bundle["settings"]
+            self.overrides = bundle["overrides"]
+            self.rules = bundle["rules"]
+            self.goal = bundle["goal"]
+        else:
+            self.settings = await db.jar_settings(self.guild.id)
+            self.overrides = await db.jar_word_overrides(self.guild.id)
+            self.rules = await db.jar_channel_rules(self.guild.id)
+            self.goal = await db.jar_goal(self.guild.id)
         # Every change ends in a reload, which drops the cached state so the listeners use the new settings straight away.
         self.cog.invalidate(self.guild.id)
 
@@ -436,7 +452,7 @@ class JarSettingsView(SectionMenu):
         includes, excludes = self._rule_ids("include"), self._rule_ids("exclude")
 
         def listed(ids: List[int]) -> str:
-            return ", ".join(format_channel_or_category(self.guild, cid) for cid in ids) or "None"
+            return summarize_channels(self.guild, ids, limit=40, sep=", ", empty="None")
 
         container.add_item(
             discord.ui.TextDisplay(
@@ -457,7 +473,12 @@ class JarSettingsView(SectionMenu):
             options = []
             for cid in sorted(self.rules)[:25]:
                 channel = self.guild.get_channel(cid)
-                name = f"#{channel.name}" if channel is not None else f"Deleted channel {cid}"
+                if isinstance(channel, discord.CategoryChannel):
+                    name = f"{channel.name} (category)"
+                elif channel is not None:
+                    name = f"#{channel.name}"
+                else:
+                    name = f"Deleted channel {cid}"
                 options.append(discord.SelectOption(label=name[:100], value=str(cid), description="Also listens" if self.rules[cid] == "include" else "Never listens"))
             remove_select = discord.ui.Select(placeholder="Remove exceptions", options=options, max_values=len(options))
             remove_select.callback = self._on_rule(None)
@@ -585,7 +606,8 @@ class JarSettingsView(SectionMenu):
     async def _toggle_delete_mode(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         turning_on = not self.settings["delete_mode"]
-        if turning_on and not self.guild.me.guild_permissions.manage_messages:
+        me = self.guild.me
+        if turning_on and (me is None or not me.guild_permissions.manage_messages):
             self._done("WordCounter needs the Manage Messages permission to delete messages.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update(self.guild.id, delete_mode=int(turning_on))
@@ -633,7 +655,7 @@ class JarSettingsView(SectionMenu):
                 self._done("Give both names and a whole number of tokens from 1 to 10000.", WARNING_COLOR)
             else:
                 await self.bot.db.jar_update(self.guild.id, **tokens)
-                self._done(f"Fines now show as {tokens['token_plural']}.")
+                self._done(f"Fines now show as {safe_name(tokens['token_plural'])}.")
         await self.refresh_and_edit(interaction)
 
     async def _open_prices_modal(self, interaction: discord.Interaction) -> None:
@@ -719,7 +741,7 @@ class JarSettingsView(SectionMenu):
                         footer = f"{name} is off, so these aren't fined · " + footer
                     pages.append(
                         create_v2_container(
-                            title=f"{name}, {TIER_NAMES[tier]}: {money(self.settings, prices(self.settings)[tier])} each",
+                            title=f"{name}, {TIER_NAMES[tier]}: {self._money(prices(self.settings)[tier])} each",
                             description=word_list(chunk, WORDS_PER_PAGE) if chunk else "No words in this tier.",
                             footer=footer,
                             color=NEUTRAL_COLOR if off else BRAND_COLOR,
@@ -785,6 +807,17 @@ class JarSettingsView(SectionMenu):
         ]
         await interaction.response.send_modal(FormModal("Swear jar goal", fields, self._save_goal))
 
+    def _default_goal_channel_id(self, channel: Any) -> Optional[int]:
+        """Returns an announcement text channel ID for `channel` (or its parent text channel when invoked in a thread) if the bot can view and send there."""
+        me = self.guild.me
+        if me is None or channel is None:
+            return None
+        candidate = channel.parent if isinstance(channel, discord.Thread) else channel
+        if not isinstance(candidate, discord.TextChannel):
+            return None
+        perms = candidate.permissions_for(me)
+        return candidate.id if perms.view_channel and perms.send_messages else None
+
     async def _save_goal(self, interaction: discord.Interaction, values: List[str]) -> None:
         label, amount = values
         target = parse_amount(self.settings, amount)
@@ -792,11 +825,12 @@ class JarSettingsView(SectionMenu):
             self._done("Give the goal a name and an amount above zero.", WARNING_COLOR)
         else:
             current = self.goal if self.goal and not self.goal["completed_at"] else None
-            # Changing a goal keeps its announcement channel. A new goal is announced where the settings were opened.
-            channel_id = current["channel_id"] if current and current["channel_id"] else interaction.channel_id
+            # Changing a goal keeps its announcement channel. A new goal defaults to the current text channel (or a thread's parent text channel) if WordCounter can post there.
+            channel_id = current["channel_id"] if current and current["channel_id"] else self._default_goal_channel_id(interaction.channel)
             # Saving starts the goal again from zero progress, even when an admin only changes one that is running.
             await self.bot.db.jar_set_goal(self.guild.id, label[:100], target, channel_id, bool(current and current["ping"]))
-            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. It's announced in <#{channel_id}>.")
+            where = f"It's announced in <#{channel_id}>." if channel_id else "Pick a text channel below for its announcement."
+            self._done(f"Goal set: {safe_name(label[:100])}, {self._money(target)}. {where}")
         await self.refresh_and_edit(interaction)
 
     async def _on_goal_channel(self, interaction: discord.Interaction) -> None:
@@ -814,7 +848,18 @@ class JarSettingsView(SectionMenu):
     async def _toggle_goal_ping(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         ping = not (self.goal and self.goal["ping"])
-        if ping and not self.guild.me.guild_permissions.mention_everyone:
+        me = self.guild.me
+        channel = self.guild.get_channel(self.goal["channel_id"]) if self.goal and self.goal.get("channel_id") else None
+        can_mention = (
+            False
+            if me is None
+            else (
+                channel.permissions_for(me).mention_everyone
+                if isinstance(channel, discord.TextChannel)
+                else me.guild_permissions.mention_everyone
+            )
+        )
+        if ping and not can_mention:
             self._done("WordCounter needs the Mention Everyone permission to ping @everyone.", WARNING_COLOR)
         else:
             await self.bot.db.jar_update_goal(self.guild.id, ping=ping)
@@ -841,11 +886,16 @@ class JarSettingsView(SectionMenu):
             if running:
                 self._done(ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
             elif member_only and self.reset_user_id is not None:
+                # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
+                if jar is not None:
+                    jar.forget_member(self.guild.id, self.reset_user_id)
                 await self.bot.db.jar_reset_members(self.guild.id, self.reset_user_id)
                 if jar is not None:
                     jar.forget_member(self.guild.id, self.reset_user_id)
                 self._done(f"Reset <@{self.reset_user_id}>'s jar.")
             else:
+                if jar is not None:
+                    jar.forget(self.guild.id)
                 await self.bot.db.jar_reset_members(self.guild.id)
                 if jar is not None:
                     jar.forget(self.guild.id)
@@ -909,16 +959,16 @@ class SwearJar(commands.Cog):
         self._building.pop(guild_id, None)
 
     def forget(self, target_id: int) -> None:
-        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The owner data commands call it after deleting stored data, so the counts still waiting in day_counts are dropped instead of saved later. A flush that has already taken its counts and is waiting for the database lock can still write them after the delete."""
+        """Drops everything held in memory for a user or server id: its cached state, spam tracking and unsaved day counts. The whole-server resets and the owner data commands call it before their delete and again after (the per-member resets do the same with `forget_member`): a flush that takes its counts after the first call leaves the ID out, one that took them earlier is already queued for the database lock ahead of the delete (`_write` reads its rows and queues with no await in between), and the second call drops counts that came in while the delete waited. A caller that only forgot after its delete would let a flush that started meanwhile write the counts back."""
         self.invalidate(target_id)
         for store in (self.recent, self.spam_until, self.day_counts):
             for key in [key for key in store if target_id in key]:
                 del store[key]
-        # For the next FORGET_SECONDS this ID's day counts are refused, including a flush that has taken its counts and is waiting for the database lock, which checks again when it gets it.
+        # For the next FORGET_SECONDS this ID's day counts are refused by any flush that takes its counts in that time, and by a failed flush putting its counts back.
         self._forgotten[target_id] = time.monotonic() + FORGET_SECONDS
 
     def forget_member(self, guild_id: int, user_id: int) -> None:
-        """Drops unsaved spam tracking and day counts for one member in one server after a per-member jar reset."""
+        """Drops unsaved spam tracking and day counts for one member in one server. The per-member jar resets call it before their delete and again after, for the same reason `forget` is called both sides of a delete."""
         pair = (guild_id, user_id)
         self.recent.pop(pair, None)
         self.spam_until.pop(pair, None)
@@ -960,23 +1010,39 @@ class SwearJar(commands.Cog):
     async def _build_state(self, guild_id: int) -> JarState:
         db = self.bot.db
         building = self._building.get(guild_id)
-        settings = await db.jar_settings(guild_id)
-        if not settings["enabled"]:
-            state = JarState(settings)
+        if hasattr(db, "jar_bundle"):
+            bundle = await db.jar_bundle(guild_id, include_tracking=True, include_coverage=True)
+            settings = bundle["settings"]
+            if not settings["enabled"]:
+                state = JarState(settings)
+            else:
+                # live_since is the start of the open coverage period, which is when the jar was last turned on.
+                live = [start for start, end in bundle["coverage"] if end is None]
+                state = JarState(
+                    settings,
+                    # Building a matcher compiles regexes, so it runs in a thread to keep the event loop free. matcher_for caches the result.
+                    await asyncio.to_thread(matcher_for, tuple(bundle["overrides"]), languages_for(settings)),
+                    bundle["rules"],
+                    bundle["watched"],
+                    bundle["ignored"],
+                    min(live) if live else 0,
+                )
         else:
-            overrides = tuple(await db.jar_word_overrides(guild_id))
-            watched, ignored = await db.get_guild_tracking_config(guild_id)
-            # live_since is the start of the open coverage period, which is when the jar was last turned on.
-            live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
-            state = JarState(
-                settings,
-                # Building a matcher compiles regexes, so it runs in a thread to keep the event loop free. matcher_for caches the result.
-                await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
-                await db.jar_channel_rules(guild_id),
-                watched,
-                ignored,
-                min(live) if live else 0,
-            )
+            settings = await db.jar_settings(guild_id)
+            if not settings["enabled"]:
+                state = JarState(settings)
+            else:
+                overrides = tuple(await db.jar_word_overrides(guild_id))
+                watched, ignored = await db.get_guild_tracking_config(guild_id)
+                live = [start for start, end in await db.jar_coverage(guild_id) if end is None]
+                state = JarState(
+                    settings,
+                    await asyncio.to_thread(matcher_for, overrides, languages_for(settings)),
+                    await db.jar_channel_rules(guild_id),
+                    watched,
+                    ignored,
+                    min(live) if live else 0,
+                )
         # Not kept when the settings changed while it was built (`invalidate` dropped the build): it is still the answer for the messages that waited, as it was before.
         if self._building.get(guild_id) is building:
             self.states[guild_id] = state
@@ -999,7 +1065,7 @@ class SwearJar(commands.Cog):
         # Every message that gets this far counts toward the member's active day, whether or not it is fined.
         if not self._is_forgotten(message.guild.id, message.author.id):
             self.day_counts[(message.guild.id, message.author.id, utc_day(message.created_at.timestamp()))] += 1
-        tiers = state.matcher.find(message.content)
+        tiers = await _find_swears(state.matcher, message.content)
         if tiers:
             await self._fine(message, channel_id, state, tiers)
 
@@ -1015,7 +1081,7 @@ class SwearJar(commands.Cog):
         allowed, channel_id = self._checks(after.guild, after.channel, state)
         if not allowed or await self._banned(after, state):
             return
-        tiers = state.matcher.find(after.content)
+        tiers = await _find_swears(state.matcher, after.content)
         if tiers:
             await self._fine(after, channel_id, state, tiers)
 
@@ -1066,7 +1132,7 @@ class SwearJar(commands.Cog):
         """Returns True if the author is banned from WordCounter, and the caller then skips them. In delete mode their swearing is still removed, with a notice, but they are never fined or counted."""
         if message.author.id not in self.bot.blacklisted:
             return False
-        if state.settings["delete_mode"] and state.matcher.find(message.content):
+        if state.settings["delete_mode"] and await _find_swears(state.matcher, message.content):
             await self._remove(message, f"{message.author.mention}'s message was removed for swearing.")
         return True
 
@@ -1141,7 +1207,7 @@ class SwearJar(commands.Cog):
         # Swap in a new dict before the write, so messages that arrive during it are counted in the new one.
         counts, self.day_counts = self.day_counts, defaultdict(int)
         try:
-            # The rows are read when the write has the database lock, so an ID forgotten while it waited is left out.
+            # The rows are read as the write starts, and `_write` queues for the database lock with no await in between, so an ID forgotten before this is left out and a reset that forgets it afterwards deletes after this write.
             await self.bot.db.jar_add_day_messages(
                 (guild_id, user_id, day, n) for (guild_id, user_id, day), n in counts.items() if not self._is_forgotten(guild_id, user_id)
             )
@@ -1383,7 +1449,7 @@ class SwearJar(commands.Cog):
         menu = JarSettingsView(self, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
+        menu.message = await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     async def message_fine(self, interaction: discord.Interaction, message: discord.Message) -> None:
         """The Swear Jar message menu: shows what the message was fined, then its author's wallet. The reply is private."""
@@ -1396,7 +1462,7 @@ class SwearJar(commands.Cog):
             return
         record = await self.bot.db.jar_message_fine(message.id)
         if record:
-            description = f"{message.author.mention} was fined **{money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
+            description = f"{message.author.mention} was fined **{safe_money(settings, record['amount'])}** for {record['swears']} swear(s) in this message."
         else:
             description = f"This message from {message.author.mention} wasn't fined."
         data = await self._member_data(interaction.guild.id, message.author.id)

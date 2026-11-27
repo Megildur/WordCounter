@@ -31,7 +31,7 @@ from cogs.utils.jar import (
     word_changes,
     word_tab,
 )
-from cogs.utils.server_settings import parse_keywords
+from cogs.utils.server_settings import analysis_state, parse_keywords
 from cogs.utils.swear_filter import DEFAULT_KEYS, Override, build_entries, languages_for
 from cogs.utils.swear_words import LANGUAGE_COLUMNS, LANGUAGES, TIER_NAMES
 from web.core import redirect, render
@@ -94,11 +94,38 @@ def role_options(
     return [{"id": role.id, "label": f"@{role.name}"} for role in roles]
 
 
+def current_role_info(
+    guild: discord.Guild,
+    role_id: Optional[int],
+    member: Optional[discord.Member] = None,
+    *,
+    single_holder: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Describes an already-configured role so the UI can display and preserve it even when it is currently absent from `role_options`."""
+    if not role_id:
+        return None
+    role = guild.get_role(role_id)
+    problem = role_problem(guild, role, member, single_holder=single_holder)
+    label = f"@{role.name}" if role is not None else f"Deleted role ({role_id})"
+    if problem and role is not None:
+        problem = problem.replace(role.mention, label)
+    return {"id": role_id, "label": label, "problem": problem, "assignable": problem is None}
+
+
 def _can_post(guild: discord.Guild, channel: Any) -> bool:
     if not isinstance(channel, discord.TextChannel) or guild.me is None:
         return False
     perms = channel.permissions_for(guild.me)
     return perms.view_channel and perms.send_messages
+
+
+def _can_mention(guild: discord.Guild, channel: Any) -> bool:
+    me = guild.me
+    if me is None:
+        return False
+    if isinstance(channel, discord.TextChannel):
+        return channel.permissions_for(me).mention_everyone
+    return me.guild_permissions.mention_everyone
 
 
 def goal_channels(guild: discord.Guild) -> List[Dict[str, Any]]:
@@ -124,11 +151,21 @@ async def swearjar(request: web.Request) -> web.Response:
     guild, member, can_manage = await member_access(request)
     if not can_manage:
         return manager_only(request)
-    db = request.app["bot"].db
-    settings = await db.jar_settings(guild.id)
-    overrides = await db.jar_word_overrides(guild.id)
-    rules = await db.jar_channel_rules(guild.id)
+    bot = request.app["bot"]
+    db = bot.db
+    if hasattr(db, "jar_bundle"):
+        bundle = await db.jar_bundle(guild.id, include_goal=True)
+        settings = bundle["settings"]
+        overrides = bundle["overrides"]
+        rules = bundle["rules"]
+        goal = bundle["goal"]
+    else:
+        settings = await db.jar_settings(guild.id)
+        overrides = await db.jar_word_overrides(guild.id)
+        rules = await db.jar_channel_rules(guild.id)
+        goal = await db.jar_goal(guild.id)
     words = word_lists(settings, overrides, word_tab(request.query.get("lang")))
+    running, _ = await analysis_state(bot, guild.id)
     me = guild.me
     return render(
         request,
@@ -143,10 +180,13 @@ async def swearjar(request: web.Request) -> web.Response:
         add_groups=channel_groups(guild, include_categories=True, exclude=tuple(rules)),
         potty_roles=role_options(guild, member, single_holder=True),
         clean_roles=role_options(guild, member),
-        goal=goal_view(settings, await db.jar_goal(guild.id)),
+        potty_current=current_role_info(guild, settings["potty_role_id"], member, single_holder=True),
+        clean_current=current_role_info(guild, settings["clean_role_id"], member),
+        goal=goal_view(settings, goal),
         goal_channels=goal_channels(guild),
         can_delete=bool(me and me.guild_permissions.manage_messages),
         can_manage_roles=bool(me and me.guild_permissions.manage_roles),
+        running=running,
         spam_note=SPAM_NOTE,
         **guild_context(guild, can_manage, "swearjar"),
     )
@@ -193,33 +233,62 @@ async def _words(db, guild: discord.Guild, action: str, form) -> str:
     return "words_skipped" if skipped else WORD_RESULTS[action]
 
 
-async def _roles(db, guild: discord.Guild, form, member: Optional[discord.Member] = None) -> str:
+async def _roles(db, guild: discord.Guild, settings: Dict[str, Any], form, member: Optional[discord.Member] = None) -> str:
     updates: Dict[str, Optional[int]] = {}
     for column in ROLE_COLUMNS:
-        role_id = whole_number(form.get(column))
-        if role_id:
-            if role_problem(guild, guild.get_role(role_id), member, single_holder=(column == "potty_role_id")):
-                return "role_problem"
-            updates[column] = role_id
-        else:
+        raw = form.get(column)
+        # Missing field or explicit "keep" preserves the currently saved role (prevents saving one role from silently wiping an unassignable other role).
+        if raw is None or raw == "keep":
+            continue
+        if raw == "":
             updates[column] = None
-    await db.jar_update(guild.id, **updates)
+            continue
+        role_id = whole_number(raw)
+        if not role_id or role_problem(guild, guild.get_role(role_id), member, single_holder=(column == "potty_role_id")):
+            return "role_problem"
+        updates[column] = role_id
+    if updates:
+        await db.jar_update(guild.id, **updates)
     return "roles_saved"
 
 
-async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str:
+async def _goal_update(db, guild: discord.Guild, goal: Optional[Dict[str, Any]], form) -> str:
+    """Updates an active goal's announcement channel and @everyone ping without resetting progress."""
+    if not goal or goal.get("completed_at"):
+        return "bad_goal"
+    raw_channel = form.get("channel")
+    if raw_channel not in (None, ""):
+        channel = guild.get_channel(whole_number(raw_channel) or 0)
+        if not _can_post(guild, channel):
+            return "bad_goal_channel"
+        channel_id = channel.id
+    else:
+        channel_id = goal.get("channel_id")
+        channel = guild.get_channel(channel_id) if channel_id else None
+    ping = form.get("ping") == "yes"
+    if ping and not _can_mention(guild, channel):
+        return "need_mention_everyone"
+    await db.jar_update_goal(guild.id, channel_id=channel_id, ping=ping)
+    return "goal_updated"
+
+
+async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], goal: Optional[Dict[str, Any]], form) -> str:
     label = str(form.get("label", "")).strip()[:100]
     target = parse_amount(settings, str(form.get("amount", "")))
     if not label or target is None:
         return "bad_goal"
+    if goal and not goal.get("completed_at") and goal.get("progress", 0) > 0 and form.get("confirm") != "yes":
+        return "confirm_needed"
+    raw_channel = form.get("channel")
+    channel = None
+    if raw_channel not in (None, ""):
+        channel = guild.get_channel(whole_number(raw_channel) or 0)
+        if not _can_post(guild, channel):
+            return "bad_goal_channel"
     ping = form.get("ping") == "yes"
-    if ping and not (guild.me and guild.me.guild_permissions.mention_everyone):
+    if ping and not _can_mention(guild, channel):
         return "need_mention_everyone"
-    # A channel that is missing, isn't a text channel, or that the bot can't view or send in, is dropped and the goal is saved without one.
-    channel = guild.get_channel(whole_number(form.get("channel")) or 0)
-    if not _can_post(guild, channel):
-        channel = None
-    # Saving starts the goal again from zero progress, even when one is already running.
+    # Saving a new goal starts from zero progress (explicitly confirmed above when replacing an active goal with progress).
     await db.jar_set_goal(guild.id, label, target, channel.id if channel else None, ping)
     return "goal_saved"
 
@@ -228,7 +297,7 @@ async def _goal(db, guild: discord.Guild, settings: Dict[str, Any], form) -> str
 async def swearjar_action(request: web.Request) -> web.Response:
     """Handles every form on the page. The `action` field picks what to do, and the result code goes into the redirect as `msg`.
 
-    The _fines, _words, _roles and _goal helpers each return their code. A form with a bad CSRF token changes nothing and gets "expired_form".
+    The _fines, _words, _roles, _goal_update and _goal helpers each return their code. A form with a bad CSRF token changes nothing and gets "expired_form".
     """
     guild, member, can_manage = await member_access(request)
     if not can_manage:
@@ -239,6 +308,7 @@ async def swearjar_action(request: web.Request) -> web.Response:
     settings = await db.jar_settings(guild.id)
     result = "expired_form"
     if csrf_ok:
+        result = "bad_action"
         if action in ("jar_on", "jar_off"):
             today = utc_day()
             await db.jar_set_enabled(guild.id, action == "jar_on", today, week_index(today))
@@ -278,9 +348,11 @@ async def swearjar_action(request: web.Request) -> web.Response:
             await db.jar_update(guild.id, skip_age_restricted=int(not settings["skip_age_restricted"]))
             result = "rules_saved"
         elif action == "roles":
-            result = await _roles(db, guild, form, member)
+            result = await _roles(db, guild, settings, form, member)
+        elif action == "goal_update":
+            result = await _goal_update(db, guild, await db.jar_goal(guild.id), form)
         elif action == "goal_set":
-            result = await _goal(db, guild, settings, form)
+            result = await _goal(db, guild, settings, await db.jar_goal(guild.id), form)
         elif action == "goal_end":
             result = "goal_ended" if form.get("confirm") == "yes" else "confirm_needed"
             if result == "goal_ended":
@@ -289,11 +361,14 @@ async def swearjar_action(request: web.Request) -> web.Response:
             # Needs confirm=yes, and is refused while an analysis is running here.
             result = await confirmed_and_free(request, form, guild, running_only=True) or "jar_reset"
             if result == "jar_reset":
-                await db.jar_reset_members(guild.id)
-                # Drop unsaved day counts and spam tracking too, so upkeep can't flush wiped counts back.
+                # Drop unsaved day counts and spam tracking before the delete, so a flush that starts while it waits leaves them out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
                 cog = request.app["bot"].get_cog("SwearJar")
                 if cog is not None:
                     cog.forget(guild.id)
-        # Drops the bot's cached jar state so the listeners use the change straight away.
-        refresh_jar(request, guild.id)
+                await db.jar_reset_members(guild.id)
+                if cog is not None:
+                    cog.forget(guild.id)
+        # Drops the bot's cached jar state only when a recognized action ran.
+        if result != "bad_action":
+            refresh_jar(request, guild.id)
     return redirect(f"/dashboard/{guild.id}/swearjar?msg={result}&lang={word_tab(form.get('tab') if csrf_ok else None)}")

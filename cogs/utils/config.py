@@ -27,8 +27,9 @@ ALLOWED_GUILD_IDS: List[int] = [
 ]
 
 SITE_URL = _env("BASE_URL", "https://wordcounter.dev").rstrip("/")
-# Turns on limiting the website's requests by visitor address, and says where the address is: the name of the request header the website's proxy fills in with it, such as CF-Connecting-IP, or `peer` when nothing stands in front of the website. Unset, nothing is limited by address, because a proxy connects from a public address too and every visitor would count as one. With a header name, set it only if the website can't be reached except through that proxy, because anyone who can reach it directly can write any value in the header. The word `cloudflare` is for a website behind Cloudflare: it reads CF-Connecting-IP and only believes it on a connection from Cloudflare's own address ranges, so reaching the website directly gives no way to be counted as someone else.
+# Turns on limiting the website's requests by visitor address, and says where the address is: `cloudflare` reads CF-Connecting-IP on connections from Cloudflare's ranges or with a verified enforcing X-Origin-Secret (for NATted origins) and falls back to the public connecting address on direct-origin traffic; a custom header name trusts that header only from TRUSTED_PROXY_CIDRS; `peer` uses the public connecting address directly. Unset, nothing is limited by address.
 CLIENT_IP_HEADER = _env("CLIENT_IP_HEADER")
+TRUSTED_PROXY_CIDRS = _env("TRUSTED_PROXY_CIDRS")
 WEB_HOST = _env("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(next((raw for raw in (_env("WEB_PORT"), _env("SERVER_PORT")) if raw.isdigit()), "8080"))
 MYSQL_HOST = _env("MYSQL_HOST")
@@ -44,15 +45,17 @@ try:
     ACTIVITY_FLUSH_SECONDS = max(0.0, float(_env("ACTIVITY_FLUSH_SECONDS", "2")))
 except ValueError:
     ACTIVITY_FLUSH_SECONDS = 2.0
-# A secret that a Cloudflare request-header rule adds to every request as `X-Origin-Secret`, so the website can tell the requests that came through the owner's Cloudflare from anyone who reaches the server's address directly. Empty turns the check off. ORIGIN_SECRET_MODE is `log` (the default: the check only counts and logs the requests that lack the secret, so it can be tried without risk) or `enforce` (those requests are answered with a bare 403).
+# A secret that a Cloudflare request-header rule adds to every request as `X-Origin-Secret`, so the website can tell the requests that came through the owner's Cloudflare from anyone who reaches the server's address directly. Empty turns the check off. When ORIGIN_SECRET is set, ORIGIN_SECRET_MODE defaults to `enforce` (requests without the secret get a bare 403); set `ORIGIN_SECRET_MODE=log` explicitly while testing a new rule.
 ORIGIN_SECRET = _env("ORIGIN_SECRET")
-ORIGIN_SECRET_MODE = "enforce" if _env("ORIGIN_SECRET_MODE").lower() == "enforce" else "log"
+ORIGIN_SECRET_MODE = "log" if _env("ORIGIN_SECRET_MODE").lower() == "log" else "enforce"
 DISCORD_CLIENT_SECRET = _env("DISCORD_CLIENT_SECRET")
-# Signs the website's login cookies. Without SESSION_SECRET it is derived from the bot token, so it stays the same across restarts.
-SESSION_SECRET = _env("SESSION_SECRET") or hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest()
+# Signs login cookies, CSRF tokens and OAuth states via isolated HMAC subkeys (at least 32 random characters). SESSION_SECRET_PREVIOUS allows zero-downtime key rotation. Without SESSION_SECRET it falls back to a hash of API_TOKEN with a startup warning.
+SESSION_SECRET_RAW = _env("SESSION_SECRET")
+SESSION_SECRET_PREVIOUS = _env("SESSION_SECRET_PREVIOUS")
+SESSION_SECRET = SESSION_SECRET_RAW or (hashlib.sha256(f"wordcounter-session:{API_TOKEN}".encode()).hexdigest() if API_TOKEN else "")
 
 DEFAULT_CLIENT_ID = 1551875701748277299
-INVITE_PERMISSIONS = 1126177200925776
+INVITE_PERMISSIONS = 277295131712
 PRIVACY_URL = f"{SITE_URL}/privacy"
 TERMS_URL = f"{SITE_URL}/terms"
 SOURCE_URL = "https://github.com/Megildur/WordCounter"

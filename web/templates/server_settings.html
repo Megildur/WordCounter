@@ -84,7 +84,7 @@
     <input type="hidden" name="action" value="keywords">
     <div class="form-row">
       <label for="keywords">Tracked keywords</label>
-      <textarea class="input" id="keywords" name="keywords" maxlength="2000" spellcheck="false">{{ keywords|join(", ") }}</textarea>
+      <textarea class="input" id="keywords" name="keywords" maxlength="16000" spellcheck="false">{{ keywords|join(", ") }}</textarea>
       <p class="form-hint">Separate them with commas or new lines. Leave it empty to remove every keyword.</p>
     </div>
     <div class="form-actions"><button type="submit" class="btn btn--primary">Save keywords</button></div>

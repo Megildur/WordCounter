@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncio
 import calendar
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -17,6 +17,7 @@ from cogs.utils.components import (
     TRACKING_OFF_MESSAGE,
     WARNING_COLOR,
     Callback,
+    acknowledge,
     activity_line,
     create_v2_container,
     error_view,
@@ -30,6 +31,7 @@ from cogs.utils.components import (
     member_names,
     safe_name,
     rank_prefix,
+    summarize_channels,
     tab_rows,
 )
 from cogs.utils import cards
@@ -39,19 +41,7 @@ from paginator import ButtonPaginator
 
 OVERVIEW_CHANNEL_LIMIT = 25
 CHANNELS_TAB_LIMIT = 40
-
-
-def _summarize_channels(
-    guild: discord.Guild, channel_ids: Iterable[int], *, limit: int, sep: str, empty: str, prefix: str = ""
-) -> str:
-    sorted_ids = sorted(channel_ids)
-    if not sorted_ids:
-        return empty
-    shown = [f"{prefix}{format_channel_or_category(guild, cid)}" for cid in sorted_ids[:limit]]
-    remaining = len(sorted_ids) - limit
-    if remaining > 0:
-        shown.append(f"{prefix}and {remaining} more")
-    return sep.join(shown)
+_summarize_channels = summarize_channels
 
 # (key, label, description) per section. Each key has a _populate_<key>_tab method on SettingsMenuView.
 SECTIONS = (
@@ -305,10 +295,14 @@ class SettingsMenuView(SectionMenu):
         listed = "\n".join(f"- {code_span(kw)}" for kw in self.keywords[:30]) or "None yet."
         if len(self.keywords) > 30:
             listed += f"\n…and {len(self.keywords) - 30} more"
+        too_long_for_modal = len(", ".join(self.keywords)) > 2000
+        note = ""
+        if too_long_for_modal:
+            note = "\n-# Your keyword list is over 2,000 characters, so **Edit list** is disabled here to avoid cutting it short. Use Add, Remove, or the web dashboard."
         container.add_item(
             discord.ui.TextDisplay(
                 "### Keywords\nA keyword is counted every time someone says it in a tracked channel.\n\n"
-                f"**Tracked ({len(self.keywords)}):**\n{listed}"
+                f"**Tracked ({len(self.keywords)}):**\n{listed}{note}"
             )
         )
 
@@ -325,7 +319,7 @@ class SettingsMenuView(SectionMenu):
         container.add_item(
             discord.ui.ActionRow(
                 make_button("Add", discord.ButtonStyle.success, self._open_add_keyword_modal),
-                make_button("Edit list", discord.ButtonStyle.primary, self._open_bulk_keyword_modal),
+                make_button("Edit list", discord.ButtonStyle.primary, self._open_bulk_keyword_modal, disabled=too_long_for_modal),
                 make_button("Remove all", discord.ButtonStyle.danger, self._clear_all_keywords, disabled=not self.keywords),
             )
         )
@@ -485,6 +479,14 @@ class SettingsMenuView(SectionMenu):
         await interaction.response.send_modal(AddKeywordModal(self))
 
     async def _open_bulk_keyword_modal(self, interaction: discord.Interaction) -> None:
+        if len(", ".join(self.keywords)) > 2000:
+            await interaction.response.defer()
+            self.status_banner = (
+                "Your keyword list is over 2,000 characters, so it can't be edited in a Discord modal. Use Add, Remove, or the web dashboard.",
+                WARNING_COLOR,
+            )
+            await self.refresh_and_edit(interaction)
+            return
         await interaction.response.send_modal(BulkEditKeywordsModal(self, self.keywords))
 
     async def _on_keywords_removed(self, interaction: discord.Interaction) -> None:
@@ -566,12 +568,13 @@ class SettingsMenuView(SectionMenu):
                 self.status_banner = (ANALYSIS_BUSY_MESSAGE, WARNING_COLOR)
                 await self.refresh_and_edit(interaction)
                 return
+            swear_jar = self.bot.get_cog("SwearJar") if jar else None
+            if swear_jar is not None:
+                # Forgotten before the delete, so a flush that starts while it waits leaves these counts out (one already waiting for db_lock is ahead of the delete, which removes what it wrote), and again after it for counts that came in meanwhile.
+                swear_jar.forget(self.guild.id)
             await self.bot.db.reset_entire_server(self.guild.id, counts=counts, jar=jar)
-            if jar:
-                # The jar cog keeps this server's settings and unsaved day counts in memory, which would otherwise outlive the rows just deleted.
-                swear_jar = self.bot.get_cog("SwearJar")
-                if swear_jar is not None:
-                    swear_jar.forget(self.guild.id)
+            if swear_jar is not None:
+                swear_jar.forget(self.guild.id)
             elif counts:
                 self._invalidate_jar()
             if counts:
@@ -594,7 +597,7 @@ class LeaderboardPaginator(ButtonPaginator):
         bot: commands.Bot,
         guild: discord.Guild,
         author_id: int,
-        channel: Optional[discord.TextChannel] = None,
+        channel: Optional[Union[discord.TextChannel, discord.ForumChannel, discord.VoiceChannel]] = None,
     ) -> None:
         super().__init__([], author_id=author_id)
         self.denied_message = "Only the person who ran /leaderboard can use these buttons."
@@ -618,10 +621,13 @@ class LeaderboardPaginator(ButtonPaginator):
             if self.channel is not None:
                 rows = await self.bot.db.get_channel_monthly_breakdown(self.guild.id, self.channel.id)
                 if rows:
+                    shown_rows = rows[:24]
                     lines = [
                         f"**{calendar.month_name[month]} {year}**: {activity_line(words, messages, attachments, emojis, bold=False)}"
-                        for year, month, words, messages, attachments, emojis in rows
+                        for year, month, words, messages, attachments, emojis in shown_rows
                     ]
+                    if len(rows) > 24:
+                        lines.append(f"…and {len(rows) - 24} more month(s)")
                     self.history = [("Monthly history, newest first", "\n".join(lines))]
             self._history_loaded = True
             self._history_channel_id = channel_id
@@ -652,15 +658,11 @@ class LeaderboardPaginator(ButtonPaginator):
         return kwargs
 
     async def update_page(self, interaction: discord.Interaction) -> None:
-        if self.message is None:
-            self.message = interaction.message
         # Name lookups and the podium can run past 3 seconds, so answer the click first and edit the message afterwards.
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        kwargs = await self.get_page_kwargs(self.get_page(self.current_page))
-        if "files" in kwargs:
-            kwargs["attachments"] = kwargs.pop("files")
-        await interaction.edit_original_response(**kwargs)
+            await acknowledge(interaction, "a leaderboard button press")
+        async with self._update_lock:
+            await self._apply_page(interaction)
 
     async def format_page(self, chunk: List) -> discord.ui.Container:
         where = self.channel.mention if self.channel else "this server"
@@ -704,9 +706,10 @@ class LeaderboardPaginator(ButtonPaginator):
 
     def _switch_to(self, category: str) -> Callback:
         async def callback(interaction: discord.Interaction) -> None:
-            await interaction.response.defer()
-            await self.load(category)
-            await self.update_page(interaction)
+            await acknowledge(interaction, "a leaderboard tab press")
+            async with self._update_lock:
+                await self.load(category)
+                await self._apply_page(interaction)
 
         return callback
 
@@ -737,11 +740,11 @@ class Counter_Cmds(commands.Cog):
         menu = SettingsMenuView(self.bot, interaction.guild, interaction.user.id)
         await menu.load_state()
         menu.build_ui()
-        await interaction.followup.send(view=menu, ephemeral=True, wait=True)
+        menu.message = await interaction.followup.send(view=menu, ephemeral=True, wait=True)
 
     @app_commands.command(
         name="leaderboard",
-        description="Leaderboards for words, messages, attachments, emojis and keywords",
+        description="Leaderboards for words, messages, attachments, emojis, keywords and swears",
         extras={
             "details": "Shows who leads the server: the top three on a pixel-art podium on Cradle Station's observation deck, with their pictures, then ten members a page. Buttons switch between words, messages, attachments (files, stickers and links), emojis, keywords and swears, and Previous and Next page through. The keywords tab shows who says each tracked keyword most. Pick a channel to rank only what was said there, with that channel's month-by-month history under the list. Members who left show by name. Only the person who ran it can press its buttons, and nobody is pinged. It works once tracking is on in /settings.",
             "bot_perms": (
@@ -750,7 +753,11 @@ class Counter_Cmds(commands.Cog):
         },
     )
     @app_commands.describe(channel="Only count activity in this channel")
-    async def leaderboard(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[Union[discord.TextChannel, discord.ForumChannel, discord.VoiceChannel]] = None,
+    ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(view=error_view(SERVER_ONLY_MESSAGE), ephemeral=True)
             return

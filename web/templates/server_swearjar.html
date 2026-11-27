@@ -2,6 +2,12 @@
 {% import "_macros.html" as ui with context %}
 
 {% block server_content %}
+{% if running %}
+  <div class="alert alert--error" role="status">
+    <span class="alert__label">Busy</span>
+    <p>An analysis is running in this server. Swear jar resets come back once it finishes.</p>
+  </div>
+{% endif %}
 <section class="panel" aria-labelledby="jar-status-title">
   <h2 id="jar-status-title">Swear jar</h2>
   {% if jar.enabled %}
@@ -13,6 +19,7 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="{{ 'jar_off' if jar.enabled else 'jar_on' }}">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <div class="form-actions">
       {% if jar.enabled %}
         <button type="submit" class="btn btn--ghost">Turn off the swear jar</button>
@@ -28,6 +35,7 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="mode">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <fieldset class="choices">
       <legend class="sr-only">When someone swears</legend>
       <label class="choice">
@@ -49,6 +57,7 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="fines">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <fieldset class="choices">
       <legend class="form-label">Show fines as</legend>
       <label class="choice">
@@ -208,6 +217,7 @@
           <form method="post" class="inline-form">
             {{ ui.csrf_field() }}
             <input type="hidden" name="action" value="rule_remove">
+            <input type="hidden" name="tab" value="{{ words.tab }}">
             <input type="hidden" name="channel" value="{{ item.id }}">
             <button type="submit" class="btn btn--sm btn--quiet">Remove<span class="sr-only"> {{ item.label }}</span></button>
           </form>
@@ -220,6 +230,7 @@
   {% if add_groups %}
     <form method="post" class="form">
       {{ ui.csrf_field() }}
+      <input type="hidden" name="tab" value="{{ words.tab }}">
       {{ ui.checklist("channel", add_groups, "Channels or categories", hint="Tick as many as you like.") }}
       <div class="form-actions">
         <button type="submit" name="action" value="rule_include" class="btn btn--primary">Also listen here</button>
@@ -230,6 +241,7 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="age_toggle">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <p>Age-restricted channels are <strong>{{ "skipped" if jar.skip_age_restricted else "checked" }}</strong>.</p>
     <div class="form-actions">
       <button type="submit" class="btn btn--ghost">{{ "Check age-restricted channels" if jar.skip_age_restricted else "Skip age-restricted channels" }}</button>
@@ -241,13 +253,24 @@
   <h2 id="jar-roles-title">Roles</h2>
   <p>Potty Mouth goes to the member fined the most each week and moves every Monday (UTC). The clean streak role is given at a 14-day clean streak and taken away when they swear.</p>
   {% if not can_manage_roles %}<p class="form-hint">WordCounter needs the Manage Roles permission to hand these out.</p>{% endif %}
+  {% if potty_current %}
+    <p class="form-hint">Current Potty Mouth role: <strong>{{ potty_current.label }}</strong>{% if potty_current.problem %} &mdash; {{ potty_current.problem }}{% endif %}</p>
+  {% endif %}
+  {% if clean_current %}
+    <p class="form-hint">Current clean streak role: <strong>{{ clean_current.label }}</strong>{% if clean_current.problem %} &mdash; {{ clean_current.problem }}{% endif %}</p>
+  {% endif %}
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="roles">
-    {% set potty_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + potty_roles}] %}
-    {% set clean_groups = [{"label": None, "options": [{"id": "", "label": "No role"}] + clean_roles}] %}
-    {{ ui.checklist("potty_role_id", potty_groups, "Potty Mouth role", kind="radio", selected=jar.potty_role_id or "", hint="Only dedicated roles (up to 10 holders) without moderator permissions that both WordCounter and you can assign are listed.") }}
-    {{ ui.checklist("clean_role_id", clean_groups, "Clean streak role", kind="radio", selected=jar.clean_role_id or "", hint="Only roles without moderator permissions that both WordCounter and you can assign are listed.") }}
+    <input type="hidden" name="tab" value="{{ words.tab }}">
+    {% set potty_keep = [{"id": "keep", "label": "Keep current (" ~ potty_current.label ~ ")"}] if potty_current and not potty_current.assignable else [] %}
+    {% set clean_keep = [{"id": "keep", "label": "Keep current (" ~ clean_current.label ~ ")"}] if clean_current and not clean_current.assignable else [] %}
+    {% set potty_groups = [{"label": None, "options": potty_keep + [{"id": "", "label": "No role"}] + potty_roles}] %}
+    {% set clean_groups = [{"label": None, "options": clean_keep + [{"id": "", "label": "No role"}] + clean_roles}] %}
+    {% set potty_selected = "keep" if potty_current and not potty_current.assignable else (jar.potty_role_id or "") %}
+    {% set clean_selected = "keep" if clean_current and not clean_current.assignable else (jar.clean_role_id or "") %}
+    {{ ui.checklist("potty_role_id", potty_groups, "Potty Mouth role", kind="radio", selected=potty_selected, hint="Only dedicated roles (up to 10 holders) without moderator permissions that both WordCounter and you can assign are listed.") }}
+    {{ ui.checklist("clean_role_id", clean_groups, "Clean streak role", kind="radio", selected=clean_selected, hint="Only roles without moderator permissions that both WordCounter and you can assign are listed.") }}
     <div class="form-actions"><button type="submit" class="btn btn--primary">Save roles</button></div>
   </form>
 </section>
@@ -263,9 +286,31 @@
     <p>No goal right now. Set one, like $50 for a movie night, and the jar posts once when it's reached.</p>
   {% endif %}
   {% set active = goal and not goal.completed_at %}
+  {% if active %}
+    <h3 class="panel__sub">Announcement settings</h3>
+    <p class="form-hint">Change where the goal is announced or whether it pings @everyone without resetting progress.</p>
+    <form method="post" class="form">
+      {{ ui.csrf_field() }}
+      <input type="hidden" name="action" value="goal_update">
+      <input type="hidden" name="tab" value="{{ words.tab }}">
+      {% if goal_channels %}
+        {{ ui.checklist("channel", [{"label": None, "options": goal_channels}], "Announce it in", kind="radio", selected=goal.channel_id) }}
+      {% endif %}
+      <label class="check" for="jar-goal-update-ping">
+        <input type="checkbox" id="jar-goal-update-ping" name="ping" value="yes" {% if goal.ping %}checked{% endif %}>
+        <span>Ping @everyone when it's reached</span>
+      </label>
+      <div class="form-actions"><button type="submit" class="btn btn--primary">Save announcement settings</button></div>
+    </form>
+    <h3 class="panel__sub">Start a new goal</h3>
+    {% if goal.progress > 0 %}
+      <p class="form-hint">Saving a new goal replaces <strong>{{ goal.label }}</strong> and resets collected progress back to zero.</p>
+    {% endif %}
+  {% endif %}
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="goal_set">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     <div class="form-grid">
       <div class="form-row">
         <label for="jar-goal-label">What the jar is saving up for</label>
@@ -283,12 +328,16 @@
       <input type="checkbox" id="jar-goal-ping" name="ping" value="yes" {% if active and goal.ping %}checked{% endif %}>
       <span>Ping @everyone when it's reached</span>
     </label>
-    <div class="form-actions"><button type="submit" class="btn btn--primary">{{ "Save goal" if active else "Set goal" }}</button></div>
+    {% if active and goal.progress > 0 %}
+      {{ ui.confirm("jar-goal-replace-confirm", "Replace the active goal and reset its progress to zero.") }}
+    {% endif %}
+    <div class="form-actions"><button type="submit" class="btn {{ 'btn--ghost' if active else 'btn--primary' }}">{{ "Replace goal" if active else "Set goal" }}</button></div>
   </form>
   {% if active %}
     <form method="post" class="form">
       {{ ui.csrf_field() }}
       <input type="hidden" name="action" value="goal_end">
+      <input type="hidden" name="tab" value="{{ words.tab }}">
       {{ ui.confirm("jar-goal-end-confirm", "End this goal and delete its progress.") }}
       <div class="form-actions"><button type="submit" class="btn btn--danger-solid">End goal</button></div>
     </form>
@@ -301,8 +350,9 @@
   <form method="post" class="form">
     {{ ui.csrf_field() }}
     <input type="hidden" name="action" value="jar_reset">
+    <input type="hidden" name="tab" value="{{ words.tab }}">
     {{ ui.confirm("jar-reset-confirm", "I understand this resets the swear jar for everyone.") }}
-    <div class="form-actions"><button type="submit" class="btn btn--danger-solid">Reset the whole jar</button></div>
+    <div class="form-actions"><button type="submit" class="btn btn--danger-solid" {% if running %}disabled{% endif %}>Reset the whole jar</button></div>
   </form>
 </section>
 {% endblock %}

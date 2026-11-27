@@ -4,9 +4,11 @@ All three are Components v2 with a pixel-art banner from `assets/` attached as a
 """
 
 from __future__ import annotations
+import asyncio
+import io
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -159,10 +161,28 @@ HELP_PAGES: List[Tuple[str, str, List[Tuple[str, str]]]] = [
 ]
 
 
+_BANNER_BYTES: Dict[str, bytes] = {}
+
+
+def _load_banner_bytes(name: str) -> bytes:
+    cached = _BANNER_BYTES.get(name)
+    if cached is not None:
+        return cached
+    data = (ASSETS / name).read_bytes()
+    _BANNER_BYTES[name] = data
+    return data
+
+
+def preload_banners() -> None:
+    """Loads help, welcome and advertisement banner bytes into memory at startup."""
+    for name, _, _ in (HELP_BANNER, WELCOME_BANNER, AD_POSTER):
+        _load_banner_bytes(name)
+
+
 def picture_file(picture: Picture) -> discord.File:
-    """Opens the banner as a new discord.File. Make one for each message, because a File is used up once it has been sent."""
+    """Builds a new discord.File from cached banner bytes. Make one for each message, because a File is used up once it has been sent."""
     name, filename, _ = picture
-    return discord.File(ASSETS / name, filename=filename)
+    return discord.File(io.BytesIO(_load_banner_bytes(name)), filename=filename)
 
 
 def gallery(picture: Picture) -> discord.ui.MediaGallery:
@@ -324,4 +344,5 @@ class HelpCog(commands.Cog, name="Help"):
 
 
 async def setup(bot: commands.Bot) -> None:
+    await asyncio.to_thread(preload_banners)
     await bot.add_cog(HelpCog(bot))

@@ -139,9 +139,9 @@
 
 {% macro jar_panel(jar, who) %}
 <h2 class="subhead display section-gap">Swear jar</h2>
-{{ stat_strip([(jar.label, jar.balance), ("Clean streak", jar.streak|num ~ " days"), ("Best streak", jar.best|num ~ " days"), ("Swears", jar.swears|num)], who ~ " swear jar", "stats--tight") }}
+{{ stat_strip([(jar.label, jar.balance), ("Clean streak", counted(jar.streak, "day")), ("Best streak", counted(jar.best, "day")), ("Swears", jar.swears|num)], who ~ " swear jar", "stats--tight") }}
 <div class="jar-notes">
-  {% if jar.in_debt %}<p>About <strong>{{ jar.days_to_clear|num }}</strong> more clean active days pay this off.</p>{% endif %}
+  {% if jar.in_debt %}<p>About <strong>{{ jar.days_to_clear|num }}</strong> more clean active {{ "day pays" if jar.days_to_clear == 1 else "days pay" }} this off.</p>{% endif %}
   {% if jar.spam_until %}<p class="jar-notes__warn">Fines are doubled until {{ jar.spam_until }}. {{ jar.spam_note }}</p>{% endif %}
   <p class="form-hint">{{ jar.week }} fined this week. A clean active day (5 or more messages, no swears) pays back {{ jar.unit }}, with bonuses at 7 and 30 days.</p>
 </div>
@@ -153,7 +153,7 @@
 
 {% macro member_cell(guild_id, row) %}
 <span class="who">
-  {% if row.avatar_url %}<img src="{{ row.avatar_url }}" alt="" width="32" height="32" loading="lazy">{% else %}<span class="server__initial" aria-hidden="true"></span>{% endif %}
+  {% if row.avatar_url %}<img src="{{ row.avatar_url }}" alt="" width="32" height="32" loading="lazy">{% else %}<span class="server__initial" aria-hidden="true">{{ row.name[:1] or "?" }}</span>{% endif %}
   <a href="/dashboard/{{ guild_id }}/members/{{ row.id }}">{{ row.name }}</a>
 </span>
 {% endmacro %}

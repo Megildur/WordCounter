@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import discord
+from cogs.utils import sql_batch
 from cogs.utils.mysql import TABLE_OPTIONS
 
 # jar_prune_fines deletes a message's fine record after this many days. After that the message menu says the message wasn't fined.
@@ -62,11 +63,14 @@ JAR_SCHEMA = tuple(statement + TABLE_OPTIONS for statement in (
     """CREATE TABLE IF NOT EXISTS jar_days (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, day BIGINT NOT NULL,
         messages BIGINT NOT NULL DEFAULT 0, fined INT NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id, day))""",
+        PRIMARY KEY (guild_id, user_id, day),
+        INDEX idx_jar_days_day (guild_id, day))""",
     """CREATE TABLE IF NOT EXISTS jar_fines (
         message_id BIGINT PRIMARY KEY, guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         channel_id BIGINT NOT NULL, swears BIGINT NOT NULL, amount BIGINT NOT NULL, fined_at DOUBLE NOT NULL, units BIGINT NULL,
-        INDEX idx_jar_fines_guild (guild_id, fined_at))""",
+        INDEX idx_jar_fines_guild (guild_id, fined_at),
+        INDEX idx_jar_fines_at (fined_at),
+        INDEX idx_jar_fines_member (guild_id, user_id, fined_at))""",
     """CREATE TABLE IF NOT EXISTS jar_goals (
         guild_id BIGINT PRIMARY KEY, label VARCHAR(255) NOT NULL, target BIGINT NOT NULL, channel_id BIGINT,
         ping INT NOT NULL DEFAULT 0, progress BIGINT NOT NULL DEFAULT 0, started_at DOUBLE NOT NULL,
@@ -116,6 +120,17 @@ def now_snowflake() -> int:
 
 class SwearJarQueries:
     """The jar's queries, as a mixin for WordCounterDatabase, which supplies the connection, db_lock, _write and _fetch_value."""
+    async def _run_batch(self, statements: Sequence[Tuple[str, Sequence[Any]]]) -> List[sql_batch.Outcome]:
+        """Runs `statements` in 1 round trip via `run_many`, or sequentially for lightweight test doubles without `run_many`."""
+        if hasattr(self.db, "run_many"):
+            return await self.db.run_many(statements)
+        outcomes: List[sql_batch.Outcome] = []
+        for sql, params in statements:
+            cursor = await self.db.execute(sql, tuple(params))
+            rows = list(await cursor.fetchall()) if getattr(cursor, "description", None) or sql.lstrip().upper().startswith("SELECT") else []
+            outcomes.append(sql_batch.Outcome(int(getattr(cursor, "rowcount", 0) or 0), rows, int(getattr(cursor, "lastrowid", 0) or 0)))
+        return outcomes
+
     async def jar_settings(self, guild_id: int) -> Dict[str, Any]:
         await self.ensure_connected()
         async with self.db_lock:
@@ -247,16 +262,14 @@ class SwearJarQueries:
         await self.ensure_connected()
         params = (guild_id, user_id)
         async with self.db_lock:
-            cursor = await self.db.execute(
-                "SELECT balance, streak, best_streak, fines, spam_until FROM jar_members WHERE guild_id = ? AND user_id = ?",
-                params,
-            )
-            row = await cursor.fetchone() or (0, 0, 0, 0, 0.0)
-            swears = await self._fetch_value("SELECT count FROM swears_users WHERE guild_id = ? AND user_id = ?", params)
-            week = await self._fetch_value(
-                "SELECT SUM(amount) FROM jar_fines WHERE guild_id = ? AND user_id = ? AND fined_at >= ?",
-                (*params, week_start),
-            )
+            member_out, swears_out, week_out = await self._run_batch([
+                ("SELECT balance, streak, best_streak, fines, spam_until FROM jar_members WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT count FROM swears_users WHERE guild_id = ? AND user_id = ?", params),
+                ("SELECT SUM(amount) FROM jar_fines WHERE guild_id = ? AND user_id = ? AND fined_at >= ?", (*params, week_start)),
+            ])
+        row = member_out.rows[0] if member_out.rows else (0, 0, 0, 0, 0.0)
+        swears = swears_out.rows[0][0] if swears_out.rows and swears_out.rows[0][0] is not None else 0
+        week = week_out.rows[0][0] if week_out.rows and week_out.rows[0][0] is not None else 0
         balance, streak, best_streak, fines, spam_until = row
         return {
             "balance": balance,
@@ -267,6 +280,51 @@ class SwearJarQueries:
             "swears": swears,
             "week_fines": week,
         }
+
+    async def jar_bundle(
+        self,
+        guild_id: int,
+        *,
+        include_goal: bool = False,
+        include_tracking: bool = False,
+        include_coverage: bool = False,
+    ) -> Dict[str, Any]:
+        """Reads a server's swear jar configuration (and optional goal, tracking config, and coverage) in one round trip."""
+        await self.ensure_connected()
+        statements: List[Tuple[str, Sequence[Any]]] = [
+            (f"SELECT {', '.join(JAR_DEFAULTS)} FROM jar_settings WHERE guild_id = ?", (guild_id,)),
+            ("SELECT word, tier, removed FROM jar_words WHERE guild_id = ? ORDER BY word", (guild_id,)),
+            ("SELECT channel_id, rule FROM jar_channels WHERE guild_id = ?", (guild_id,)),
+        ]
+        if include_goal:
+            statements.append(("SELECT label, target, channel_id, ping, progress, started_at, completed_at FROM jar_goals WHERE guild_id = ?", (guild_id,)))
+        if include_tracking:
+            statements.append(("SELECT channel_id FROM channels WHERE guild_id = ?", (guild_id,)))
+            statements.append(("SELECT channel_id FROM `ignore` WHERE guild_id = ?", (guild_id,)))
+        if include_coverage:
+            statements.append(("SELECT started, ended FROM jar_coverage WHERE guild_id = ?", (guild_id,)))
+
+        async with self.db_lock:
+            outcomes = await self._run_batch(statements)
+        idx = 0
+        settings_rows = outcomes[idx].rows; idx += 1
+        settings = dict(zip(JAR_DEFAULTS, settings_rows[0])) if settings_rows else dict(JAR_DEFAULTS)
+        overrides = [(word, tier, bool(removed)) for word, tier, removed in outcomes[idx].rows]; idx += 1
+        rules = {channel_id: rule for channel_id, rule in outcomes[idx].rows}; idx += 1
+        bundle: Dict[str, Any] = {"settings": settings, "overrides": overrides, "rules": rules}
+        if include_goal:
+            goal_rows = outcomes[idx].rows; idx += 1
+            keys = ("label", "target", "channel_id", "ping", "progress", "started_at", "completed_at")
+            bundle["goal"] = dict(zip(keys, goal_rows[0])) if goal_rows else None
+        if include_tracking:
+            watched_rows = outcomes[idx].rows; idx += 1
+            ignored_rows = outcomes[idx].rows; idx += 1
+            bundle["watched"] = {row[0] for row in watched_rows}
+            bundle["ignored"] = {row[0] for row in ignored_rows}
+        if include_coverage:
+            cov_rows = outcomes[idx].rows; idx += 1
+            bundle["coverage"] = [(row[0], row[1]) for row in cov_rows]
+        return bundle
 
     async def jar_message_fine(self, message_id: int) -> Optional[Dict[str, Any]]:
         """Returns what a message was fined as a dict (swears, amount in units, who and when), or None if it wasn't fined or its record has been pruned."""
@@ -318,55 +376,66 @@ class SwearJarQueries:
             delta_amount = raw_delta * (spam_multiplier if spam else 1)
             total_swears = prev_swears + delta_swears
             total_amount = prev_amount + delta_amount
-            # On an edit only swears, amount and units change. fined_at keeps the time of the first fine, which the weekly totals use.
-            await self.db.execute(
-                """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, units, fined_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE swears = VALUES(swears), amount = VALUES(amount), units = VALUES(units)""",
-                (message_id, guild_id, user_id, channel_id, total_swears, total_amount, amount, now),
-            )
-            # A new member starts at minus the fine and an existing one loses it. Either way the streak goes to zero (best_streak stays) and spam_until only moves forward.
-            await self.db.execute(
-                """INSERT INTO jar_members (guild_id, user_id, balance, streak, best_streak, fines, spam_until)
-                VALUES (?, ?, ?, 0, 0, ?, ?)
-                ON DUPLICATE KEY UPDATE balance = balance - ?, streak = 0,
-                fines = fines + ?, spam_until = GREATEST(spam_until, VALUES(spam_until))""",
-                (*member, -delta_amount, delta_amount, spam_until, delta_amount, delta_amount),
-            )
-            # Marks the day as fined so it isn't paid back, and leaves its message count alone.
-            await self.db.execute(
-                """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, 0, 1)
-                ON DUPLICATE KEY UPDATE fined = 1""",
-                (*member, day),
-            )
+            statements: List[Tuple[str, Sequence[Any]]] = [
+                # On an edit only swears, amount and units change. fined_at keeps the time of the first fine, which the weekly totals use.
+                (
+                    """INSERT INTO jar_fines (message_id, guild_id, user_id, channel_id, swears, amount, units, fined_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE swears = VALUES(swears), amount = VALUES(amount), units = VALUES(units)""",
+                    (message_id, guild_id, user_id, channel_id, total_swears, total_amount, amount, now),
+                ),
+                # A new member starts at minus the fine and an existing one loses it. Either way the streak goes to zero (best_streak stays) and spam_until only moves forward.
+                (
+                    """INSERT INTO jar_members (guild_id, user_id, balance, streak, best_streak, fines, spam_until)
+                    VALUES (?, ?, ?, 0, 0, ?, ?)
+                    ON DUPLICATE KEY UPDATE balance = balance - ?, streak = 0,
+                    fines = fines + ?, spam_until = GREATEST(spam_until, VALUES(spam_until))""",
+                    (*member, -delta_amount, delta_amount, spam_until, delta_amount, delta_amount),
+                ),
+                # Marks the day as fined so it isn't paid back, and leaves its message count alone.
+                (
+                    """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, 0, 1)
+                    ON DUPLICATE KEY UPDATE fined = 1""",
+                    (*member, day),
+                ),
+            ]
             # delta_swears is 0 when an edit only raised the price, for example by swapping a mild word for a pricier one.
             if delta_swears:
-                await self.db.execute(SWEAR_CHANNEL_UPSERT, (guild_id, channel_id, user_id, delta_swears))
-                await self.db.execute(SWEAR_USER_UPSERT, (*member, delta_swears))
-            await self.db.execute(
+                statements.append((SWEAR_CHANNEL_UPSERT, (guild_id, channel_id, user_id, delta_swears)))
+                statements.append((SWEAR_USER_UPSERT, (*member, delta_swears)))
+            statements.append((
                 """INSERT INTO jar_settings (guild_id, lifetime_fines) VALUES (?, ?)
                 ON DUPLICATE KEY UPDATE lifetime_fines = lifetime_fines + VALUES(lifetime_fines)""",
                 (guild_id, delta_amount),
-            )
+            ))
+            goal_update_index = len(statements)
             # MySQL applies SET assignments from left to right, so completed_at has to come before progress to be compared with the old progress. Only an open goal is touched.
-            cursor = await self.db.execute(
+            statements.append((
                 """UPDATE jar_goals SET completed_at = CASE WHEN progress + ? >= target THEN ? ELSE NULL END,
                 progress = progress + ?
                 WHERE guild_id = ? AND completed_at IS NULL""",
                 (delta_amount, now, delta_amount, guild_id),
-            )
-            reached = None
-            # The connection uses the FOUND_ROWS flag, so rowcount counts matched rows and is non-zero whenever a goal was open.
-            if cursor.rowcount:
-                reached = await self._goal_row(guild_id)
-                # `completed_at` is non-None iff this very update reached `target` (checking `is None` avoids float/DOUBLE rounding mismatches).
-                if reached is None or reached["completed_at"] is None:
-                    reached = None
-            cursor = await self.db.execute(
+            ))
+            goal_select_index = len(statements)
+            statements.append((
+                "SELECT label, target, channel_id, ping, progress, started_at, completed_at FROM jar_goals WHERE guild_id = ?",
+                (guild_id,),
+            ))
+            member_select_index = len(statements)
+            statements.append((
                 "SELECT balance, streak, best_streak, fines, spam_until FROM jar_members WHERE guild_id = ? AND user_id = ?",
                 member,
-            )
-            row = await cursor.fetchone()
+            ))
+            outcomes = await self._run_batch(statements)
+            reached = None
+            # The connection uses the FOUND_ROWS flag, so rowcount counts matched rows and is non-zero whenever a goal was open.
+            if outcomes[goal_update_index].rowcount and outcomes[goal_select_index].rows:
+                keys = ("label", "target", "channel_id", "ping", "progress", "started_at", "completed_at")
+                reached = dict(zip(keys, outcomes[goal_select_index].rows[0]))
+                # `completed_at` is non-None iff this very update reached `target` (checking `is None` avoids float/DOUBLE rounding mismatches).
+                if reached["completed_at"] is None:
+                    reached = None
+            row = outcomes[member_select_index].rows[0]
             await self.db.commit()
         return dict(zip(("balance", "streak", "best_streak", "fines", "spam_until"), row)), reached, delta_amount, spam
 
@@ -376,7 +445,7 @@ class SwearJarQueries:
             # The fined flag is a placeholder too: aiomysql sends one multi-row statement only when every item of the VALUES list is a placeholder, and with a literal 0 it would run one statement per row while holding the database lock.
             """INSERT INTO jar_days (guild_id, user_id, day, messages, fined) VALUES (?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages)""",
-            # Not turned into a list here: `_write` reads it once it holds the database lock, so the caller can leave rows out up to that moment.
+            # Not turned into a list here: `_write` reads it just before it queues for the database lock, with no await in between, so the caller can leave rows out up to that moment and a delete queued later runs after this write.
             ((guild_id, user_id, day, messages, 0) for guild_id, user_id, day, messages in rows),
         )])
 
