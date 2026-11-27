@@ -11,12 +11,12 @@ log = logging.getLogger(__name__)
 # Checked every minute, a connection unused for 100 seconds is pinged by its 160th second at the latest, before the pool's 170.
 EVERY_SECONDS = 60.0
 IDLE_SECONDS = 100.0
-# A ping is one round trip of about 90 ms; one with no answer by then is on a socket that died without closing, which would otherwise hold the database lock until TCP gives up.
+# A ping is one round trip of about 90 ms; one with no answer by then is on a socket that died without closing, which would otherwise hold the database lock for the pool's whole read timeout (mysql.DATABASE_READ_SECONDS, 60 s). SessionLock bounds its own ping by it too; that one reconnects when the connection is gone, about five more round trips, still far inside the bound.
 PING_TIMEOUT_SECONDS = 10.0
 
 
 def fresh(connection: Any) -> None:
-    """Marks a connection that just answered a ping as used now. aiomysql's pool replaces a connection by the time its last cursor was opened (`last_usage`), which a ping doesn't move, so without this a connection kept open by pings is still replaced at RECYCLE_SECONDS. Botzilla's KeepWarm.fresh is the same."""
+    """Marks a connection that just answered a ping as used now. asyncmy's pool replaces a connection by the time its last cursor was opened (`_last_usage`), which a ping doesn't move, so without this a connection kept open by pings is still replaced at RECYCLE_SECONDS. Botzilla's KeepWarm.fresh is the same."""
     loop = getattr(connection, "_loop", None)
     if loop is not None and hasattr(connection, "_last_usage"):
         connection._last_usage = loop.time()

@@ -1,6 +1,6 @@
-"""A thin async layer over aiomysql, so the rest of the code writes `?` placeholders and shares one connection.
+"""A thin async layer over asyncmy, so the rest of the code writes `?` placeholders and shares one connection.
 
-`SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection and sets `owner.db` to a `Session` for the block. The connection autocommits: a block's first write (or locking read) begins a transaction in the same round trip, and that transaction is committed when the block ends and rolled back if it raised, so a block's writes still succeed or fail together while a block that only read has nothing to commit. Reads before a block's first write run outside its transaction, which is safe because this connection, behind this lock, is the only one that writes.
+`SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection and sets `owner.db` to a `Session` for the block. The connection autocommits: a block's first write (or locking read) begins a transaction in the same round trip, and that transaction is committed when the block ends and rolled back if it raised, so a block's writes still succeed or fail together while a block that only read has nothing to commit. If the connection was lost before that commit (the server then rolls the transaction back), the block's end raises OperationalError 2013 even though the block itself finished, so its writes are never taken as saved. Reads before a block's first write run outside its transaction, which is safe because this connection, behind this lock, is the only one that writes.
 
 The database is about 90 ms away, so round trips are what a block costs: `Session.run_many` sends several statements as one (sql_batch.py).
 
@@ -12,15 +12,15 @@ import asyncio
 import logging
 import re
 import time
-import warnings
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
-import aiomysql
-import pymysql
-from pymysql.constants import CLIENT
+import asyncmy
+from asyncmy import errors
+from asyncmy.constants import CLIENT
+from asyncmy.cursors import Cursor as DriverCursor
 from cogs.utils import config, keep_warm, sql_batch
 
-# aiomysql raises pymysql's errors, so this catches any MySQL failure.
-DatabaseError = pymysql.err.MySQLError
+# Every error asyncmy raises for MySQL is one of these, so this catches any MySQL failure.
+DatabaseError = errors.MySQLError
 # Added to every CREATE TABLE. utf8mb4_bin makes text comparisons case-sensitive.
 TABLE_OPTIONS = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 # A connection idle longer than this is replaced when the pool hands it out. The host's MySQL drops one idle for 180 seconds (its wait_timeout), so this comes first.
@@ -30,6 +30,8 @@ DATABASE_TRIES = 6
 DATABASE_RETRY_SECONDS = 2.0
 DATABASE_RETRY_MAX_SECONDS = 30.0
 DATABASE_CONNECT_SECONDS = 10
+# How long a statement's answer may take before asyncmy gives up, closes the connection and raises OperationalError 2013 (which the next block's ping recovers from). Without it a socket that died without closing holds the database lock until TCP gives up, which can be many minutes. It is longer than the host's innodb_lock_wait_timeout (50 s), so a statement waiting on a row lock gets MySQL's own error first; a statement that really needs longer (an ALTER TABLE of a very big table) would be cut off, so such a change is run by hand.
+DATABASE_READ_SECONDS = 60
 DATABASE_NOT_RETRIED = (1044, 1045, 1049, 1130)
 # The connection is checked with a ping (one round trip to the server) only when it has sat unused for this long, or after an error that means the connection broke. The host's MySQL keeps an idle connection for 180 seconds, so one used less than this long ago is still open.
 PING_IDLE_SECONDS = 150.0
@@ -46,9 +48,10 @@ _LOCKING_READ = re.compile(r"\bFOR\s+UPDATE\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", re.
 _KEPT_TABLE = re.compile(r"\b(?:INTO|UPDATE|FROM|JOIN|TABLE)\s+`?(?:channels|ignore|keyword)`?(?!\w)", re.IGNORECASE)
 
 # What a statement raises when the connection to the server is gone or was cut, as opposed to a mistake in the statement.
-BROKEN_CONNECTION = (pymysql.err.OperationalError, pymysql.err.InterfaceError, ConnectionError, TimeoutError, EOFError)
+BROKEN_CONNECTION = (errors.OperationalError, errors.InterfaceError, ConnectionError, TimeoutError, EOFError)
 
-warnings.filterwarnings("ignore", module="aiomysql")
+# asyncmy logs each note MySQL attaches to a statement (such as "table already exists" from CREATE TABLE IF NOT EXISTS) as a warning on its own logger; they are expected, so only its errors are shown.
+logging.getLogger("asyncmy").setLevel(logging.ERROR)
 
 
 def mysql_sql(sql: str) -> str:
@@ -66,7 +69,7 @@ def _row(row: Optional[Sequence[Any]]) -> Optional[Tuple[Any, ...]]:
 
 
 class Cursor:
-    def __init__(self, cursor: aiomysql.Cursor) -> None:
+    def __init__(self, cursor: DriverCursor) -> None:
         self._cursor = cursor
 
     @property
@@ -95,7 +98,7 @@ class Cursor:
 
 
 class Session:
-    def __init__(self, connection: aiomysql.Connection) -> None:
+    def __init__(self, connection: asyncmy.Connection) -> None:
         self.connection = connection
         # The start of the first statement of the block, so a lock held for too long can say what held it. Never the values.
         self.first_sql: Optional[str] = None
@@ -108,7 +111,7 @@ class Session:
         # How many round trips went to the server, so a slow block's warning can tell many trips from one slow one.
         self.trips = 0
         # Open raw cursors from execute/executemany, closed when the session ends so unread results can't poison the next block.
-        self._cursors: List[aiomysql.Cursor] = []
+        self._cursors: List[DriverCursor] = []
 
     def _note(self, sql: str) -> bool:
         """Keeps what the warnings and the kept tables need, and says whether this statement has to run inside the block's transaction (a write or a locking read)."""
@@ -135,10 +138,10 @@ class Session:
 
     def _close_connection(self) -> None:
         close = getattr(self.connection, "close", None)
-        if callable(close) and not getattr(self.connection, "closed", False):
+        if callable(close) and getattr(self.connection, "connected", True):
             close()
 
-    async def _run_single(self, cursor: aiomysql.Cursor, sql: str, params: Tuple[Any, ...], begin: bool) -> None:
+    async def _run_single(self, cursor: DriverCursor, sql: str, params: Tuple[Any, ...], begin: bool) -> None:
         try:
             if begin:
                 # START TRANSACTION and the statement in one query; the cursor then moves on to the statement's own result.
@@ -159,7 +162,7 @@ class Session:
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
         begin = self._beginning(self._note(sql))
         self.trips += 1
-        cursor = await self.connection.cursor()
+        cursor = self.connection.cursor()
         await self._run_single(cursor, mysql_sql(sql), tuple(params), begin)
         self._cursors.append(cursor)
         return Cursor(cursor)
@@ -167,7 +170,7 @@ class Session:
     async def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> Optional[Cursor]:
         """Runs one statement for many rows and returns None when there are no rows.
 
-        An `INSERT ... VALUES (...)` becomes multi-row statements, as aiomysql's executemany makes it, and fills in only the VALUES list; a big one is cut into several so none passes the server's packet limit (sql_batch.MAX_BYTES). A `?` anywhere else, such as in `ON DUPLICATE KEY UPDATE`, gets no value, so bulk upserts write `VALUES(col)` there. Anything else is one statement a row. Several statements go through run_many, one round trip for each MAX_BYTES of them; the cursor returned is the last statement's.
+        An `INSERT ... VALUES (...)` becomes multi-row statements, as asyncmy's executemany makes it, and fills in only the VALUES list; a big one is cut into several so none passes the server's packet limit (sql_batch.MAX_BYTES). A `?` anywhere else, such as in `ON DUPLICATE KEY UPDATE`, gets no value, so bulk upserts write `VALUES(col)` there. Anything else is one statement a row. Several statements go through run_many, one round trip for each MAX_BYTES of them; the cursor returned is the last statement's.
         """
         rows = [tuple(row) for row in rows]
         if not rows:
@@ -176,16 +179,16 @@ class Session:
         begin = self._beginning(self._note(sql))
         if len(statements) == 1:
             self.trips += 1
-            cursor = await self.connection.cursor()
+            cursor = self.connection.cursor()
             await self._run_single(cursor, statements[0][0], tuple(statements[0][1]), begin)
             self._cursors.append(cursor)
             return Cursor(cursor)
         batch = ([("START TRANSACTION", ())] if begin else []) + statements
-        cursor = await self.connection.cursor()
+        cursor = self.connection.cursor()
         try:
             self.trips += (await sql_batch.run_many(cursor, batch)).queries
         except BaseException:
-            if not getattr(self.connection, "closed", False):
+            if not sql_batch.connection_closed(self.connection):
                 try:
                     await self._close_cursor(cursor)
                 except BaseException:
@@ -202,11 +205,11 @@ class Session:
         needs = [self._note(sql) for sql, _ in statements]
         begin = self._beginning(any(needs))
         batch = ([("START TRANSACTION", ())] if begin else []) + [(mysql_sql(sql), params) for sql, params in statements]
-        cursor = await self.connection.cursor()
+        cursor = self.connection.cursor()
         try:
             outcomes = await sql_batch.run_many(cursor, batch)
         finally:
-            if not getattr(self.connection, "closed", False):
+            if not sql_batch.connection_closed(self.connection):
                 try:
                     await self._close_cursor(cursor)
                 except BaseException:
@@ -218,7 +221,7 @@ class Session:
     async def close(self) -> None:
         """Closes every cursor opened during this block, discarding the connection if closing fails so unread results never leak."""
         cursors, self._cursors = self._cursors, []
-        if not cursors or getattr(self.connection, "closed", False):
+        if not cursors or sql_batch.connection_closed(self.connection):
             return
         for cursor in cursors:
             try:
@@ -243,17 +246,17 @@ def _warn(text: str, *args: Any) -> None:
 
 
 class SessionLock:
-    """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, and commits the block's transaction on a clean exit or rolls it back when the block raised (a block that wrote nothing has none)."""
+    """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, and commits the block's transaction on a clean exit or rolls it back when the block raised (a block that wrote nothing has none). A clean exit whose transaction can't be committed because the connection is gone raises OperationalError 2013."""
     def __init__(self, owner: Any) -> None:
         self.owner = owner
         self.lock = asyncio.Lock()
-        self.connection: Optional[aiomysql.Connection] = None
+        self.connection: Optional[asyncmy.Connection] = None
         self._owner: Optional[asyncio.Task] = None
         self._held_since = 0.0
         # The connection the last block used, when that block ended, and whether it ended in an error that says the connection broke.
-        # The pool the connection came from, so it goes back there even if `owner.pool` was set to None by `close` while the block ran. aiomysql's `wait_closed` waits for every connection to be given back.
-        self._pool: Optional[aiomysql.Pool] = None
-        self._last_connection: Optional[aiomysql.Connection] = None
+        # The pool the connection came from, so it goes back there even if `owner.pool` was set to None by `close` while the block ran. asyncmy's `wait_closed` waits for every connection to be given back.
+        self._pool: Optional[asyncmy.Pool] = None
+        self._last_connection: Optional[asyncmy.Connection] = None
         self._last_used = float("-inf")
         self._needs_ping = True
         self._ping_took = self._flush_took = 0.0
@@ -277,11 +280,11 @@ class SessionLock:
             # Where the time before the block went, for the warning about a lock held too long: a ping is one round trip to the server.
             self._ping_took = self._flush_took = 0.0
             self._flush_trips = 0
-            # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again.
+            # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again, and the ping is bounded by PING_TIMEOUT_SECONDS so a silent half-open socket can't hold the lock for the whole read_timeout (60 s).
             if self._needs_ping or self.connection is not self._last_connection or self._held_since - self._last_used > PING_IDLE_SECONDS:
                 self._needs_ping = True
                 started = time.monotonic()
-                await self.connection.ping(reconnect=True)
+                await asyncio.wait_for(self.connection.ping(reconnect=True), keep_warm.PING_TIMEOUT_SECONDS)
                 self._ping_took = time.monotonic() - started
                 self._needs_ping = False
             # Counts that were waiting in memory go in first, in their own transaction (see activity_buffer.py).
@@ -308,7 +311,7 @@ class SessionLock:
         return self.owner.db
 
     def _close_connection(self) -> None:
-        if self.connection is not None and not getattr(self.connection, "closed", False):
+        if self.connection is not None and getattr(self.connection, "connected", True):
             close = getattr(self.connection, "close", None)
             if callable(close):
                 close()
@@ -332,8 +335,12 @@ class SessionLock:
                 self._needs_ping = True
             if session is not None:
                 await session.close()
-            if self.connection is not None and getattr(self.connection, "closed", False):
+            if self.connection is not None and sql_batch.connection_closed(self.connection):
+                self._close_connection()
                 self._needs_ping = True
+                # A write block that ended cleanly on a dead socket never committed; raise instead of silently pretending it did.
+                if kind is None and self.connection.get_transaction_status():
+                    raise errors.OperationalError(2013, "Lost connection to MySQL server before commit")
             # Only a block that opened a transaction has one to end; one that only read sends nothing here.
             elif self.connection is not None and self.connection.get_transaction_status():
                 if kind is None:
@@ -396,19 +403,19 @@ class SessionLock:
             self.lock.release()
 
 
-async def create_pool() -> aiomysql.Pool:
+async def create_pool() -> asyncmy.Pool:
     """Opens the single-connection MySQL pool with a bounded connect timeout and exponential backoff on transient errors."""
     if not (config.MYSQL_HOST and config.MYSQL_USER):
         raise RuntimeError("MySQL isn't set up. Add MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD and MYSQL_DB to .env.")
     wait = DATABASE_RETRY_SECONDS
     for attempt in range(1, DATABASE_TRIES + 1):
         try:
-            return await aiomysql.create_pool(
+            return await asyncmy.create_pool(
                 host=config.MYSQL_HOST,
                 port=config.MYSQL_PORT,
                 user=config.MYSQL_USER,
                 password=config.MYSQL_PASSWORD,
-                db=config.MYSQL_DB,
+                database=config.MYSQL_DB,
                 charset="utf8mb4",
                 # Each statement commits by itself unless a block has begun a transaction (Session), so reads cost no COMMIT.
                 autocommit=True,
@@ -419,9 +426,10 @@ async def create_pool() -> aiomysql.Pool:
                 minsize=1,
                 maxsize=1,
                 connect_timeout=DATABASE_CONNECT_SECONDS,
+                read_timeout=DATABASE_READ_SECONDS,
                 pool_recycle=RECYCLE_SECONDS,
             )
-        except pymysql.err.OperationalError as error:
+        except errors.OperationalError as error:
             if attempt == DATABASE_TRIES or (error.args and error.args[0] in DATABASE_NOT_RETRIED):
                 raise
             log.warning(
