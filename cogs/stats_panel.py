@@ -1,6 +1,6 @@
 """The live stats panel: /owner stats_panel posts it in a channel, and a loop edits it every few minutes.
 
-The owner picks the channel (one panel per server). The loop reads every figure from memory and the database totals, draws the card once and edits each panel's message with it, and stops the pass at the first 429. A panel whose message was deleted is posted again in the same channel. One whose channel is deleted or missing, or whose server the bot has left, is forgotten.
+The owner picks the channel (one panel per server). The loop reads every figure from memory and the database totals, draws the card once and edits each panel's message with it, and stops the pass at the first 429. A panel whose message was deleted is posted again in the same channel. One whose channel is deleted (also while the bot was offline, noticed once it's back, unless Discord has the server unavailable), or whose server the bot has left, is forgotten.
 """
 
 from __future__ import annotations
