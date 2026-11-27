@@ -173,8 +173,8 @@ class StatsPanel(commands.Cog):
             return True
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            if self.bot.is_ready() and guild.get_channel(channel_id) is None:
-                # The channel was deleted while the bot was offline, so no event removed the row.
+            if self.bot.is_ready() and not guild.unavailable and guild.get_channel(channel_id) is None:
+                # The channel was deleted while the bot was offline, so no event removed the row. A server Discord has unavailable (an outage) may have no channels loaded at all, so its panel is left alone.
                 await self.bot.db.delete_stats_panel_channel(channel_id)
             else:
                 log.debug("The stats panel's channel %s isn't visible; leaving it for now", channel_id)
