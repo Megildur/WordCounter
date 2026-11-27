@@ -1120,20 +1120,20 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def get_leaderboard_page(
         self, metric: str, guild_id: int, channel_id: Optional[int], limit: int, offset: int,
     ) -> Tuple[List[Tuple[int, int]], int]:
-        """Returns (page_rows, total_ranked) for one metric in one round trip using SQL LIMIT/OFFSET."""
+        """Returns (page_rows, total_ranked) for one metric in one round trip using SQL LIMIT/OFFSET. Each page is its own query, so equal counts are ordered by user ID too: without it MySQL may order ties differently each time, and a member could show on two pages or on none. For one channel that order is its index read backwards (the index ends with the primary key's user_id)."""
         channel_table, user_table = LEADERBOARD_TABLES[metric]
         await self.ensure_connected()
         async with self.db_lock:
             if channel_id is None:
                 column = COUNT_TABLES[user_table][1]
                 count_sql = f"SELECT COUNT(*) FROM {user_table} WHERE guild_id = ? AND {column} > 0"
-                page_sql = f"SELECT user_id, {column} FROM {user_table} WHERE guild_id = ? AND {column} > 0 ORDER BY {column} DESC LIMIT ? OFFSET ?"
+                page_sql = f"SELECT user_id, {column} FROM {user_table} WHERE guild_id = ? AND {column} > 0 ORDER BY {column} DESC, user_id DESC LIMIT ? OFFSET ?"
                 count_params: Tuple[Any, ...] = (guild_id,)
                 page_params: Tuple[Any, ...] = (guild_id, limit, offset)
             else:
                 column = COUNT_TABLES[channel_table][1]
                 count_sql = f"SELECT COUNT(*) FROM {channel_table} WHERE guild_id = ? AND channel_id = ? AND {column} > 0"
-                page_sql = f"SELECT user_id, {column} FROM {channel_table} WHERE guild_id = ? AND channel_id = ? AND {column} > 0 ORDER BY {column} DESC LIMIT ? OFFSET ?"
+                page_sql = f"SELECT user_id, {column} FROM {channel_table} WHERE guild_id = ? AND channel_id = ? AND {column} > 0 ORDER BY {column} DESC, user_id DESC LIMIT ? OFFSET ?"
                 count_params = (guild_id, channel_id)
                 page_params = (guild_id, channel_id, limit, offset)
             count_out, page_out = await self.db.run_many([(count_sql, count_params), (page_sql, page_params)])
