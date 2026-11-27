@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 # Drops all but a person's newest sessions. MySQL won't delete from a table it is also reading in a subquery, so the ones to keep are listed in a derived table, and the LIMIT inside it keeps MySQL from folding it back into the DELETE.
 KEEP_NEWEST = """DELETE FROM web_sessions WHERE user_id = ? AND token_hash NOT IN (
     SELECT token_hash FROM (SELECT token_hash FROM web_sessions WHERE user_id = ? ORDER BY created DESC, token_hash LIMIT ?) AS newest)"""
+INSERT_SESSION = "INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)"
 
 # How long a session found in the table is trusted without asking again, and how long one found missing is remembered. A session can't come back, so a missing one is remembered longer.
 ALIVE_SECONDS = 30.0
@@ -43,23 +44,32 @@ class WebSessionQueries:
     """Mixed into WordCounterDatabase. Public methods take `db_lock` themselves. `_web_kept`, `_web_epoch` and `_web_servers` are set up in its __init__: {token hash: (when it was looked up, the user ID, or None when the session doesn't exist)}, a number that goes up whenever something is forgotten, and {user ID: (when it was kept, their servers, the timer that drops them)}."""
 
     async def create_web_session(self, token_hash: str, user_id: int, lifetime: int) -> None:
-        """Records a new session that ends `lifetime` seconds from now, drops oldest sessions beyond SESSIONS_PER_USER, and periodically clears ended sessions in one transaction."""
+        """Records a new session that ends `lifetime` seconds from now, clears out up to EXPIRED_BATCH ended sessions at most once per EXPIRED_PRUNE_SECONDS, and drops someone's oldest sessions beyond SESSIONS_PER_USER, all in one round trip. Raises only when the session couldn't be saved: clearing and dropping are tidying, and if they fail the login still stands."""
         now = int(time.time())
         last_prune = getattr(self, "_last_expired_prune", 0.0)
         should_prune = now - last_prune >= EXPIRED_PRUNE_SECONDS
         statements: List[Tuple[str, Tuple[Any, ...]]] = []
         if should_prune:
             statements.append(("DELETE FROM web_sessions WHERE expires < ? LIMIT ?", (now, EXPIRED_BATCH)))
-        statements.extend([
-            ("INSERT INTO web_sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)", (token_hash, user_id, now, now + lifetime)),
-            (KEEP_NEWEST, (user_id, user_id, SESSIONS_PER_USER)),
-        ])
+        row = (token_hash, user_id, now, now + lifetime)
+        statements.extend([(INSERT_SESSION, row), (KEEP_NEWEST, (user_id, user_id, SESSIONS_PER_USER))])
         await self.ensure_connected()
-        async with self.db_lock:
-            await self.db.run_many(statements)
-            await self.db.commit()
-        if should_prune:
-            self._last_expired_prune = now
+        try:
+            async with self.db_lock:
+                await self.db.run_many(statements)
+                await self.db.commit()
+        except Exception as error:
+            # The tidying can fail on its own, as when the same person signs in twice at once and the two deletes wait on each other. The block was rolled back, so the session is saved by itself (unless the commit went through after all), and only a failure there fails the login.
+            await self.ensure_connected()
+            async with self.db_lock:
+                cursor = await self.db.execute("SELECT 1 FROM web_sessions WHERE token_hash = ?", (token_hash,))
+                if await cursor.fetchone() is None:
+                    await self.db.execute(INSERT_SESSION, row)
+                    await self.db.commit()
+            log.warning("Saved a login session but couldn't tidy the old ones: %s", error)
+        else:
+            if should_prune:
+                self._last_expired_prune = now
         # A session that was dropped by the last statement is no longer alive, so nothing in memory may still say it is.
         self.forget_web_sessions(user_id)
 
