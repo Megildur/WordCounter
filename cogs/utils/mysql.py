@@ -1,6 +1,6 @@
 """A thin async layer over asyncmy, so the rest of the code writes `?` placeholders and shares one connection.
 
-`SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection and sets `owner.db` to a `Session` for the block. The connection autocommits: a block's first write (or locking read) begins a transaction in the same round trip, and that transaction is committed when the block ends and rolled back if it raised, so a block's writes still succeed or fail together while a block that only read has nothing to commit. Reads before a block's first write run outside its transaction, which is safe because this connection, behind this lock, is the only one that writes.
+`SessionLock` is what `WordCounterDatabase.db_lock` is. `async with db_lock` takes the pool's only connection and sets `owner.db` to a `Session` for the block. The connection autocommits: a block's first write (or locking read) begins a transaction in the same round trip, and that transaction is committed when the block ends and rolled back if it raised, so a block's writes still succeed or fail together while a block that only read has nothing to commit. If the connection was lost before that commit (the server then rolls the transaction back), the block's end raises OperationalError 2013 even though the block itself finished, so its writes are never taken as saved. Reads before a block's first write run outside its transaction, which is safe because this connection, behind this lock, is the only one that writes.
 
 The database is about 90 ms away, so round trips are what a block costs: `Session.run_many` sends several statements as one (sql_batch.py).
 
@@ -246,7 +246,7 @@ def _warn(text: str, *args: Any) -> None:
 
 
 class SessionLock:
-    """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, and commits the block's transaction on a clean exit or rolls it back when the block raised (a block that wrote nothing has none)."""
+    """The async context manager behind `db_lock`. It hands out the pool's one connection as a `Session`, and commits the block's transaction on a clean exit or rolls it back when the block raised (a block that wrote nothing has none). A clean exit whose transaction can't be committed because the connection is gone raises OperationalError 2013."""
     def __init__(self, owner: Any) -> None:
         self.owner = owner
         self.lock = asyncio.Lock()
