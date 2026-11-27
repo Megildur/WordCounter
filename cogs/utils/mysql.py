@@ -30,6 +30,8 @@ DATABASE_TRIES = 6
 DATABASE_RETRY_SECONDS = 2.0
 DATABASE_RETRY_MAX_SECONDS = 30.0
 DATABASE_CONNECT_SECONDS = 10
+# How long a statement's answer may take before asyncmy gives up, closes the connection and raises OperationalError 2013 (which the next block's ping recovers from). Without it a socket that died without closing holds the database lock until TCP gives up, which can be many minutes. It is longer than the host's innodb_lock_wait_timeout (50 s), so a statement waiting on a row lock gets MySQL's own error first; a statement that really needs longer (an ALTER TABLE of a very big table) would be cut off, so such a change is run by hand.
+DATABASE_READ_SECONDS = 60
 DATABASE_NOT_RETRIED = (1044, 1045, 1049, 1130)
 # The connection is checked with a ping (one round trip to the server) only when it has sat unused for this long, or after an error that means the connection broke. The host's MySQL keeps an idle connection for 180 seconds, so one used less than this long ago is still open.
 PING_IDLE_SECONDS = 150.0
@@ -420,6 +422,7 @@ async def create_pool() -> asyncmy.Pool:
                 minsize=1,
                 maxsize=1,
                 connect_timeout=DATABASE_CONNECT_SECONDS,
+                read_timeout=DATABASE_READ_SECONDS,
                 pool_recycle=RECYCLE_SECONDS,
             )
         except errors.OperationalError as error:
