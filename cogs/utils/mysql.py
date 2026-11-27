@@ -280,11 +280,11 @@ class SessionLock:
             # Where the time before the block went, for the warning about a lock held too long: a ping is one round trip to the server.
             self._ping_took = self._flush_took = 0.0
             self._flush_trips = 0
-            # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again.
+            # Reopens the connection if the server closed it while it sat idle. A connection used a moment ago isn't asked again, and the ping is bounded by PING_TIMEOUT_SECONDS so a silent half-open socket can't hold the lock for the whole read_timeout (60 s).
             if self._needs_ping or self.connection is not self._last_connection or self._held_since - self._last_used > PING_IDLE_SECONDS:
                 self._needs_ping = True
                 started = time.monotonic()
-                await self.connection.ping(reconnect=True)
+                await asyncio.wait_for(self.connection.ping(reconnect=True), keep_warm.PING_TIMEOUT_SECONDS)
                 self._ping_took = time.monotonic() - started
                 self._needs_ping = False
             # Counts that were waiting in memory go in first, in their own transaction (see activity_buffer.py).
