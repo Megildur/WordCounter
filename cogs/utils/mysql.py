@@ -138,7 +138,7 @@ class Session:
 
     def _close_connection(self) -> None:
         close = getattr(self.connection, "close", None)
-        if callable(close) and not sql_batch.connection_closed(self.connection):
+        if callable(close) and getattr(self.connection, "connected", True):
             close()
 
     async def _run_single(self, cursor: DriverCursor, sql: str, params: Tuple[Any, ...], begin: bool) -> None:
@@ -311,7 +311,7 @@ class SessionLock:
         return self.owner.db
 
     def _close_connection(self) -> None:
-        if self.connection is not None and not sql_batch.connection_closed(self.connection):
+        if self.connection is not None and getattr(self.connection, "connected", True):
             close = getattr(self.connection, "close", None)
             if callable(close):
                 close()
@@ -336,7 +336,11 @@ class SessionLock:
             if session is not None:
                 await session.close()
             if self.connection is not None and sql_batch.connection_closed(self.connection):
+                self._close_connection()
                 self._needs_ping = True
+                # A write block that ended cleanly on a dead socket never committed; raise instead of silently pretending it did.
+                if kind is None and self.connection.get_transaction_status():
+                    raise errors.OperationalError(2013, "Lost connection to MySQL server before commit")
             # Only a block that opened a transaction has one to end; one that only read sends nothing here.
             elif self.connection is not None and self.connection.get_transaction_status():
                 if kind is None:
