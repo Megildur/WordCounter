@@ -242,7 +242,7 @@ def summarize_channels(
     return sep.join(shown)
 
 
-def enforce_text_budget(container: discord.ui.Container, budget: int = TEXT_BUDGET) -> None:
+def fit_container_text(container: discord.ui.Container, budget: int = TEXT_BUDGET) -> None:
     """Clips TextDisplay contents inside `container` so their total stays within Discord's 4,000-character Components v2 ceiling."""
     displays: List[discord.ui.TextDisplay] = []
     for child in container.children:

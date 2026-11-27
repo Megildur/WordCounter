@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import List, Optional, Sequence, Tuple, Union
 import discord
 from discord.ext import commands
-from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, SELECT_TYPES, AuthorOnlyView, Callback, create_v2_view, enforce_text_budget, make_button
+from cogs.utils.components import BRAND_COLOR, NEUTRAL_COLOR, SELECT_TYPES, AuthorOnlyView, Callback, create_v2_view, fit_container_text, make_button
 
 # (key, label, description) of one section, as shown in the section select.
 Section = Tuple[str, str, str]
@@ -72,7 +72,7 @@ class SectionMenu(AuthorOnlyView):
         bottom.append(make_button("Close", discord.ButtonStyle.secondary, self._on_close_menu))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(*bottom))
-        enforce_text_budget(container)
+        fit_container_text(container)
         self.add_item(container)
 
     def _confirmation(
