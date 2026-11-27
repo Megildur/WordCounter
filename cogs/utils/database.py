@@ -1120,7 +1120,7 @@ class WordCounterDatabase(SwearJarQueries, StoredDataQueries, WebSessionQueries,
     async def get_leaderboard_page(
         self, metric: str, guild_id: int, channel_id: Optional[int], limit: int, offset: int,
     ) -> Tuple[List[Tuple[int, int]], int]:
-        """Returns (page_rows, total_ranked) for one metric in one round trip using SQL LIMIT/OFFSET. Each page is its own query, so equal counts are ordered by user ID too: without it MySQL may order ties differently each time, and a member could show on two pages or on none. For one channel that order is its index read backwards (the index ends with the primary key's user_id)."""
+        """Returns (page_rows, total_ranked) for one metric in one round trip using SQL LIMIT/OFFSET. Each page is its own query, so equal counts are ordered by user ID too: without it MySQL may order ties differently each time, and a member could show on two pages or on none. For words and messages in one channel that order is the channel index read backwards (InnoDB ends it with the primary key's user_id); the other tables have no count index and sort, as they did before."""
         channel_table, user_table = LEADERBOARD_TABLES[metric]
         await self.ensure_connected()
         async with self.db_lock:

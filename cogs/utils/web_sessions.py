@@ -59,7 +59,7 @@ class WebSessionQueries:
                 await self.db.run_many(statements)
                 await self.db.commit()
         except Exception as error:
-            # The tidying can fail on its own, as when the same person signs in twice at once and the two deletes wait on each other. The block was rolled back, so the session is saved by itself (unless the commit went through after all), and only a failure there fails the login.
+            # The batch can fail without the session being the problem: the connection dropping, or a tidying statement failing. The block was rolled back, so the session is saved by itself in a block of its own (unless the commit went through after all), and only a failure there fails the login.
             await self.ensure_connected()
             async with self.db_lock:
                 cursor = await self.db.execute("SELECT 1 FROM web_sessions WHERE token_hash = ?", (token_hash,))
