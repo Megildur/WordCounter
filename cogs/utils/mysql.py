@@ -369,7 +369,7 @@ class SessionLock:
         async with self.lock:
             connection = await pool.acquire()
             try:
-                await connection.ping(reconnect=False)
+                await keep_warm.ping(connection)
                 keep_warm.fresh(connection)
             except Exception:
                 connection.close()
