@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 # Checked every minute, a connection unused for 100 seconds is pinged by its 160th second at the latest, before the pool's 170.
 EVERY_SECONDS = 60.0
 IDLE_SECONDS = 100.0
-# A ping is one round trip of about 90 ms; one with no answer by then is on a socket that died without closing, which would otherwise hold the database lock until TCP gives up.
+# A ping is one round trip of about 90 ms; one with no answer by then is on a socket that died without closing, which would otherwise hold the database lock for the pool's whole read timeout (mysql.DATABASE_READ_SECONDS, 60 s).
 PING_TIMEOUT_SECONDS = 10.0
 
 
