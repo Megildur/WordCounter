@@ -49,7 +49,7 @@ def must_close_connection(cursor: Any, error: BaseException) -> bool:
 
 
 def connection_closed(connection: Any) -> bool:
-    """Whether `connection` can't be used any more: closed (asyncmy's `connected` is False after close(), a cancelled or timed-out read, or a failed write) or its socket already gone (`_stream_broken`: a server that hung up leaves `connected` True until the next write fails). Botzilla's SqlBatch.connection_closed is the same."""
+    """Whether `connection` can't be used any more: closed (asyncmy's `connected` is False after close(), a cancelled or timed-out read, or a failed write) or its socket already gone (`_stream_broken`: a server that hung up leaves `connected` True until the next write fails). Botzilla has no twin: its modules borrow connections only through `pool.acquire()`, and asyncmy's pool checks a connection before handing it out."""
     return not getattr(connection, "connected", True) or bool(getattr(connection, "_stream_broken", False))
 
 
