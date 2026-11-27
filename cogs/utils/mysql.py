@@ -371,6 +371,11 @@ class SessionLock:
             try:
                 await keep_warm.ping(connection)
                 keep_warm.fresh(connection)
+            except asyncio.CancelledError:
+                # Cancelled mid-ping (the keeper stopped at shutdown): its answer may be unread, so the connection mustn't go back to the pool open.
+                connection.close()
+                self._needs_ping = True
+                raise
             except Exception:
                 connection.close()
                 self._needs_ping = True
