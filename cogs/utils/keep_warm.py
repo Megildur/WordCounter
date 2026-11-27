@@ -16,7 +16,7 @@ PING_TIMEOUT_SECONDS = 10.0
 
 
 def fresh(connection: Any) -> None:
-    """Marks a connection that just answered a ping as used now. aiomysql's pool replaces a connection by the time its last cursor was opened (`last_usage`), which a ping doesn't move, so without this a connection kept open by pings is still replaced at RECYCLE_SECONDS. Botzilla's KeepWarm.fresh is the same."""
+    """Marks a connection that just answered a ping as used now. asyncmy's pool replaces a connection by the time its last cursor was opened (`_last_usage`), which a ping doesn't move, so without this a connection kept open by pings is still replaced at RECYCLE_SECONDS. Botzilla's KeepWarm.fresh is the same."""
     loop = getattr(connection, "_loop", None)
     if loop is not None and hasattr(connection, "_last_usage"):
         connection._last_usage = loop.time()

@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, List, Sequence, Tuple
 
-import pymysql
+from asyncmy import errors
 
 Statement = Tuple[str, Sequence[Any]]
 
@@ -19,7 +19,7 @@ Statement = Tuple[str, Sequence[Any]]
 MAX_BYTES = 4_000_000
 
 # Errors that indicate the underlying MySQL socket/protocol state is no longer safe to reuse.
-_BROKEN_MYSQL = (pymysql.err.OperationalError, pymysql.err.InterfaceError, pymysql.err.InternalError)
+_BROKEN_MYSQL = (errors.OperationalError, errors.InterfaceError, errors.InternalError)
 _COMMANDS_OUT_OF_SYNC = 2014
 
 
@@ -40,12 +40,17 @@ def must_close_connection(cursor: Any, error: BaseException) -> bool:
         return True
     if isinstance(error, _BROKEN_MYSQL):
         return True
-    if isinstance(error, pymysql.err.ProgrammingError):
+    if isinstance(error, errors.ProgrammingError):
         return bool(error.args and error.args[0] == _COMMANDS_OUT_OF_SYNC)
-    if isinstance(error, pymysql.err.MySQLError):
+    if isinstance(error, errors.MySQLError):
         # MySQL stops executing further statements in a multi-statement query after an ERR packet, so only close if unread results remain.
         return bool(getattr(getattr(cursor, "_result", None), "has_next", False))
     return True
+
+
+def connection_closed(connection: Any) -> bool:
+    """Whether `connection` can't be used any more: closed (asyncmy's `connected` is False after close(), a cancelled or timed-out read, or a failed write) or its socket already gone (`_stream_broken`: a server that hung up leaves `connected` True until the next write fails). Botzilla's SqlBatch.connection_closed is the same."""
+    return not getattr(connection, "connected", True) or bool(getattr(connection, "_stream_broken", False))
 
 
 def close_connection(cursor: Any) -> None:
@@ -59,7 +64,7 @@ def close_connection(cursor: Any) -> None:
             pass
 
 def _one_row(mark: str) -> "re.Pattern[str]":
-    """An INSERT or REPLACE whose one VALUES group is all `mark` placeholders, with what comes after it (ON DUPLICATE KEY UPDATE): the shape aiomysql's executemany folds into one statement."""
+    """An INSERT or REPLACE whose one VALUES group is all `mark` placeholders, with what comes after it (ON DUPLICATE KEY UPDATE): the shape asyncmy's executemany folds into one statement."""
     m = re.escape(mark)
     return re.compile(r"^(\s*(?:INSERT|REPLACE)\b.+?\bVALUES\s*)(\(\s*%s(?:\s*,\s*%s)*\s*\))(.*)$" % (m, m), re.IGNORECASE | re.DOTALL)
 
